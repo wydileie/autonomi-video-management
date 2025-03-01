@@ -1,0 +1,27 @@
+{
+    "name" : "Dev Container for Python, Rust, and React",
+    "build": {
+      "dockerfile": "Dockerfile",
+      "context": "."
+    },
+  
+    "customizations": {
+      "vscode": {
+        "extensions": [
+            "zainchen.json",
+            "github.vscode-pull-request-github",
+            "ms-python.vscode-pylance",
+            "ms-python.python",
+            "ms-python.debugpy",
+            "rust-lang.rust-analyzer"
+        ],
+        "settings": {
+          "terminal.integrated.shell.linux": "/bin/bash"
+        }
+      }
+    },
+    "forwardPorts": [3000],
+    "postCreateCommand": "rustup update",
+    "remoteUser": "root"
+}
+  
