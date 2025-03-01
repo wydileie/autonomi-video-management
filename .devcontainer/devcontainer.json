@@ -13,6 +13,7 @@
             "ms-python.vscode-pylance",
             "ms-python.python",
             "ms-python.debugpy",
+            "ms-azuretools.vscode-docker",
             "rust-lang.rust-analyzer"
         ],
         "settings": {

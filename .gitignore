@@ -170,3 +170,4 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 autonomi-video-management.code-workspace
+.env

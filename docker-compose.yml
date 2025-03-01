@@ -1,0 +1,139 @@
+version: "3.8"
+
+services:
+
+  # 1) Postgres
+  db:
+    image: postgres:16
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init/:/docker-entrypoint-initdb.d/:ro
+    networks:
+      - appnet
+
+  # 2) Keycloak
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak_sso
+    command: >
+      start-dev
+      --import-realm
+      --hostname ${KEYCLOAK_SUBDOMAIN}
+      --hostname-strict false
+    environment:
+      KEYCLOAK_ADMIN: "${KEYCLOAK_ADMIN}"
+      KEYCLOAK_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD}"
+
+      # Database connection
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/${KEYCLOAK_DB}
+      KC_DB_USERNAME: "${KEYCLOAK_USER}"
+      KC_DB_PASSWORD: "${KEYCLOAK_PASS}"
+
+    volumes:
+      # sanitized realm JSON with placeholders or script if needed
+      - ./master-realm.json:/opt/keycloak/data/import/master-realm.json:ro
+    depends_on:
+      - db
+    networks:
+      - appnet
+    expose:
+      - "8080"
+
+  # 3) Python Admin
+  python_admin:
+    build: ./python_admin
+    container_name: python_admin
+    environment:
+      # DB credentials for the admin service
+      ADMIN_DB_HOST: db
+      ADMIN_DB_NAME: "${ADMIN_DB}"
+      ADMIN_DB_USER: "${ADMIN_USER}"
+      ADMIN_DB_PASS: "${ADMIN_PASS}"
+
+      # Keycloak issuer if needed
+      KEYCLOAK_ISSUER: "http://${KEYCLOAK_SUBDOMAIN}:8080/realms/master"
+    depends_on:
+      - db
+    networks:
+      - appnet
+    expose:
+      - "8000"
+
+  # 4) Rust streaming
+  rust_stream:
+    build: ./rust_stream
+    container_name: rust_stream
+    environment:
+      # Possibly some environment variables for autonomi or caching
+      AUTONOMI_PEERS: "/ip4/1.2.3.4/tcp/12000"
+      # If you verify tokens from Keycloak:
+      KEYCLOAK_ISSUER: "http://${KEYCLOAK_SUBDOMAIN}:8080/realms/master"
+    depends_on:
+      - keycloak
+    networks:
+      - appnet
+    expose:
+      - "8081"
+
+  # 5) React front end
+  react_frontend:
+    build: ./react_frontend
+    container_name: react_app
+    environment:
+      # e.g. REACT_APP_KEYCLOAK_URL: "http://${KEYCLOAK_SUBDOMAIN}:8080/realms/master"
+      # or something similar
+    depends_on:
+      - python_admin
+      - rust_stream
+    networks:
+      - appnet
+    expose:
+      - "3000"
+
+  # 6) Nginx Reverse Proxy
+  nginx:
+    image: nginx:latest
+    container_name: nginx_proxy
+    depends_on:
+      - keycloak
+      - python_admin
+      - rust_stream
+      - react_frontend
+    volumes:
+      - ./nginx/conf.d/:/etc/nginx/conf.d
+      - certbot-etc:/etc/letsencrypt
+      - certbot-var:/var/lib/letsencrypt
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - appnet
+
+  # 7) Certbot
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-var:/var/lib/letsencrypt
+      - ./nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - nginx
+    networks:
+      - appnet
+    entrypoint: /bin/bash
+    # We'll run "docker-compose run certbot certonly" or similar when we want to generate/renew.
+
+volumes:
+  postgres_data:
+  certbot-etc:
+  certbot-var:
+
+networks:
+  appnet:
+    driver: bridge
