@@ -1,0 +1,28 @@
+[package]
+name = "rust_stream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Autonomi SDK — talks to the antd daemon via REST.
+# The 2.0 Rust SDK is not published on crates.io yet, so consume the package
+# directly from the ant-sdk monorepo.
+antd-client = { git = "https://github.com/WithAutonomi/ant-sdk.git", package = "antd-client" }
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"

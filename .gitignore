@@ -171,3 +171,7 @@ cython_debug/
 .pypirc
 autonomi-video-management.code-workspace
 .env
+
+*.devcontainer
+.devcontainer/**
+.devcontainer/*
