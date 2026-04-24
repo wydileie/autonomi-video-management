@@ -36,6 +36,7 @@ fzf \
 htop \
 tree \
 tcpdump \
+ffmpeg \
 && rm -rf /var/lib/apt/lists/*
 
 # Install Python development tools and Node.js core tooling
