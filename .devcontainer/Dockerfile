@@ -6,6 +6,12 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/opt/venv/bin:${PATH}:/opt/mssql-tools18/bin:${CARGO_HOME}/bin"
 
+# Keep the Autonomi toolchain on a single saorsa-core protocol line.
+# ant-sdk/antd currently pins saorsa-core 0.23.1; these refs match that line.
+ARG AUTONOMI_ANT_SDK_REF=2ed9b14bda42fbdc604a173cc1af27be0964908f
+ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.1.6
+ARG AUTONOMI_ANT_NODE_REF=v0.10.1
+
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
 && apt-get update && apt-get install -y \
@@ -74,7 +80,9 @@ esac \
 # Build and install antd (Autonomi daemon), the Autonomi MCP server, and the
 # dev CLI support libraries from ant-sdk in a single layer to share the cargo cache.
 RUN git clone https://github.com/WithAutonomi/ant-sdk.git && \
-    cd ant-sdk/antd && \
+    cd ant-sdk && \
+    git checkout "$AUTONOMI_ANT_SDK_REF" && \
+    cd antd && \
     cargo build --release && \
     cp target/release/antd /usr/local/bin/ && \
     cd ../antd-py && \
@@ -86,6 +94,7 @@ RUN git clone https://github.com/WithAutonomi/ant-sdk.git && \
 # Build and install ant (Autonomi CLI)
 RUN git clone https://github.com/WithAutonomi/ant-client.git && \
     cd ant-client && \
+    git checkout "$AUTONOMI_ANT_CLIENT_REF" && \
     cargo build --release --bin ant && \
     cp target/release/ant /usr/local/bin/ && \
     cd .. && rm -rf ant-client
@@ -93,8 +102,9 @@ RUN git clone https://github.com/WithAutonomi/ant-client.git && \
 # Build ant-devnet from ant-node — required for the local devnet used in development.
 # ant dev start normally does this via `cargo run`; we pre-build it here so startup
 # is instant and no source repos are needed at runtime.
-RUN git clone --depth 1 https://github.com/WithAutonomi/ant-node.git && \
+RUN git clone https://github.com/WithAutonomi/ant-node.git && \
     cd ant-node && \
+    git checkout "$AUTONOMI_ANT_NODE_REF" && \
     cargo build --release --bin ant-devnet && \
     cp target/release/ant-devnet /usr/local/bin/ && \
     cd .. && rm -rf ant-node

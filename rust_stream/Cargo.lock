@@ -14,7 +14,7 @@ dependencies = [
 [[package]]
 name = "antd-client"
 version = "0.1.0"
-source = "git+https://github.com/WithAutonomi/ant-sdk.git#2ed9b14bda42fbdc604a173cc1af27be0964908f"
+source = "git+https://github.com/WithAutonomi/ant-sdk.git?rev=2ed9b14bda42fbdc604a173cc1af27be0964908f#2ed9b14bda42fbdc604a173cc1af27be0964908f"
 dependencies = [
  "base64",
  "prost",

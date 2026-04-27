@@ -175,3 +175,7 @@ autonomi-video-management.code-workspace
 *.devcontainer
 .devcontainer/**
 .devcontainer/*
+
+testvids/
+testvids/**
+testvids/*

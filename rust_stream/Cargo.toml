@@ -6,8 +6,9 @@ edition = "2021"
 [dependencies]
 # Autonomi SDK — talks to the antd daemon via REST.
 # The 2.0 Rust SDK is not published on crates.io yet, so consume the package
-# directly from the ant-sdk monorepo.
-antd-client = { git = "https://github.com/WithAutonomi/ant-sdk.git", package = "antd-client" }
+# directly from the ant-sdk monorepo. Pin this to the same ant-sdk revision
+# used to build antd so the client and daemon stay compatible.
+antd-client = { git = "https://github.com/WithAutonomi/ant-sdk.git", rev = "2ed9b14bda42fbdc604a173cc1af27be0964908f", package = "antd-client" }
 
 # HTTP server
 axum = { version = "0.7", features = ["macros"] }
