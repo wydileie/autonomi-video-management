@@ -68,10 +68,14 @@ RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
     "1080p": (1920, 1080, 5000, 192),
 }
 
+VideoDimensions = tuple[int, int]
+
 # Keep media chunks comfortably below Autonomi's multi-MB chunk boundary for
 # reliable local-devnet storage and playback. FFmpeg is configured below to
 # force keyframes at this cadence so these are real segment boundaries.
 HLS_SEGMENT_DURATION = float(os.environ.get("HLS_SEGMENT_DURATION", "1"))
+FFMPEG_THREADS = int(os.environ.get("FFMPEG_THREADS", "2"))
+FFMPEG_FILTER_THREADS = int(os.environ.get("FFMPEG_FILTER_THREADS", "1"))
 UPLOAD_QUOTE_TRANSCODED_OVERHEAD = float(
     os.environ.get("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", "1.08")
 )
@@ -94,6 +98,12 @@ if ANTD_PAYMENT_MODE not in VALID_PAYMENT_MODES:
 
 if HLS_SEGMENT_DURATION <= 0:
     raise RuntimeError("HLS_SEGMENT_DURATION must be greater than zero")
+
+if FFMPEG_THREADS < 1:
+    raise RuntimeError("FFMPEG_THREADS must be at least 1")
+
+if FFMPEG_FILTER_THREADS < 1:
+    raise RuntimeError("FFMPEG_FILTER_THREADS must be at least 1")
 
 if UPLOAD_QUOTE_TRANSCODED_OVERHEAD < 1:
     raise RuntimeError("UPLOAD_QUOTE_TRANSCODED_OVERHEAD must be at least 1")
@@ -463,7 +473,36 @@ async def _quote_data_size(
     }
 
 
-async def _build_upload_quote(duration_seconds: float, resolutions: list[str]) -> dict:
+def _target_dimensions_for_source(
+    preset_width: int,
+    preset_height: int,
+    source_dimensions: VideoDimensions | None,
+) -> VideoDimensions:
+    """Orient a landscape preset to match the source display orientation."""
+    long_edge = max(preset_width, preset_height)
+    short_edge = min(preset_width, preset_height)
+    if not source_dimensions:
+        return preset_width, preset_height
+
+    source_width, source_height = source_dimensions
+    if source_height > source_width:
+        return short_edge, long_edge
+    if source_width > source_height:
+        return long_edge, short_edge
+    return preset_width, preset_height
+
+
+def _request_source_dimensions(request: "UploadQuoteRequest") -> VideoDimensions | None:
+    if request.source_width and request.source_height:
+        return request.source_width, request.source_height
+    return None
+
+
+async def _build_upload_quote(
+    duration_seconds: float,
+    resolutions: list[str],
+    source_dimensions: VideoDimensions | None = None,
+) -> dict:
     if duration_seconds <= 0:
         raise HTTPException(400, "duration_seconds must be greater than zero")
 
@@ -482,7 +521,12 @@ async def _build_upload_quote(duration_seconds: float, resolutions: list[str]) -
         any_sampled = False
 
         for resolution in selected:
-            width, height, video_kbps, audio_kbps = RESOLUTION_PRESETS[resolution]
+            preset_width, preset_height, video_kbps, audio_kbps = RESOLUTION_PRESETS[resolution]
+            width, height = _target_dimensions_for_source(
+                preset_width,
+                preset_height,
+                source_dimensions,
+            )
             full_segments = int(duration_seconds // HLS_SEGMENT_DURATION)
             remainder = duration_seconds - (full_segments * HLS_SEGMENT_DURATION)
             if remainder < 0.01:
@@ -818,6 +862,8 @@ class VideoOut(BaseModel):
 class UploadQuoteRequest(BaseModel):
     duration_seconds: float
     resolutions: list[str]
+    source_width: int | None = None
+    source_height: int | None = None
 
 
 class UploadQuoteVariantOut(BaseModel):
@@ -882,7 +928,11 @@ async def get_catalog():
 @app.post("/videos/upload/quote", response_model=UploadQuoteOut)
 async def quote_video_upload(request: UploadQuoteRequest):
     """Return an Autonomi price quote for the selected transcoded renditions."""
-    return await _build_upload_quote(request.duration_seconds, request.resolutions)
+    return await _build_upload_quote(
+        request.duration_seconds,
+        request.resolutions,
+        _request_source_dimensions(request),
+    )
 
 
 @app.post("/videos/upload", response_model=VideoOut)
@@ -1202,9 +1252,15 @@ async def _process_video(
             raise RuntimeError(f"Video row {video_id} disappeared before processing")
 
         total_duration = await _probe_duration(src_path)
+        source_dimensions = await _probe_video_dimensions(src_path)
 
         for res in resolutions:
-            width, height, vbitrate, abitrate = RESOLUTION_PRESETS[res]
+            preset_width, preset_height, vbitrate, abitrate = RESOLUTION_PRESETS[res]
+            width, height = _target_dimensions_for_source(
+                preset_width,
+                preset_height,
+                source_dimensions,
+            )
             seg_dir = job_dir / res
             seg_dir.mkdir(exist_ok=True)
 
@@ -1437,12 +1493,18 @@ async def _run_ffmpeg(
     segment_pattern = str(seg_dir / "seg_%05d.ts")
     segment_time = f"{HLS_SEGMENT_DURATION:g}"
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg",
+        "-hide_banner",
+        "-nostats",
+        "-loglevel", "warning",
+        "-y",
+        "-filter_threads", str(FFMPEG_FILTER_THREADS),
         "-i", str(src),
         "-map", "0:v:0",
         "-map", "0:a?",
         "-sn",
         "-c:v", "libx264",
+        "-threads", str(FFMPEG_THREADS),
         "-preset", "veryfast",
         "-profile:v", "high",
         "-pix_fmt", "yuv420p",
@@ -1469,7 +1531,15 @@ async def _run_ffmpeg(
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed: {stderr.decode()[-2000:]}")
+        detail = stderr.decode(errors="replace").strip()[-2000:]
+        if proc.returncode == -9:
+            detail = (
+                "FFmpeg was killed by signal 9, which usually means the "
+                "container ran out of memory while transcoding. "
+                f"FFMPEG_THREADS={FFMPEG_THREADS}, "
+                f"FFMPEG_FILTER_THREADS={FFMPEG_FILTER_THREADS}. {detail}"
+            )
+        raise RuntimeError(f"FFmpeg failed with exit code {proc.returncode}: {detail}")
 
 
 async def _probe_duration(src: Path) -> float | None:
@@ -1488,6 +1558,48 @@ async def _probe_duration(src: Path) -> float | None:
         return float(stdout.decode().strip())
     except ValueError:
         return None
+
+
+def _stream_rotation_degrees(stream: dict) -> int:
+    tags = stream.get("tags") or {}
+    rotation = tags.get("rotate")
+    if rotation is None:
+        for side_data in stream.get("side_data_list") or []:
+            if "rotation" in side_data:
+                rotation = side_data["rotation"]
+                break
+
+    try:
+        return int(float(str(rotation))) % 360
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _probe_video_dimensions(src: Path) -> VideoDimensions | None:
+    """Use ffprobe to get the source's display dimensions."""
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-select_streams", "v:0",
+        "-show_streams",
+        "-of", "json",
+        str(src),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    stdout, _ = await proc.communicate()
+
+    try:
+        data = json.loads(stdout.decode())
+        stream = (data.get("streams") or [{}])[0]
+        width = int(stream["width"])
+        height = int(stream["height"])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+    if _stream_rotation_degrees(stream) in {90, 270}:
+        return height, width
+    return width, height
 
 
 async def _set_status(video_id: str, status: str, error_message: str | None = None):

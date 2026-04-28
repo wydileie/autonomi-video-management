@@ -166,6 +166,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
+| `FFMPEG_THREADS` | No | Maximum FFmpeg/x264 encoder threads. Default: `2` to reduce memory use for high-resolution portrait transcodes |
+| `FFMPEG_FILTER_THREADS` | No | Maximum FFmpeg filter graph threads. Default: `1` |
 | `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | No | Seconds before an unapproved final quote expires and local transcoded files are deleted. Default: `14400` |
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | No | Seconds between cleanup scans for expired final quotes. Default: `300` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
@@ -238,7 +240,7 @@ curl -X POST http://localhost:8000/videos/upload \
 
 ## Resolution presets
 
-| Label | Width × Height | Video bitrate | Audio bitrate |
+| Label | Landscape width × height | Video bitrate | Audio bitrate |
 |---|---|---|---|
 | `8k` | 7,680 × 4,320 | 45,000 kbps | 320 kbps |
 | `4k` | 3,840 × 2,160 | 16,000 kbps | 256 kbps |
@@ -246,6 +248,10 @@ curl -X POST http://localhost:8000/videos/upload \
 | `480p` | 854 × 480 | 1,000 kbps | 128 kbps |
 | `720p` | 1,280 × 720 | 2,500 kbps | 128 kbps |
 | `1080p` | 1,920 × 1,080 | 5,000 kbps | 192 kbps |
+
+Portrait sources use the same long-edge target for each label with width and
+height swapped. For example, a vertical `4k` rendition is encoded as
+2,160 × 3,840 rather than padded into a 3,840 × 2,160 landscape frame.
 
 HLS segment duration is configurable with `HLS_SEGMENT_DURATION`; the local
 default is `1` second to keep Autonomi objects small and reliable on devnets.

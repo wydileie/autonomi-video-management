@@ -77,6 +77,14 @@ function optionFitsSource(option, meta) {
   return longEdge >= option.width * 0.92 || shortEdge >= option.height * 0.92;
 }
 
+function targetDimensionsForMeta(option, meta) {
+  const longEdge = Math.max(option.width, option.height);
+  const shortEdge = Math.min(option.width, option.height);
+  if (meta?.height > meta?.width) return { width: shortEdge, height: longEdge };
+  if (meta?.width > meta?.height) return { width: longEdge, height: shortEdge };
+  return { width: option.width, height: option.height };
+}
+
 function suggestedSelection(meta) {
   if (!meta?.width || !meta?.height) return ["720p"];
   return RESOLUTION_OPTIONS
@@ -201,6 +209,8 @@ function UploadPanel({ onUploaded }) {
         const res = await axios.post(`${API}/videos/upload/quote`, {
           duration_seconds: meta.duration,
           resolutions,
+          source_width: meta.width,
+          source_height: meta.height,
         }, { signal: controller.signal });
         setQuote({ loading: false, error: "", data: res.data });
       } catch (err) {
@@ -217,7 +227,7 @@ function UploadPanel({ onUploaded }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [file, meta?.duration, selected]);
+  }, [file, meta?.duration, meta?.width, meta?.height, selected]);
 
   const onDrop = (event) => {
     event.preventDefault();
@@ -382,6 +392,7 @@ function UploadPanel({ onUploaded }) {
           {RESOLUTION_OPTIONS.map((option) => {
             const isCurrent = currentProfile?.value === option.value;
             const disabledBySource = file && !optionFitsSource(option, meta);
+            const targetDimensions = targetDimensionsForMeta(option, meta);
             return (
               <button
                 key={option.value}
@@ -391,7 +402,7 @@ function UploadPanel({ onUploaded }) {
                 disabled={uploading || disabledBySource}
               >
                 <span className="resolution-label">{option.label}</span>
-                <span>{option.width} x {option.height}</span>
+                <span>{targetDimensions.width} x {targetDimensions.height}</span>
                 <span>{option.bitrate} · {option.note}</span>
                 {isCurrent && <strong>Current source profile</strong>}
               </button>
