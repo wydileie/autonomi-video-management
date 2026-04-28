@@ -604,14 +604,21 @@ main {
 }
 
 .player-shell {
+  align-items: center;
   background: #050706;
   border-radius: 24px;
+  display: flex;
+  height: clamp(320px, 72vh, 760px);
+  height: clamp(320px, 72dvh, 760px);
+  justify-content: center;
   margin-top: 16px;
   overflow: hidden;
 }
 
 .player {
   display: block;
+  height: 100%;
+  object-fit: contain;
   width: 100%;
 }
 
@@ -688,5 +695,11 @@ main {
 
   .resolution-grid {
     grid-template-columns: 1fr;
+  }
+
+  .player-shell {
+    border-radius: 18px;
+    height: clamp(260px, 64vh, 620px);
+    height: clamp(260px, 64dvh, 620px);
   }
 }
