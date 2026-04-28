@@ -30,7 +30,7 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `file` | file | Video file (any format FFmpeg supports) |
 | `title` | string | Display title |
 | `description` | string | Optional description |
-| `resolutions` | string | Comma-separated: `360p`, `480p`, `720p`, `1080p` |
+| `resolutions` | string | Comma-separated: `8k`, `4k`, `1080p`, `720p`, `480p`, `360p` |
 
 ## Configuration (environment variables)
 
@@ -43,7 +43,11 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `ADMIN_DB_PASS` | Database password |
 | `ANTD_URL` | antd daemon REST URL (default: `http://localhost:8082`) |
 | `ANTD_PAYMENT_MODE` | Autonomi payment mode for segment uploads: `auto`, `merkle`, or `single` (default: `auto`) |
+| `ANTD_UPLOAD_VERIFY` | Read each uploaded segment back before publishing a ready manifest (default: `true`) |
+| `ANTD_UPLOAD_RETRIES` | Upload/read-back attempts per segment (default: `3`) |
+| `ANTD_UPLOAD_TIMEOUT_SECONDS` | Per upload/read-back timeout before retrying (default: `120`) |
 | `ANTD_APPROVE_ON_STARTUP` | Run one-time wallet spend approval during startup (default: `true`) |
+| `HLS_SEGMENT_DURATION` | Forced-keyframe segment length in seconds (default: `1`) |
 | `CATALOG_ADDRESS` | Optional bootstrap address for an existing network-hosted catalog |
 | `CATALOG_STATE_PATH` | Local bookmark file for the latest catalog address |
 | `UPLOAD_TEMP_DIR` | Temporary directory for uploads and segments (default: `/tmp/video_uploads`) |
@@ -54,7 +58,7 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 - `uvicorn` — ASGI server
 - `asyncpg` — Async PostgreSQL driver
 - `aiofiles` — Async file I/O
-- `antd[rest]` — Autonomi SDK (Python); talks to the `antd` daemon
+- `httpx` — talks to the `antd` daemon REST API
 - `python-multipart` — File upload support
 - FFmpeg — system binary; must be in `PATH`
 
@@ -75,6 +79,11 @@ uvicorn src.admin_service:app --reload --port 8000
 ## Processing pipeline detail
 
 ```
+POST /videos/upload/quote
+  → estimate transcoded HLS bytes for the selected resolutions
+  → ask antd for current /v1/data/cost storage quotes
+  → return total storage/gas estimate before upload starts
+
 POST /videos/upload
   → save file to /tmp/video_uploads/{video_id}/original_<name>
   → INSERT into videos (status=pending)

@@ -4,7 +4,7 @@ Single-page React application for uploading videos, monitoring processing status
 
 ## Features
 
-- **Upload panel** — drag or select a video file, enter a title, pick one or more resolution tiers (360p / 480p / 720p / 1080p), and submit. Shows a real upload progress bar and then a "processing" indicator while FFmpeg + Autonomi upload runs server-side.
+- **Upload panel** — drag/drop or select a video file, inspect its source resolution in-browser, pick one or more tiers (8K / 4K / 1080P / 720p / 480P / 360P), and submit. Shows a real upload progress bar and then a "processing" indicator while FFmpeg + Autonomi upload runs server-side.
 - **Video library** — lists all videos with status badges (`pending`, `processing`, `ready`, `error`). Auto-polls every 5 seconds while any video is still processing.
 - **Inline player** — click a video row to expand it, choose a resolution, and play directly in the browser using [hls.js](https://github.com/video-dev/hls.js). The player streams from the Rust streaming service which proxies segments from the Autonomi network.
 
@@ -28,7 +28,15 @@ npm start
 # Opens http://localhost:3000
 ```
 
-The admin API and streaming service must already be running (or use `docker compose up python_admin rust_stream db antd`).
+The admin API and streaming service must already be running. For the full local
+stack, use:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  up --build
+```
 
 ## Build
 

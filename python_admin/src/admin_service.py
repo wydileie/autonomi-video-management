@@ -14,6 +14,7 @@ Flow:
 import asyncio
 import json
 import logging
+import math
 import os
 import shutil
 import uuid
@@ -22,10 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import asyncpg
-from antd import AsyncAntdClient, AntdError
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from .antd_client import AntdError, AsyncAntdClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +38,13 @@ DB_DSN = (
 )
 ANTD_URL = os.environ.get("ANTD_URL", "http://localhost:8082")
 ANTD_PAYMENT_MODE = os.environ.get("ANTD_PAYMENT_MODE", "auto").strip().lower()
+ANTD_UPLOAD_VERIFY = os.environ.get("ANTD_UPLOAD_VERIFY", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+ANTD_UPLOAD_RETRIES = int(os.environ.get("ANTD_UPLOAD_RETRIES", "3"))
+ANTD_UPLOAD_TIMEOUT_SECONDS = float(os.environ.get("ANTD_UPLOAD_TIMEOUT_SECONDS", "120"))
 ANTD_APPROVE_ON_STARTUP = os.environ.get("ANTD_APPROVE_ON_STARTUP", "true").lower() not in {
     "0",
     "false",
@@ -48,15 +57,26 @@ CATALOG_BOOTSTRAP_ADDRESS = os.environ.get("CATALOG_ADDRESS", "").strip()
 CATALOG_CONTENT_TYPE = "application/vnd.autonomi.video.catalog+json;v=1"
 VIDEO_MANIFEST_CONTENT_TYPE = "application/vnd.autonomi.video.manifest+json;v=1"
 
-# Resolution presets: name → (width, height, video_kbps, audio_kbps)
+# Resolution presets: name -> (width, height, video_kbps, audio_kbps)
 RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
+    "8k":    (7680, 4320, 45000, 320),
+    "4k":    (3840, 2160, 16000, 256),
     "360p":  (640,  360,   500, 96),
     "480p":  (854,  480,  1000, 128),
     "720p":  (1280, 720,  2500, 128),
     "1080p": (1920, 1080, 5000, 192),
 }
 
-HLS_SEGMENT_DURATION = 10  # seconds per .ts chunk
+# Keep media chunks comfortably below Autonomi's multi-MB chunk boundary for
+# reliable local-devnet storage and playback. FFmpeg is configured below to
+# force keyframes at this cadence so these are real segment boundaries.
+HLS_SEGMENT_DURATION = float(os.environ.get("HLS_SEGMENT_DURATION", "1"))
+UPLOAD_QUOTE_TRANSCODED_OVERHEAD = float(
+    os.environ.get("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", "1.08")
+)
+UPLOAD_QUOTE_MAX_SAMPLE_BYTES = int(
+    os.environ.get("UPLOAD_QUOTE_MAX_SAMPLE_BYTES", str(16 * 1024 * 1024))
+)
 VALID_PAYMENT_MODES = {"auto", "merkle", "single"}
 
 if ANTD_PAYMENT_MODE not in VALID_PAYMENT_MODES:
@@ -64,6 +84,21 @@ if ANTD_PAYMENT_MODE not in VALID_PAYMENT_MODES:
         f"Invalid ANTD_PAYMENT_MODE={ANTD_PAYMENT_MODE!r}; "
         f"choose one of {sorted(VALID_PAYMENT_MODES)}"
     )
+
+if HLS_SEGMENT_DURATION <= 0:
+    raise RuntimeError("HLS_SEGMENT_DURATION must be greater than zero")
+
+if UPLOAD_QUOTE_TRANSCODED_OVERHEAD < 1:
+    raise RuntimeError("UPLOAD_QUOTE_TRANSCODED_OVERHEAD must be at least 1")
+
+if UPLOAD_QUOTE_MAX_SAMPLE_BYTES < 1:
+    raise RuntimeError("UPLOAD_QUOTE_MAX_SAMPLE_BYTES must be at least 1")
+
+if ANTD_UPLOAD_RETRIES < 1:
+    raise RuntimeError("ANTD_UPLOAD_RETRIES must be at least 1")
+
+if ANTD_UPLOAD_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -232,8 +267,216 @@ async def _load_catalog(client: AsyncAntdClient) -> tuple[dict, str | None]:
 
 async def _store_json_public(client: AsyncAntdClient, payload: dict) -> str:
     data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    result = await client.data_put_public(data, payment_mode=ANTD_PAYMENT_MODE)
+    result = await _put_public_verified(client, data, label="json document")
     return result.address
+
+
+async def _put_public_verified(client: AsyncAntdClient, data: bytes, label: str):
+    """Store bytes and optionally verify the address can reconstruct them."""
+    last_error: Exception | None = None
+
+    for attempt in range(1, ANTD_UPLOAD_RETRIES + 1):
+        try:
+            log.info(
+                "Uploading %s (%d bytes), attempt %d/%d",
+                label,
+                len(data),
+                attempt,
+                ANTD_UPLOAD_RETRIES,
+            )
+            result = await asyncio.wait_for(
+                client.data_put_public(data, payment_mode=ANTD_PAYMENT_MODE),
+                timeout=ANTD_UPLOAD_TIMEOUT_SECONDS,
+            )
+            if ANTD_UPLOAD_VERIFY:
+                retrieved = await asyncio.wait_for(
+                    client.data_get_public(result.address),
+                    timeout=ANTD_UPLOAD_TIMEOUT_SECONDS,
+                )
+                if retrieved != data:
+                    raise RuntimeError(
+                        f"Autonomi verification mismatch for {label}: "
+                        f"stored {len(data)} bytes, retrieved {len(retrieved)} bytes"
+                    )
+            return result
+        except Exception as exc:
+            last_error = exc
+            if attempt == ANTD_UPLOAD_RETRIES:
+                break
+            delay = min(2 ** (attempt - 1), 8)
+            log.warning(
+                "Autonomi upload verification failed for %s on attempt %d/%d: %s; retrying in %ss",
+                label,
+                attempt,
+                ANTD_UPLOAD_RETRIES,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Autonomi upload failed verification for {label} "
+        f"after {ANTD_UPLOAD_RETRIES} attempt(s): {last_error}"
+    )
+
+
+def _parse_cost_value(value: str | None) -> int:
+    try:
+        return int(value or "0")
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ceil_ratio(value: int, numerator: int, denominator: int) -> int:
+    if value <= 0 or numerator <= 0:
+        return 0
+    return (value * numerator + denominator - 1) // denominator
+
+
+def _estimate_transcoded_bytes(seconds: float, video_kbps: int, audio_kbps: int) -> int:
+    if seconds <= 0:
+        return 0
+    bitrate_bps = (video_kbps + audio_kbps) * 1000
+    media_bytes = seconds * bitrate_bps / 8
+    return max(1, math.ceil(media_bytes * UPLOAD_QUOTE_TRANSCODED_OVERHEAD))
+
+
+async def _quote_data_size(
+    client: AsyncAntdClient,
+    byte_size: int,
+    cache: dict[int, dict],
+) -> dict:
+    """Ask antd for a storage quote for byte_size, sampling if unusually large."""
+    if byte_size <= 0:
+        return {
+            "sampled": False,
+            "sample_bytes": 0,
+            "storage_cost_atto": 0,
+            "estimated_gas_cost_wei": 0,
+            "chunk_count": 0,
+            "payment_mode": ANTD_PAYMENT_MODE,
+        }
+
+    sample_bytes = min(byte_size, UPLOAD_QUOTE_MAX_SAMPLE_BYTES)
+    if sample_bytes not in cache:
+        estimate = await client.data_cost(os.urandom(sample_bytes))
+        cache[sample_bytes] = {
+            "storage_cost_atto": _parse_cost_value(estimate.cost),
+            "estimated_gas_cost_wei": _parse_cost_value(estimate.estimated_gas_cost_wei),
+            "chunk_count": estimate.chunk_count,
+            "payment_mode": estimate.payment_mode or ANTD_PAYMENT_MODE,
+        }
+
+    quoted = cache[sample_bytes]
+    if sample_bytes == byte_size:
+        return {
+            **quoted,
+            "sampled": False,
+            "sample_bytes": sample_bytes,
+        }
+
+    return {
+        "sampled": True,
+        "sample_bytes": sample_bytes,
+        "storage_cost_atto": _ceil_ratio(quoted["storage_cost_atto"], byte_size, sample_bytes),
+        "estimated_gas_cost_wei": _ceil_ratio(quoted["estimated_gas_cost_wei"], byte_size, sample_bytes),
+        "chunk_count": max(1, _ceil_ratio(quoted["chunk_count"], byte_size, sample_bytes)),
+        "payment_mode": quoted["payment_mode"],
+    }
+
+
+async def _build_upload_quote(duration_seconds: float, resolutions: list[str]) -> dict:
+    if duration_seconds <= 0:
+        raise HTTPException(400, "duration_seconds must be greater than zero")
+
+    selected = [resolution for resolution in resolutions if resolution in RESOLUTION_PRESETS]
+    if not selected:
+        raise HTTPException(400, f"No valid resolutions. Choose from: {list(RESOLUTION_PRESETS)}")
+
+    client = AsyncAntdClient(base_url=ANTD_URL, timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS, 60))
+    quote_cache: dict[int, dict] = {}
+    try:
+        variants = []
+        total_storage_cost = 0
+        total_gas_cost = 0
+        total_bytes = 0
+        total_segments = 0
+        any_sampled = False
+
+        for resolution in selected:
+            width, height, video_kbps, audio_kbps = RESOLUTION_PRESETS[resolution]
+            full_segments = int(duration_seconds // HLS_SEGMENT_DURATION)
+            remainder = duration_seconds - (full_segments * HLS_SEGMENT_DURATION)
+            if remainder < 0.01:
+                remainder = 0
+
+            segment_count = full_segments + (1 if remainder > 0 else 0)
+            full_segment_bytes = _estimate_transcoded_bytes(
+                min(HLS_SEGMENT_DURATION, duration_seconds),
+                video_kbps,
+                audio_kbps,
+            )
+            full_quote = await _quote_data_size(client, full_segment_bytes, quote_cache)
+
+            variant_storage_cost = full_quote["storage_cost_atto"] * full_segments
+            variant_gas_cost = full_quote["estimated_gas_cost_wei"] * full_segments
+            variant_bytes = full_segment_bytes * full_segments
+            variant_chunks = full_quote["chunk_count"] * full_segments
+            any_sampled = any_sampled or full_quote["sampled"]
+
+            if remainder > 0:
+                final_segment_bytes = _estimate_transcoded_bytes(
+                    remainder,
+                    video_kbps,
+                    audio_kbps,
+                )
+                final_quote = await _quote_data_size(client, final_segment_bytes, quote_cache)
+                variant_storage_cost += final_quote["storage_cost_atto"]
+                variant_gas_cost += final_quote["estimated_gas_cost_wei"]
+                variant_bytes += final_segment_bytes
+                variant_chunks += final_quote["chunk_count"]
+                any_sampled = any_sampled or final_quote["sampled"]
+
+            variants.append({
+                "resolution": resolution,
+                "width": width,
+                "height": height,
+                "segment_count": segment_count,
+                "estimated_bytes": variant_bytes,
+                "chunk_count": variant_chunks,
+                "storage_cost_atto": str(variant_storage_cost),
+                "estimated_gas_cost_wei": str(variant_gas_cost),
+                "payment_mode": full_quote["payment_mode"],
+            })
+            total_storage_cost += variant_storage_cost
+            total_gas_cost += variant_gas_cost
+            total_bytes += variant_bytes
+            total_segments += segment_count
+
+        manifest_bytes = 4096 + (len(selected) * 1024) + (total_segments * 220)
+        catalog_bytes = 2048 + (len(selected) * 512)
+        metadata_quote = await _quote_data_size(client, manifest_bytes + catalog_bytes, quote_cache)
+        total_storage_cost += metadata_quote["storage_cost_atto"]
+        total_gas_cost += metadata_quote["estimated_gas_cost_wei"]
+        total_bytes += manifest_bytes + catalog_bytes
+        any_sampled = any_sampled or metadata_quote["sampled"]
+
+        return {
+            "duration_seconds": duration_seconds,
+            "segment_duration": float(HLS_SEGMENT_DURATION),
+            "payment_mode": ANTD_PAYMENT_MODE,
+            "estimated_bytes": total_bytes,
+            "segment_count": total_segments,
+            "storage_cost_atto": str(total_storage_cost),
+            "estimated_gas_cost_wei": str(total_gas_cost),
+            "metadata_bytes": manifest_bytes + catalog_bytes,
+            "sampled": any_sampled,
+            "variants": variants,
+        }
+    except AntdError as exc:
+        raise HTTPException(503, f"Could not get Autonomi price quote: {exc}") from exc
+    finally:
+        await client.close()
 
 
 def _video_catalog_entry(manifest: dict, manifest_address: str) -> dict:
@@ -278,7 +521,10 @@ async def _publish_video_to_catalog(client: AsyncAntdClient, manifest: dict) -> 
 
 async def _remove_video_from_catalog(video_id: str) -> str | None:
     async with catalog_lock:
-        client = AsyncAntdClient(base_url=ANTD_URL, timeout=300)
+        client = AsyncAntdClient(
+            base_url=ANTD_URL,
+            timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
+        )
         try:
             catalog, current_address = await _load_catalog(client)
             videos = [
@@ -341,7 +587,7 @@ def _manifest_to_video_out(manifest: dict, manifest_address: str | None = None) 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Autonomi Video Admin", lifespan=lifespan)
+app = FastAPI(title="AutVid Admin", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -381,6 +627,36 @@ class VideoOut(BaseModel):
     variants: list[VariantOut] = []
 
 
+class UploadQuoteRequest(BaseModel):
+    duration_seconds: float
+    resolutions: list[str]
+
+
+class UploadQuoteVariantOut(BaseModel):
+    resolution: str
+    width: int
+    height: int
+    segment_count: int
+    estimated_bytes: int
+    chunk_count: int
+    storage_cost_atto: str
+    estimated_gas_cost_wei: str
+    payment_mode: str
+
+
+class UploadQuoteOut(BaseModel):
+    duration_seconds: float
+    segment_duration: float
+    payment_mode: str
+    estimated_bytes: int
+    segment_count: int
+    storage_cost_atto: str
+    estimated_gas_cost_wei: str
+    metadata_bytes: int
+    sampled: bool
+    variants: list[UploadQuoteVariantOut]
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -414,13 +690,19 @@ async def get_catalog():
     }
 
 
+@app.post("/videos/upload/quote", response_model=UploadQuoteOut)
+async def quote_video_upload(request: UploadQuoteRequest):
+    """Return an Autonomi price quote for the selected transcoded renditions."""
+    return await _build_upload_quote(request.duration_seconds, request.resolutions)
+
+
 @app.post("/videos/upload", response_model=VideoOut)
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(...),
     description: str = Form(""),
-    resolutions: str = Form("720p"),  # comma-separated, e.g. "480p,720p,1080p"
+    resolutions: str = Form("720p"),  # comma-separated, e.g. "480p,720p,1080p,4k"
 ):
     """Accept a video file and queue it for transcoding + Autonomi upload."""
     selected = [r.strip() for r in resolutions.split(",") if r.strip() in RESOLUTION_PRESETS]
@@ -669,7 +951,10 @@ async def _process_video(
             "variants": [],
         }
 
-        client = AsyncAntdClient(base_url=ANTD_URL, timeout=300)
+        client = AsyncAntdClient(
+            base_url=ANTD_URL,
+            timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
+        )
         try:
             for res in resolutions:
                 width, height, vbitrate, abitrate = RESOLUTION_PRESETS[res]
@@ -713,12 +998,13 @@ async def _process_video(
                     data = ts_path.read_bytes()
                     duration = await _probe_duration(ts_path) or float(HLS_SEGMENT_DURATION)
                     try:
-                        result = await client.data_put_public(
+                        result = await _put_public_verified(
+                            client,
                             data,
-                            payment_mode=ANTD_PAYMENT_MODE,
+                            label=f"{video_id}/{res}/segment-{idx:05d}",
                         )
                         address = result.address
-                    except AntdError as e:
+                    except Exception as e:
                         raise RuntimeError(f"Autonomi upload failed for segment {idx}: {e}") from e
 
                     async with pool.acquire() as conn:
@@ -803,21 +1089,29 @@ async def _run_ffmpeg(
 ):
     """Run FFmpeg to produce HLS .ts segments."""
     segment_pattern = str(seg_dir / "seg_%05d.ts")
+    segment_time = f"{HLS_SEGMENT_DURATION:g}"
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src),
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-sn",
         "-c:v", "libx264",
-        "-profile:v", "main",
-        "-level", "3.1",
+        "-preset", "veryfast",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
         "-b:v", f"{vbitrate}k",
         "-maxrate", f"{int(vbitrate * 1.5)}k",
         "-bufsize", f"{vbitrate * 2}k",
+        "-force_key_frames", f"expr:gte(t,n_forced*{segment_time})",
+        "-sc_threshold", "0",
         "-c:a", "aac",
         "-b:a", f"{abitrate}k",
         "-ar", "44100",
         "-f", "segment",
-        "-segment_time", str(HLS_SEGMENT_DURATION),
+        "-segment_time", segment_time,
+        "-segment_time_delta", "0.05",
         "-segment_format", "mpegts",
         "-reset_timestamps", "1",
         segment_pattern,

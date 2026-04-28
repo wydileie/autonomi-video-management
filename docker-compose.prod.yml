@@ -1,0 +1,45 @@
+services:
+  antd:
+    build:
+      context: ./antd_service
+    container_name: antd_daemon
+    environment:
+      AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY}"
+      ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
+      ANTD_PEERS: "${PROD_AUTONOMI_PEERS:-}"
+      ANTD_REST_ADDR: "0.0.0.0:8082"
+      ANTD_GRPC_ADDR: "0.0.0.0:50051"
+      ANTD_CORS: "true"
+      ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
+      ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
+      ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
+      EVM_RPC_URL: "${PROD_EVM_RPC_URL:-}"
+      EVM_PAYMENT_TOKEN_ADDRESS: "${PROD_EVM_PAYMENT_TOKEN_ADDRESS:-}"
+      EVM_PAYMENT_VAULT_ADDRESS: "${PROD_EVM_PAYMENT_VAULT_ADDRESS:-}"
+    ports:
+      - "${ANTD_REST_PORT:-8082}:8082"
+      - "${ANTD_GRPC_PORT:-50051}:50051"
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  python_admin:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      ANTD_URL: "http://antd:8082"
+      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+
+  rust_stream:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      ANTD_URL: "http://antd:8082"

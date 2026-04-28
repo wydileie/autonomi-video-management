@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres-init/:/docker-entrypoint-initdb.d/:ro
+      - ${HOST_WORKSPACE_DIR:-.}/postgres-init/:/docker-entrypoint-initdb.d/:ro
     networks:
       - appnet
     healthcheck:
@@ -18,35 +18,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # 2) antd daemon — Autonomi network gateway (REST :8082, gRPC :50051)
-  antd:
-    build:
-      context: ./antd_service
-    container_name: antd_daemon
-    environment:
-      AUTONOMI_WALLET_KEY: "${AUTONOMI_WALLET_KEY}"
-      ANTD_NETWORK: "${ANTD_NETWORK:-default}"
-      ANTD_PEERS: "${AUTONOMI_PEERS:-}"
-      ANTD_REST_ADDR: "0.0.0.0:8082"
-      ANTD_GRPC_ADDR: "0.0.0.0:50051"
-      ANTD_CORS: "true"
-      EVM_RPC_URL: "${EVM_RPC_URL:-}"
-      EVM_PAYMENT_TOKEN_ADDRESS: "${EVM_PAYMENT_TOKEN_ADDRESS:-}"
-      EVM_PAYMENT_VAULT_ADDRESS: "${EVM_PAYMENT_VAULT_ADDRESS:-}"
-    networks:
-      - appnet
-    expose:
-      - "8082"
-      - "50051"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-    restart: unless-stopped
-
-  # 3) Python Admin — video ingestion, FFmpeg transcoding, metadata API
+  # 2) Python Admin — video ingestion, FFmpeg transcoding, metadata API
   python_admin:
     build: ./python_admin
     container_name: python_admin
@@ -56,9 +28,13 @@ services:
       ADMIN_DB_NAME: "${ADMIN_DB}"
       ADMIN_DB_USER: "${ADMIN_USER}"
       ADMIN_DB_PASS: "${ADMIN_PASS}"
-      ANTD_URL: "http://antd:8082"
+      ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_PAYMENT_MODE: "${ANTD_PAYMENT_MODE:-auto}"
+      ANTD_UPLOAD_VERIFY: "${ANTD_UPLOAD_VERIFY:-true}"
+      ANTD_UPLOAD_RETRIES: "${ANTD_UPLOAD_RETRIES:-3}"
+      ANTD_UPLOAD_TIMEOUT_SECONDS: "${ANTD_UPLOAD_TIMEOUT_SECONDS:-120}"
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+      HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
       RUST_STREAM_URL: "http://rust_stream:8081"
@@ -66,36 +42,31 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      antd:
-        condition: service_healthy
     networks:
       - appnet
-    expose:
-      - "8000"
+    ports:
+      - "${ADMIN_HTTP_PORT:-8000}:8000"
     volumes:
       - video_tmp:/tmp/video_uploads
       - catalog_state:/catalog
 
-  # 4) Rust streaming — HLS manifest generation + Autonomi segment proxy
+  # 3) Rust streaming — HLS manifest generation + Autonomi segment proxy
   rust_stream:
     build: ./rust_stream
     container_name: rust_stream
     environment:
-      ANTD_URL: "http://antd:8082"
+      ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
       RUST_LOG: "info"
-    depends_on:
-      antd:
-        condition: service_healthy
     networks:
       - appnet
-    expose:
-      - "8081"
+    ports:
+      - "${STREAM_HTTP_PORT:-8081}:8081"
     volumes:
       - catalog_state:/catalog:ro
 
-  # 5) React front end
+  # 4) React front end
   react_frontend:
     build:
       context: ./react_frontend
@@ -111,7 +82,7 @@ services:
     expose:
       - "80"
 
-  # 6) Nginx Reverse Proxy
+  # 5) Nginx Reverse Proxy
   nginx:
     image: nginx:latest
     container_name: nginx_proxy
@@ -120,33 +91,14 @@ services:
       - rust_stream
       - react_frontend
     volumes:
-      - ./nginx/conf.d/:/etc/nginx/conf.d
-      - certbot-etc:/etc/letsencrypt
-      - certbot-var:/var/lib/letsencrypt
+      - ${HOST_WORKSPACE_DIR:-.}/nginx/conf.d/:/etc/nginx/conf.d
     ports:
-      - "80:80"
-      - "443:443"
+      - "${APP_HTTP_PORT:-80}:80"
     networks:
       - appnet
-
-  # 7) Certbot
-  certbot:
-    image: certbot/certbot:latest
-    container_name: certbot
-    volumes:
-      - certbot-etc:/etc/letsencrypt
-      - certbot-var:/var/lib/letsencrypt
-      - ./nginx/conf.d:/etc/nginx/conf.d
-    depends_on:
-      - nginx
-    networks:
-      - appnet
-    entrypoint: /bin/bash
 
 volumes:
   postgres_data:
-  certbot-etc:
-  certbot-var:
   video_tmp:
   catalog_state:
 

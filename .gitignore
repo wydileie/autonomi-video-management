@@ -169,8 +169,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Frontend dependencies
+node_modules/
+**/node_modules/
+
 autonomi-video-management.code-workspace
 .env
+.env.local
+.env.production
 
 *.devcontainer
 .devcontainer/**

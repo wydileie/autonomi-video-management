@@ -23,10 +23,10 @@ Browser
 ```
 
 ### Upload flow
-1. User selects a video file and desired resolutions (360p / 480p / 720p / 1080p).
+1. User drops or selects a video file; the browser detects its source resolution and offers 8K / 4K / 1080P / 720p / 480P / 360P renditions without upscaling by default.
 2. The React frontend POSTs the file to the Python admin service.
 3. Python admin saves it to a temp volume and queues a background job.
-4. FFmpeg transcodes the video into 10-second HLS `.ts` segments at each resolution.
+4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
 5. Every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
 6. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
 7. A catalog JSON containing the video list and manifest addresses is stored on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
@@ -48,9 +48,8 @@ Browser
 | `python_admin` | Python / FastAPI | 8000 | Video upload, FFmpeg transcoding, metadata API |
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
 | `react_frontend` | React | 80 | Upload UI, video library, HLS player |
-| `nginx` | — | 80, 443 | Reverse proxy, TLS termination |
+| `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
 | `db` | PostgreSQL 16 | 5432 | Upload job/status cache while videos are processing |
-| `certbot` | — | — | Let's Encrypt certificate renewal |
 
 ### URL routing (via Nginx)
 
@@ -98,45 +97,77 @@ See [`.devcontainer/README.md`](.devcontainer/README.md) for full details on the
 
 ## Running the application stack
 
-### Development (Docker Compose)
+The app is intended to run as a containerized stack. Use the base Compose file
+plus one overlay:
+
+- `docker-compose.local.yml` runs a self-contained local Autonomi devnet for testing.
+- `docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
+
+### Local Testnet
 
 ```bash
-cp .env.example .env
-# Edit .env — at minimum set AUTONOMI_WALLET_KEY for production,
-# or leave it blank for local devnet (wallet is auto-provisioned).
+cp .env.local.example .env.local
 
-docker compose up --build
+# If running from inside a devcontainer with OrbStack/Docker Desktop, set this
+# to the host-machine repo path, not /workspaces/...
+# HOST_WORKSPACE_DIR=/Users/you/path/to/autonomi-video-management
+
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  up --build
 ```
 
 Services are available at:
-- Frontend: `http://localhost` (via Nginx) or `http://localhost:3000` directly
+- Frontend: `http://localhost` via Nginx
 - Admin API: `http://localhost:8000`
 - Stream API: `http://localhost:8081`
+- Autonomi gateway: `http://localhost:8082`
 
 ### Production
 
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+```bash
+cp .env.production.example .env.production
+# Fill in PROD_AUTONOMI_WALLET_KEY and any network/payment settings.
+
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  up --build -d
+```
+
+For public deployments, put TLS, authentication, and domain routing in front of
+the stack with your preferred reverse proxy or hosting platform.
 
 ---
 
 ## Environment variables
 
-Copy `.env.example` to `.env` and fill in values.
+Start from `.env.local.example` for local testing or `.env.production.example`
+for deployment. `.env.example` contains the full variable set in one file.
 
 | Variable | Required | Description |
 |---|---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Yes | PostgreSQL root credentials |
 | `ADMIN_DB` / `ADMIN_USER` / `ADMIN_PASS` | Yes | App database credentials |
-| `DOMAIN` | Yes | Public domain name for TLS |
-| `AUTONOMI_WALLET_KEY` | For writes | Hex-encoded EVM private key (`0x…`) for Autonomi storage payments |
-| `ANTD_NETWORK` | No | `default` (mainnet) or `local` (devnet). Default: `default` |
+| `HOST_WORKSPACE_DIR` | Devcontainer/host Docker | Host-machine repo path used for Compose bind mounts |
+| `DOMAIN` | No | Domain label for external proxies or deployment tooling |
+| `APP_HTTP_PORT` / `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | No | Host ports for Nginx, admin API, and stream API |
+| `ANTD_REST_PORT` / `ANTD_GRPC_PORT` | No | Host ports for the Autonomi gateway |
+| `PROD_AUTONOMI_WALLET_KEY` | Production writes | Hex-encoded EVM private key (`0x...`) for Autonomi storage payments |
+| `PROD_ANTD_NETWORK` | Production | `default` unless you are targeting a custom network |
+| `PROD_AUTONOMI_PEERS` | Production/custom | Comma-separated bootstrap multiaddrs |
+| `ANT_DEVNET_PRESET` | Local only | Local devnet size: `minimal`, `small`, or `default` |
 | `ANTD_PAYMENT_MODE` | No | Upload payment strategy: `auto`, `merkle`, or `single`. Default: `auto` |
+| `ANTD_UPLOAD_VERIFY` | No | Read each uploaded segment back before publishing the manifest. Default: `true` |
+| `ANTD_UPLOAD_RETRIES` | No | Number of upload/verify attempts per segment. Default: `3` |
+| `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
+| `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
-| `AUTONOMI_PEERS` | No | Comma-separated bootstrap multiaddrs (empty = built-in mainnet peers) |
-| `EVM_RPC_URL` | Local only | EVM JSON-RPC endpoint (local devnet only) |
-| `EVM_PAYMENT_TOKEN_ADDRESS` | Local only | Payment token contract (local devnet only) |
-| `EVM_PAYMENT_VAULT_ADDRESS` | Local only | Payment vault contract (local devnet only) |
+| `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
+| `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |
+| `PROD_EVM_PAYMENT_VAULT_ADDRESS` | Production/custom | Payment vault contract for custom payment networks |
 
 ---
 
@@ -174,6 +205,7 @@ catalog manifest
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`) |
 | `GET` | `/videos` | List all videos |
 | `GET` | `/videos/{id}` | Get video with variants and segment addresses |
@@ -203,12 +235,15 @@ curl -X POST http://localhost:8000/videos/upload \
 
 | Label | Width × Height | Video bitrate | Audio bitrate |
 |---|---|---|---|
+| `8k` | 7,680 × 4,320 | 45,000 kbps | 320 kbps |
+| `4k` | 3,840 × 2,160 | 16,000 kbps | 256 kbps |
 | `360p` | 640 × 360 | 500 kbps | 96 kbps |
 | `480p` | 854 × 480 | 1,000 kbps | 128 kbps |
 | `720p` | 1,280 × 720 | 2,500 kbps | 128 kbps |
 | `1080p` | 1,920 × 1,080 | 5,000 kbps | 192 kbps |
 
-HLS segment duration: 10 seconds.
+HLS segment duration is configurable with `HLS_SEGMENT_DURATION`; the local
+default is `1` second to keep Autonomi objects small and reliable on devnets.
 
 ---
 
@@ -223,7 +258,10 @@ autonomi-video-management/
 │   ├── setup_claude.py         # Writes MCP server config to ~/.claude.json
 │   └── setup_codex.py          # Registers MCP servers with Codex
 ├── antd_service/
-│   └── Dockerfile              # Production antd daemon container (builds from source)
+│   └── Dockerfile              # Production/default-network antd daemon container
+├── autonomi_devnet/
+│   ├── Dockerfile              # Self-contained local ant-devnet + antd testnet
+│   └── start-local-devnet.sh
 ├── python_admin/
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -240,12 +278,16 @@ autonomi-video-management/
 │       ├── index.js
 │       └── App.js              # Upload form, video library, hls.js player
 ├── nginx/
-│   └── conf.d/default.conf     # Reverse proxy + TLS
+│   └── conf.d/default.conf     # Local HTTP reverse proxy
 ├── postgres-init/
 │   └── init-dbs.sh             # Creates databases, users, and video schema
 ├── docs/
 │   └── DEPLOYMENT.md           # Production deployment guide
-├── docker-compose.yml
+├── docker-compose.yml          # Base app services
+├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
+├── docker-compose.prod.yml     # Production/default-network antd overlay
+├── .env.local.example
+├── .env.production.example
 └── .env.example
 ```
 
@@ -261,6 +303,7 @@ This project uses the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) (v2.0) 
 - **`antd-mcp`** — MCP server exposing Autonomi tools to Claude (runs automatically in the devcontainer).
 - **Payment modes** — uploads use `ANTD_PAYMENT_MODE=auto` by default, which lets `antd` pick merkle batch payments for larger uploads and single payments otherwise.
 - **Wallet approval** — `python_admin` calls `wallet_approve()` on startup when `ANTD_APPROVE_ON_STARTUP=true`, so storage writes fail fast if the configured wallet cannot pay.
+- **Segment verification** — `python_admin` reads uploaded segment data back before publishing a video as ready. This is slower, but prevents bad segment addresses from reaching the playback catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
 
 Key operations used in this project:
 
