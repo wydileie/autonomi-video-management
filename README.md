@@ -126,9 +126,19 @@ docker compose --env-file .env.local \
 
 Services are available at:
 - Frontend: `http://localhost` via Nginx
-- Admin API: `http://localhost/api` via Nginx, or `http://localhost:8000` with the local debug override
-- Stream API: `http://localhost/stream` via Nginx, or `http://localhost:8081` with the local debug override
+- Admin API: `http://localhost/api` via Nginx
+- Stream API: `http://localhost/stream` via Nginx
 - Autonomi gateway: `http://localhost:8082`
+
+To publish direct admin and stream debug ports, add the debug overlay:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.debug-ports.yml \
+  up --build
+```
 
 ### Production
 
@@ -337,6 +347,7 @@ autonomi-video-management/
 │   └── DEPLOYMENT.md           # Production deployment guide
 ├── docker-compose.yml          # Base app services
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
+├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
 ├── .env.local.example
 ├── .env.production.example

@@ -22,14 +22,13 @@ Set via Docker Compose `build.args` in `docker-compose.yml` — these are baked 
 ```bash
 cd react_frontend
 npm install
-REACT_APP_API_URL=http://localhost:8000 \
-REACT_APP_STREAM_URL=http://localhost:8081 \
+REACT_APP_API_URL=http://localhost/api \
+REACT_APP_STREAM_URL=http://localhost/stream \
 npm start
 # Opens http://localhost:3000
 ```
 
-The admin API and streaming service must already be running. For the full local
-stack, use:
+The local stack should already be running behind Nginx:
 
 ```bash
 docker compose --env-file .env.local \
@@ -37,6 +36,10 @@ docker compose --env-file .env.local \
   -f docker-compose.local.yml \
   up --build
 ```
+
+If you specifically need direct service ports for debugging, include
+`docker-compose.debug-ports.yml` and use `http://localhost:8000` and
+`http://localhost:8081`.
 
 ## Build
 

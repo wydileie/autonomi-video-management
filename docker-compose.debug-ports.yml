@@ -1,0 +1,8 @@
+services:
+  python_admin:
+    ports:
+      - "${ADMIN_HTTP_PORT:-8000}:8000"
+
+  rust_stream:
+    ports:
+      - "${STREAM_HTTP_PORT:-8081}:8081"

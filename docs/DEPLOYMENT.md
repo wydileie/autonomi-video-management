@@ -52,6 +52,17 @@ If another local process already owns those ports, change `APP_HTTP_PORT`,
 `STREAM_HTTP_PORT` are only published when you use a local/debug compose
 override. Container-to-container traffic still uses the standard internal ports.
 
+To publish direct admin and stream debug ports, add
+`docker-compose.debug-ports.yml` to the same command:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.debug-ports.yml \
+  up --build
+```
+
 ## Production/Default Network
 
 Use this mode when you want `antd` to connect to the configured Autonomi
