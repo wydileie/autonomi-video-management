@@ -98,6 +98,26 @@ export ADMIN_DB_HOST=localhost ADMIN_DB_NAME=admindb \
 uvicorn src.admin_service:app --reload --port 8000
 ```
 
+## Tests
+
+From the repository root, the smoke and robustness tests use FastAPI's
+in-process test client with fake Postgres and Autonomi clients, so they do not
+require Docker services:
+
+```bash
+python -m unittest discover -s python_admin/tests -v
+```
+
+Real Postgres integration tests are included but skipped unless a test database
+DSN is provided. They create and drop a temporary schema inside that database,
+and the database user must be able to create schemas and the `uuid-ossp`
+extension:
+
+```bash
+export PYTHON_ADMIN_POSTGRES_TEST_DSN='postgresql://user:pass@localhost:5432/admin_test'
+python -m unittest python_admin.tests.test_admin_postgres_integration -v
+```
+
 ## Processing pipeline detail
 
 ```

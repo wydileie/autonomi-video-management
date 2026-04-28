@@ -144,6 +144,16 @@ APPROVAL_CLEANUP_INTERVAL_SECONDS = int(
     os.environ.get("APPROVAL_CLEANUP_INTERVAL_SECONDS", "300")
 )
 VALID_PAYMENT_MODES = {"auto", "merkle", "single"}
+STATUS_PENDING = "pending"
+STATUS_PROCESSING = "processing"
+STATUS_AWAITING_APPROVAL = "awaiting_approval"
+STATUS_UPLOADING = "uploading"
+STATUS_READY = "ready"
+STATUS_EXPIRED = "expired"
+STATUS_ERROR = "error"
+RECOVERABLE_PROCESSING_STATUSES = {STATUS_PENDING, STATUS_PROCESSING}
+RECOVERABLE_UPLOAD_STATUSES = {STATUS_UPLOADING}
+ACTIVE_RECOVERABLE_STATUSES = RECOVERABLE_PROCESSING_STATUSES | RECOVERABLE_UPLOAD_STATUSES
 
 if ANTD_PAYMENT_MODE not in VALID_PAYMENT_MODES:
     raise RuntimeError(
@@ -472,13 +482,13 @@ async def _recover_interrupted_jobs():
         status = row["status"]
         job_dir = Path(row["job_dir"]) if row["job_dir"] else None
 
-        if status in {"pending", "processing"}:
+        if status in RECOVERABLE_PROCESSING_STATUSES:
             resolutions = _decode_requested_resolutions(row["requested_resolutions"])
             source_path = _recover_source_path(job_dir, row["job_source_path"])
             if not job_dir or not job_dir.exists() or not source_path or not resolutions:
                 await _set_status(
                     video_id,
-                    "error",
+                    STATUS_ERROR,
                     "Interrupted processing job could not be recovered because its "
                     "source file or requested resolutions were missing.",
                 )
@@ -1054,7 +1064,7 @@ def _video_catalog_entry(manifest: dict, manifest_address: str) -> dict:
         "title": manifest["title"],
         "original_filename": manifest.get("original_filename") if show_original_filename else None,
         "description": manifest.get("description"),
-        "status": "ready",
+        "status": STATUS_READY,
         "created_at": manifest["created_at"],
         "updated_at": manifest["updated_at"],
         "manifest_address": manifest_address,
@@ -1132,7 +1142,7 @@ def _public_entry_to_video_out(entry: dict, catalog_address: str | None) -> "Vid
         title=entry["title"],
         original_filename=entry.get("original_filename") if show_original_filename else None,
         description=entry.get("description"),
-        status=entry.get("status", "ready"),
+        status=entry.get("status", STATUS_READY),
         created_at=entry["created_at"],
         manifest_address=entry.get("manifest_address") if show_manifest_address else None,
         catalog_address=None,
@@ -1166,7 +1176,7 @@ def _manifest_to_video_out(
         title=manifest["title"],
         original_filename=manifest.get("original_filename") if (not public or show_original_filename) else None,
         description=manifest.get("description"),
-        status=manifest.get("status", "ready"),
+        status=manifest.get("status", STATUS_READY),
         created_at=manifest["created_at"],
         manifest_address=(manifest_address or manifest.get("manifest_address")) if (not public or show_manifest_address) else None,
         catalog_address=_read_catalog_address() if not public else None,
@@ -1435,7 +1445,7 @@ async def _build_ready_manifest_from_db(video_id: str) -> dict:
         "title": video_row["title"],
         "original_filename": video_row["original_filename"] if show_original_filename else None,
         "description": video_row["description"],
-        "status": "ready",
+        "status": STATUS_READY,
         "created_at": video_row["created_at"].isoformat(),
         "updated_at": _now_iso(),
         "show_original_filename": show_original_filename,
@@ -1626,7 +1636,7 @@ async def list_videos():
     try:
         catalog, catalog_address = await _load_catalog(client)
         for entry in catalog.get("videos", []):
-            if entry.get("status", "ready") == "ready":
+            if entry.get("status", STATUS_READY) == STATUS_READY:
                 videos.append(_public_entry_to_video_out(entry, catalog_address))
     finally:
         await client.close()
@@ -1691,7 +1701,7 @@ async def update_video_visibility(
     if not row:
         raise HTTPException(404, "Video not found")
 
-    if row["status"] == "ready":
+    if row["status"] == STATUS_READY:
         client = AsyncAntdClient(
             base_url=ANTD_URL,
             timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
@@ -1730,7 +1740,7 @@ async def video_status(video_id: str):
         show_manifest_address = bool(manifest.get("show_manifest_address"))
         return {
             "video_id": video_id,
-            "status": "ready",
+            "status": STATUS_READY,
             "manifest_address": manifest_address if show_manifest_address else None,
             "catalog_address": None,
         }
@@ -1766,7 +1776,7 @@ async def approve_video(
             )
             if not row:
                 raise HTTPException(404, "Video not found")
-            if row["status"] != "awaiting_approval":
+            if row["status"] != STATUS_AWAITING_APPROVAL:
                 raise HTTPException(409, f"Video is {row['status']}, not awaiting approval")
             if row["approval_expires_at"] and row["approval_expires_at"] <= datetime.now(timezone.utc):
                 expired = True
@@ -1835,7 +1845,7 @@ async def _process_video(
             for res in resolutions:
                 shutil.rmtree(job_dir / res, ignore_errors=True)
 
-        await _set_status(video_id, "processing")
+        await _set_status(video_id, STATUS_PROCESSING)
         async with pool.acquire() as conn:
             video_row = await conn.fetchrow(
                 """
@@ -1922,7 +1932,7 @@ async def _process_video(
 
     except Exception as exc:
         log.exception("Processing failed for %s: %s", video_id, exc)
-        await _set_status(video_id, "error", str(exc))
+        await _set_status(video_id, STATUS_ERROR, str(exc))
         shutil.rmtree(job_dir, ignore_errors=True)
 
 
@@ -1952,7 +1962,7 @@ async def _upload_approved_video(video_id: str):
                 video_row["original_filename"] if video_row["show_original_filename"] else None
             ),
             "description": video_row["description"],
-            "status": "ready",
+            "status": STATUS_READY,
             "created_at": video_row["created_at"].isoformat(),
             "updated_at": _now_iso(),
             "show_original_filename": bool(video_row["show_original_filename"]),
@@ -2091,7 +2101,7 @@ async def _upload_approved_video(video_id: str):
         )
     except Exception as exc:
         log.exception("Approved upload failed for %s: %s", video_id, exc)
-        await _set_status(video_id, "error", str(exc))
+        await _set_status(video_id, STATUS_ERROR, str(exc))
         if job_dir and job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
 

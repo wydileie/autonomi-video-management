@@ -667,6 +667,80 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+
+    const TEST_CATALOG_ADDRESS: &str = "test-catalog";
+    const TEST_MANIFEST_ADDRESS: &str = "test-manifest";
+
+    fn test_state(catalog_bootstrap_address: Option<&str>) -> AppState {
+        let cache_config = CacheConfig {
+            catalog_ttl: Duration::from_secs(60),
+            manifest_ttl: Duration::from_secs(60),
+            segment_ttl: Duration::from_secs(60),
+            segment_max_bytes: 1024,
+        };
+
+        AppState {
+            antd: AntdClient::new("http://127.0.0.1:0"),
+            catalog_state_path: env::temp_dir().join(format!(
+                "rust_stream_missing_catalog_{}.json",
+                std::process::id()
+            )),
+            catalog_bootstrap_address: catalog_bootstrap_address.map(str::to_string),
+            cache: Arc::new(AppCache::new(&cache_config)),
+            cache_config,
+        }
+    }
+
+    async fn cache_catalog_and_manifest(
+        state: &AppState,
+        catalog_address: &str,
+        manifest_address: &str,
+        manifest: VideoManifest,
+    ) {
+        state.cache.catalogs.lock().await.insert(
+            catalog_address.to_string(),
+            CachedValue {
+                value: Catalog {
+                    videos: vec![CatalogVideo {
+                        id: manifest.id.clone(),
+                        manifest_address: manifest_address.to_string(),
+                    }],
+                },
+                expires_at: Instant::now() + Duration::from_secs(60),
+            },
+        );
+        state.cache.manifests.lock().await.insert(
+            manifest_address.to_string(),
+            CachedValue {
+                value: manifest,
+                expires_at: Instant::now() + Duration::from_secs(60),
+            },
+        );
+    }
+
+    fn ready_manifest() -> VideoManifest {
+        VideoManifest {
+            id: "video-1".to_string(),
+            status: "ready".to_string(),
+            variants: vec![VideoVariant {
+                resolution: "720p".to_string(),
+                segment_duration: 4.0,
+                segments: vec![
+                    VideoSegment {
+                        segment_index: 0,
+                        autonomi_address: "segment-0".to_string(),
+                        duration: 3.2,
+                    },
+                    VideoSegment {
+                        segment_index: 1,
+                        autonomi_address: "segment-1".to_string(),
+                        duration: 4.4,
+                    },
+                ],
+            }],
+        }
+    }
 
     #[test]
     fn segment_cache_evicts_least_recently_used_entries() {
@@ -692,5 +766,95 @@ mod tests {
         let mut disabled = SegmentCache::new(0, Duration::from_secs(60));
         disabled.insert("off".to_string(), vec![1]);
         assert_eq!(disabled.get("off"), None);
+    }
+
+    #[tokio::test]
+    async fn hls_manifest_route_renders_cached_playlist_with_headers() {
+        let state = test_state(Some(TEST_CATALOG_ADDRESS));
+        cache_catalog_and_manifest(
+            &state,
+            TEST_CATALOG_ADDRESS,
+            TEST_MANIFEST_ADDRESS,
+            ready_manifest(),
+        )
+        .await;
+
+        let response = hls_manifest(
+            State(state),
+            Path(("video-1".to_string(), "720p".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/vnd.apple.mpegurl"
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=60"
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            body.as_ref(),
+            b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:3.200,\n/stream/video-1/720p/0.ts\n#EXTINF:4.400,\n/stream/video-1/720p/1.ts\n#EXT-X-ENDLIST\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn hls_manifest_route_returns_not_found_when_catalog_address_missing() {
+        let response = hls_manifest(
+            State(test_state(None)),
+            Path(("video-1".to_string(), "720p".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"catalog address not configured");
+    }
+
+    #[tokio::test]
+    async fn hls_manifest_route_returns_not_found_when_video_not_ready() {
+        let state = test_state(Some(TEST_CATALOG_ADDRESS));
+        let mut manifest = ready_manifest();
+        manifest.status = "processing".to_string();
+        cache_catalog_and_manifest(
+            &state,
+            TEST_CATALOG_ADDRESS,
+            TEST_MANIFEST_ADDRESS,
+            manifest,
+        )
+        .await;
+
+        let response = hls_manifest(
+            State(state),
+            Path(("video-1".to_string(), "720p".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"video not ready");
+    }
+
+    #[test]
+    fn cors_origin_normalization_accepts_explicit_origins() {
+        assert_eq!(
+            normalize_cors_origin(" https://example.com/ ").unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            normalize_cors_origin("http://localhost:3000").unwrap(),
+            "http://localhost:3000"
+        );
+    }
+
+    #[test]
+    fn cors_origin_normalization_rejects_wildcards_paths_and_missing_schemes() {
+        assert!(normalize_cors_origin("*").is_err());
+        assert!(normalize_cors_origin("https://example.com/app").is_err());
+        assert!(normalize_cors_origin("example.com").is_err());
     }
 }

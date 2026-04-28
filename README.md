@@ -97,6 +97,37 @@ See [`.devcontainer/README.md`](.devcontainer/README.md) for full details on the
 
 ---
 
+## Testing and CI
+
+The repository includes a root `Makefile` for local checks and a GitHub Actions
+workflow that runs the same service-level gates.
+
+```bash
+# Install Python admin dependencies and run unittest discovery
+make install-python
+make test-python
+
+# Run the Rust streaming service tests
+make test-rust
+
+# Install, build, and test the React frontend
+make install-react
+make build-react
+make test-react
+
+# Run all local test targets
+make test
+
+# Run the full CI-shaped sequence, including dependency installs
+make ci
+```
+
+The Python target runs `python -m unittest discover` under `python_admin/tests`.
+The Rust target runs `cargo test` in `rust_stream`. The React target runs the
+Create React App test command in non-watch CI mode.
+
+---
+
 ## Running the application stack
 
 The app is intended to run as a containerized stack. Use the base Compose file
