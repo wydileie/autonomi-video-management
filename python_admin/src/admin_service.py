@@ -24,6 +24,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import asyncpg
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
@@ -54,6 +55,36 @@ ANTD_APPROVE_ON_STARTUP = os.environ.get("ANTD_APPROVE_ON_STARTUP", "true").lowe
     "false",
     "no",
 }
+
+
+def _parse_allowed_origins(raw_origins: str) -> list[str]:
+    origins: list[str] = []
+    for raw_origin in raw_origins.split(","):
+        origin = raw_origin.strip()
+        if not origin:
+            continue
+        if origin == "*":
+            raise RuntimeError("CORS_ALLOWED_ORIGINS must list explicit origins, not '*'.")
+        parsed = urlparse(origin)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise RuntimeError(
+                "CORS_ALLOWED_ORIGINS entries must be origins like "
+                "'https://example.com' with no path, query, or wildcard."
+            )
+        origins.append(f"{parsed.scheme}://{parsed.netloc}")
+    return origins
+
+
+CORS_ALLOWED_ORIGINS = _parse_allowed_origins(
+    os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost,http://127.0.0.1")
+)
 UPLOAD_TEMP_DIR = Path(os.environ.get("UPLOAD_TEMP_DIR", "/tmp/video_uploads"))
 UPLOAD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_MAX_FILE_BYTES = int(
@@ -1169,9 +1200,9 @@ app = FastAPI(title="AutVid Admin", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "Range"],
 )
 
 

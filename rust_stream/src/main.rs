@@ -22,14 +22,14 @@ use antd_client::Client as AntdClient;
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -87,6 +87,44 @@ struct AutonomiHealth {
     ok: bool,
     network: Option<String>,
     error: Option<String>,
+}
+
+fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
+    let origin = origin.trim().trim_end_matches('/');
+    if origin == "*" {
+        anyhow::bail!("CORS_ALLOWED_ORIGINS must list explicit origins, not '*'.");
+    }
+
+    let host = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .ok_or_else(|| {
+            anyhow::anyhow!("CORS_ALLOWED_ORIGINS entries must start with http:// or https://")
+        })?;
+
+    if host.is_empty() || host.contains('/') || host.contains('?') || host.contains('#') {
+        anyhow::bail!(
+            "CORS_ALLOWED_ORIGINS entries must be origins like 'https://example.com' with no path, query, or wildcard."
+        );
+    }
+
+    Ok(origin.to_string())
+}
+
+fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
+    let raw_origins = env::var("CORS_ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost,http://127.0.0.1".into());
+
+    raw_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            let origin = normalize_cors_origin(origin)?;
+            HeaderValue::from_str(&origin)
+                .map_err(|err| anyhow::anyhow!("invalid CORS origin '{}': {}", origin, err))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -280,13 +318,20 @@ async fn main() -> anyhow::Result<()> {
         cache: Arc::new(AppCache::new(&cache_config)),
         cache_config,
     };
+    let cors_allowed_origins = cors_allowed_origins()?;
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(cors_allowed_origins.clone())
+        .allow_methods([Method::GET, Method::HEAD, Method::OPTIONS])
+        .allow_headers([
+            header::ACCEPT,
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::RANGE,
+        ]);
 
     info!(
+        cors_allowed_origins = ?cors_allowed_origins,
         catalog_cache_ttl_seconds = state.cache_config.catalog_ttl.as_secs(),
         manifest_cache_ttl_seconds = state.cache_config.manifest_ttl.as_secs(),
         segment_cache_ttl_seconds = state.cache_config.segment_ttl.as_secs(),
@@ -296,6 +341,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/stream/health", get(health))
         .route(
             "/stream/:video_id/:resolution/playlist.m3u8",
             get(hls_manifest),

@@ -42,15 +42,15 @@ Verify:
 
 ```bash
 curl http://localhost:8082/health
-curl http://localhost:8000/health
-curl http://localhost:8081/health
+curl http://localhost/api/health
+curl http://localhost/stream/health
 open http://localhost
 ```
 
 If another local process already owns those ports, change `APP_HTTP_PORT`,
-`ADMIN_HTTP_PORT`, `STREAM_HTTP_PORT`, `ANTD_REST_PORT`, or `ANTD_GRPC_PORT` in
-your env file. Container-to-container traffic still uses the standard internal
-ports.
+`ANTD_REST_PORT`, or `ANTD_GRPC_PORT` in your env file. `ADMIN_HTTP_PORT` and
+`STREAM_HTTP_PORT` are only published when you use a local/debug compose
+override. Container-to-container traffic still uses the standard internal ports.
 
 ## Production/Default Network
 

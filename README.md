@@ -126,8 +126,8 @@ docker compose --env-file .env.local \
 
 Services are available at:
 - Frontend: `http://localhost` via Nginx
-- Admin API: `http://localhost:8000`
-- Stream API: `http://localhost:8081`
+- Admin API: `http://localhost/api` via Nginx, or `http://localhost:8000` with the local debug override
+- Stream API: `http://localhost/stream` via Nginx, or `http://localhost:8081` with the local debug override
 - Autonomi gateway: `http://localhost:8082`
 
 ### Production
@@ -144,7 +144,9 @@ docker compose --env-file .env.production \
 
 For public deployments, put TLS and domain routing in front of the stack with
 your preferred reverse proxy or hosting platform. Upload and management actions
-are protected by the app's single-admin login.
+are protected by the app's single-admin login. The production compose path
+publishes only the Nginx reverse proxy; publish admin, stream, or antd ports
+only with an explicit debug override.
 
 ---
 
@@ -163,8 +165,10 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `HOST_WORKSPACE_DIR` | Devcontainer/host Docker | Host-machine repo path used for Compose bind mounts |
 | `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
-| `APP_HTTP_PORT` / `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | No | Host ports for Nginx, admin API, and stream API |
-| `ANTD_REST_PORT` / `ANTD_GRPC_PORT` | No | Host ports for the Autonomi gateway |
+| `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
+| `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | Local/debug only | Direct host ports for the admin and stream services when using a local/debug compose override |
+| `CORS_ALLOWED_ORIGINS` | No | Comma-separated explicit browser origins allowed to call admin/stream directly. Wildcard `*` is rejected |
+| `ANTD_REST_PORT` / `ANTD_GRPC_PORT` | Local/debug only | Direct host ports for the Autonomi gateway when using a local/debug compose override |
 | `PROD_AUTONOMI_WALLET_KEY` | Production writes | Hex-encoded EVM private key (`0x...`) for Autonomi storage payments |
 | `PROD_ANTD_NETWORK` | Production | `default` unless you are targeting a custom network |
 | `PROD_AUTONOMI_PEERS` | Production/custom | Comma-separated bootstrap multiaddrs |
@@ -256,7 +260,7 @@ catalog manifest
 
 **Upload example:**
 ```bash
-curl -X POST http://localhost:8000/videos/upload \
+curl -X POST http://localhost/api/videos/upload \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -F "file=@myvideo.mp4" \
   -F "title=My Video" \

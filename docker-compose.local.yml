@@ -31,6 +31,8 @@ services:
       ANTD_URL: "http://antd:8082"
       ANTD_APPROVE_ON_STARTUP: "false"
       HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
+    ports:
+      - "${ADMIN_HTTP_PORT:-8000}:8000"
 
   rust_stream:
     depends_on:
@@ -38,6 +40,8 @@ services:
         condition: service_healthy
     environment:
       ANTD_URL: "http://antd:8082"
+    ports:
+      - "${STREAM_HTTP_PORT:-8081}:8081"
 
 volumes:
   autonomi_devnet_data:

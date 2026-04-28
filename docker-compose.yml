@@ -52,6 +52,7 @@ services:
       APPROVAL_CLEANUP_INTERVAL_SECONDS: "${APPROVAL_CLEANUP_INTERVAL_SECONDS:-300}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_STREAM_URL: "http://rust_stream:8081"
       UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
     depends_on:
@@ -59,8 +60,8 @@ services:
         condition: service_healthy
     networks:
       - appnet
-    ports:
-      - "${ADMIN_HTTP_PORT:-8000}:8000"
+    expose:
+      - "8000"
     volumes:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
@@ -77,11 +78,12 @@ services:
       STREAM_MANIFEST_CACHE_TTL_SECONDS: "${STREAM_MANIFEST_CACHE_TTL_SECONDS:-300}"
       STREAM_SEGMENT_CACHE_TTL_SECONDS: "${STREAM_SEGMENT_CACHE_TTL_SECONDS:-60}"
       STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_LOG: "info"
     networks:
       - appnet
-    ports:
-      - "${STREAM_HTTP_PORT:-8081}:8081"
+    expose:
+      - "8081"
     volumes:
       - catalog_state:/catalog:ro
 

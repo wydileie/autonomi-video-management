@@ -9,16 +9,16 @@ services:
       ANTD_PEERS: "${PROD_AUTONOMI_PEERS:-}"
       ANTD_REST_ADDR: "0.0.0.0:8082"
       ANTD_GRPC_ADDR: "0.0.0.0:50051"
-      ANTD_CORS: "true"
+      ANTD_CORS: "false"
       ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
       ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
       ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
       EVM_RPC_URL: "${PROD_EVM_RPC_URL:-}"
       EVM_PAYMENT_TOKEN_ADDRESS: "${PROD_EVM_PAYMENT_TOKEN_ADDRESS:-}"
       EVM_PAYMENT_VAULT_ADDRESS: "${PROD_EVM_PAYMENT_VAULT_ADDRESS:-}"
-    ports:
-      - "${ANTD_REST_PORT:-8082}:8082"
-      - "${ANTD_GRPC_PORT:-50051}:50051"
+    expose:
+      - "8082"
+      - "50051"
     networks:
       - appnet
     healthcheck:
