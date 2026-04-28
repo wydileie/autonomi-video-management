@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS videos (
     manifest_address TEXT,
     catalog_address  TEXT,
     error_message    TEXT,
+    job_dir          TEXT,
+    final_quote      JSONB,
+    final_quote_created_at TIMESTAMPTZ,
+    approval_expires_at TIMESTAMPTZ,
+    show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
+    show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     updated_at       TIMESTAMPTZ DEFAULT NOW(),
     user_id          TEXT
@@ -54,6 +60,7 @@ CREATE TABLE IF NOT EXISTS video_segments (
     autonomi_payment_mode TEXT,
     duration         FLOAT NOT NULL DEFAULT 10.0,
     byte_size        BIGINT,
+    local_path       TEXT,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (variant_id, segment_index)
 );

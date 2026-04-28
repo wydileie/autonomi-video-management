@@ -18,14 +18,16 @@ import logging
 import math
 import os
 import shutil
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import asyncpg
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
 from pydantic import BaseModel
 
 from .antd_client import AntdError, AsyncAntdClient
@@ -57,6 +59,11 @@ CATALOG_STATE_PATH = Path(os.environ.get("CATALOG_STATE_PATH", "/tmp/video_catal
 CATALOG_BOOTSTRAP_ADDRESS = os.environ.get("CATALOG_ADDRESS", "").strip()
 CATALOG_CONTENT_TYPE = "application/vnd.autonomi.video.catalog+json;v=1"
 VIDEO_MANIFEST_CONTENT_TYPE = "application/vnd.autonomi.video.manifest+json;v=1"
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+ADMIN_AUTH_SECRET = os.environ.get("ADMIN_AUTH_SECRET") or ADMIN_PASSWORD
+ADMIN_AUTH_ALGORITHM = "HS256"
+ADMIN_AUTH_TTL_HOURS = int(os.environ.get("ADMIN_AUTH_TTL_HOURS", "12"))
 
 # Resolution presets: name -> (width, height, video_kbps, audio_kbps)
 RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
@@ -170,6 +177,8 @@ async def _ensure_schema():
                 final_quote JSONB,
                 final_quote_created_at TIMESTAMPTZ,
                 approval_expires_at TIMESTAMPTZ,
+                show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
+                show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 user_id TEXT
@@ -182,7 +191,9 @@ async def _ensure_schema():
                 ADD COLUMN IF NOT EXISTS job_dir TEXT,
                 ADD COLUMN IF NOT EXISTS final_quote JSONB,
                 ADD COLUMN IF NOT EXISTS final_quote_created_at TIMESTAMPTZ,
-                ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ;
+                ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE;
 
             CREATE TABLE IF NOT EXISTS video_variants (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -413,6 +424,32 @@ def _decode_jsonb(value) -> dict | None:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return None
+
+
+def _create_admin_token() -> tuple[str, datetime]:
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=ADMIN_AUTH_TTL_HOURS)
+    token = jwt.encode(
+        {"sub": ADMIN_USERNAME, "exp": expires_at},
+        ADMIN_AUTH_SECRET,
+        algorithm=ADMIN_AUTH_ALGORITHM,
+    )
+    return token, expires_at
+
+
+def require_admin(authorization: str | None = Header(None)) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "Login required", headers={"WWW-Authenticate": "Bearer"})
+
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = jwt.decode(token, ADMIN_AUTH_SECRET, algorithms=[ADMIN_AUTH_ALGORITHM])
+    except JWTError as exc:
+        raise HTTPException(401, "Invalid or expired login", headers={"WWW-Authenticate": "Bearer"}) from exc
+
+    username = payload.get("sub")
+    if username != ADMIN_USERNAME:
+        raise HTTPException(401, "Invalid or expired login", headers={"WWW-Authenticate": "Bearer"})
+    return username
 
 
 def _ceil_ratio(value: int, numerator: int, denominator: int) -> int:
@@ -708,15 +745,18 @@ async def _build_final_upload_quote(video_id: str) -> dict:
 
 
 def _video_catalog_entry(manifest: dict, manifest_address: str) -> dict:
+    show_original_filename = bool(manifest.get("show_original_filename"))
     return {
         "id": manifest["id"],
         "title": manifest["title"],
-        "original_filename": manifest["original_filename"],
+        "original_filename": manifest.get("original_filename") if show_original_filename else None,
         "description": manifest.get("description"),
         "status": "ready",
         "created_at": manifest["created_at"],
         "updated_at": manifest["updated_at"],
         "manifest_address": manifest_address,
+        "show_original_filename": show_original_filename,
+        "show_manifest_address": bool(manifest.get("show_manifest_address")),
         "variants": [
             {
                 "resolution": variant["resolution"],
@@ -781,16 +821,54 @@ async def _load_video_manifest(client: AsyncAntdClient, video_id: str) -> tuple[
     return None
 
 
-def _manifest_to_video_out(manifest: dict, manifest_address: str | None = None) -> "VideoOut":
+def _public_entry_to_video_out(entry: dict, catalog_address: str | None) -> "VideoOut":
+    show_original_filename = bool(entry.get("show_original_filename"))
+    show_manifest_address = bool(entry.get("show_manifest_address"))
+    return VideoOut(
+        id=entry["id"],
+        title=entry["title"],
+        original_filename=entry.get("original_filename") if show_original_filename else None,
+        description=entry.get("description"),
+        status=entry.get("status", "ready"),
+        created_at=entry["created_at"],
+        manifest_address=entry.get("manifest_address") if show_manifest_address else None,
+        catalog_address=None,
+        show_original_filename=show_original_filename,
+        show_manifest_address=show_manifest_address,
+        variants=[
+            VariantOut(
+                id=f"{entry['id']}:{variant['resolution']}",
+                resolution=variant["resolution"],
+                width=variant["width"],
+                height=variant["height"],
+                total_duration=variant.get("total_duration"),
+                segment_count=variant.get("segment_count"),
+                segments=[],
+            )
+            for variant in entry.get("variants", [])
+        ],
+    )
+
+
+def _manifest_to_video_out(
+    manifest: dict,
+    manifest_address: str | None = None,
+    *,
+    public: bool = False,
+) -> "VideoOut":
+    show_original_filename = bool(manifest.get("show_original_filename"))
+    show_manifest_address = bool(manifest.get("show_manifest_address"))
     return VideoOut(
         id=manifest["id"],
         title=manifest["title"],
-        original_filename=manifest["original_filename"],
+        original_filename=manifest.get("original_filename") if (not public or show_original_filename) else None,
         description=manifest.get("description"),
         status=manifest.get("status", "ready"),
         created_at=manifest["created_at"],
-        manifest_address=manifest_address or manifest.get("manifest_address"),
-        catalog_address=_read_catalog_address(),
+        manifest_address=(manifest_address or manifest.get("manifest_address")) if (not public or show_manifest_address) else None,
+        catalog_address=_read_catalog_address() if not public else None,
+        show_original_filename=show_original_filename,
+        show_manifest_address=show_manifest_address,
         variants=[
             VariantOut(
                 id=f"{manifest['id']}:{variant['resolution']}",
@@ -799,7 +877,7 @@ def _manifest_to_video_out(manifest: dict, manifest_address: str | None = None) 
                 height=variant["height"],
                 total_duration=variant.get("total_duration"),
                 segment_count=variant.get("segment_count"),
-                segments=[
+                segments=[] if public else [
                     SegmentOut(
                         segment_index=segment["segment_index"],
                         autonomi_address=segment["autonomi_address"],
@@ -846,17 +924,40 @@ class VariantOut(BaseModel):
 class VideoOut(BaseModel):
     id: str
     title: str
-    original_filename: str
+    original_filename: str | None = None
     description: str | None
     status: str
     created_at: str
     manifest_address: str | None = None
     catalog_address: str | None = None
+    show_original_filename: bool = False
+    show_manifest_address: bool = False
     error_message: str | None = None
     final_quote: dict | None = None
     final_quote_created_at: str | None = None
     approval_expires_at: str | None = None
     variants: list[VariantOut] = []
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthTokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: str
+    username: str
+
+
+class AdminMeOut(BaseModel):
+    username: str
+
+
+class VideoVisibilityUpdate(BaseModel):
+    show_original_filename: bool
+    show_manifest_address: bool
 
 
 class UploadQuoteRequest(BaseModel):
@@ -891,6 +992,155 @@ class UploadQuoteOut(BaseModel):
     variants: list[UploadQuoteVariantOut]
 
 
+async def _db_video_to_out(row, *, include_segments: bool = False) -> VideoOut:
+    async with pool.acquire() as conn:
+        variants_rows = await conn.fetch(
+            """
+            SELECT id, resolution, width, height, total_duration, segment_count
+            FROM video_variants WHERE video_id=$1 ORDER BY height DESC
+            """,
+            str(row["id"]),
+        )
+        variants = []
+        for v in variants_rows:
+            segments = []
+            if include_segments:
+                seg_rows = await conn.fetch(
+                    """
+                    SELECT segment_index, autonomi_address, duration
+                    FROM video_segments WHERE variant_id=$1 ORDER BY segment_index
+                    """,
+                    str(v["id"]),
+                )
+                segments = [
+                    SegmentOut(
+                        segment_index=s["segment_index"],
+                        autonomi_address=s["autonomi_address"],
+                        duration=s["duration"],
+                    )
+                    for s in seg_rows
+                ]
+            variants.append(VariantOut(
+                id=str(v["id"]),
+                resolution=v["resolution"],
+                width=v["width"],
+                height=v["height"],
+                total_duration=v["total_duration"],
+                segment_count=v["segment_count"],
+                segments=segments,
+            ))
+
+    return VideoOut(
+        id=str(row["id"]),
+        title=row["title"],
+        original_filename=row["original_filename"],
+        description=row["description"],
+        status=row["status"],
+        created_at=str(row["created_at"]),
+        manifest_address=row["manifest_address"],
+        catalog_address=row["catalog_address"] or _read_catalog_address(),
+        show_original_filename=row["show_original_filename"],
+        show_manifest_address=row["show_manifest_address"],
+        error_message=row["error_message"],
+        final_quote=_decode_jsonb(row["final_quote"]),
+        final_quote_created_at=str(row["final_quote_created_at"]) if row["final_quote_created_at"] else None,
+        approval_expires_at=str(row["approval_expires_at"]) if row["approval_expires_at"] else None,
+        variants=variants,
+    )
+
+
+async def _get_db_video(video_id: str, *, include_segments: bool = False) -> VideoOut:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, title, original_filename, description, status, created_at,
+                   manifest_address, catalog_address, error_message, final_quote,
+                   final_quote_created_at, approval_expires_at,
+                   show_original_filename, show_manifest_address
+            FROM videos WHERE id=$1
+            """,
+            video_id,
+        )
+    if not row:
+        raise HTTPException(404, "Video not found")
+    return await _db_video_to_out(row, include_segments=include_segments)
+
+
+async def _build_ready_manifest_from_db(video_id: str) -> dict:
+    async with pool.acquire() as conn:
+        video_row = await conn.fetchrow(
+            """
+            SELECT title, original_filename, description, created_at,
+                   show_original_filename, show_manifest_address
+            FROM videos WHERE id=$1
+            """,
+            video_id,
+        )
+        if not video_row:
+            raise HTTPException(404, "Video not found")
+
+        variants = await conn.fetch(
+            """
+            SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
+                   segment_duration, total_duration
+            FROM video_variants
+            WHERE video_id=$1
+            ORDER BY height DESC
+            """,
+            video_id,
+        )
+
+        manifest_variants = []
+        for variant in variants:
+            uploaded_segments = await conn.fetch(
+                """
+                SELECT segment_index, autonomi_address, duration, byte_size
+                FROM video_segments
+                WHERE variant_id=$1
+                ORDER BY segment_index
+                """,
+                str(variant["id"]),
+            )
+            if any(not segment["autonomi_address"] for segment in uploaded_segments):
+                raise HTTPException(409, "Video has not finished uploading all segment addresses")
+            manifest_variants.append({
+                "id": str(variant["id"]),
+                "resolution": variant["resolution"],
+                "width": variant["width"],
+                "height": variant["height"],
+                "video_bitrate": variant["video_bitrate"],
+                "audio_bitrate": variant["audio_bitrate"],
+                "segment_duration": variant["segment_duration"],
+                "total_duration": variant["total_duration"],
+                "segment_count": len(uploaded_segments),
+                "segments": [
+                    {
+                        "segment_index": segment["segment_index"],
+                        "autonomi_address": segment["autonomi_address"],
+                        "duration": segment["duration"],
+                        "byte_size": segment["byte_size"],
+                    }
+                    for segment in uploaded_segments
+                ],
+            })
+
+    show_original_filename = bool(video_row["show_original_filename"])
+    return {
+        "schema_version": 1,
+        "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
+        "id": video_id,
+        "title": video_row["title"],
+        "original_filename": video_row["original_filename"] if show_original_filename else None,
+        "description": video_row["description"],
+        "status": "ready",
+        "created_at": video_row["created_at"].isoformat(),
+        "updated_at": _now_iso(),
+        "show_original_filename": show_original_filename,
+        "show_manifest_address": bool(video_row["show_manifest_address"]),
+        "variants": manifest_variants,
+    }
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -908,12 +1158,32 @@ async def health():
         "autonomi": {"ok": status.ok, "network": status.network},
         "payment_mode": ANTD_PAYMENT_MODE,
         "final_quote_approval_ttl_seconds": FINAL_QUOTE_APPROVAL_TTL_SECONDS,
-        "catalog_address": _read_catalog_address(),
     }
 
 
+@app.post("/auth/login", response_model=AuthTokenOut)
+async def login(request: LoginRequest):
+    if not (
+        secrets.compare_digest(request.username, ADMIN_USERNAME)
+        and secrets.compare_digest(request.password, ADMIN_PASSWORD)
+    ):
+        raise HTTPException(401, "Invalid username or password")
+
+    token, expires_at = _create_admin_token()
+    return AuthTokenOut(
+        access_token=token,
+        expires_at=expires_at.isoformat(),
+        username=ADMIN_USERNAME,
+    )
+
+
+@app.get("/auth/me", response_model=AdminMeOut)
+async def auth_me(username: str = Depends(require_admin)):
+    return AdminMeOut(username=username)
+
+
 @app.get("/catalog")
-async def get_catalog():
+async def get_catalog(username: str = Depends(require_admin)):
     client = AsyncAntdClient(base_url=ANTD_URL, timeout=60)
     try:
         catalog, catalog_address = await _load_catalog(client)
@@ -926,7 +1196,10 @@ async def get_catalog():
 
 
 @app.post("/videos/upload/quote", response_model=UploadQuoteOut)
-async def quote_video_upload(request: UploadQuoteRequest):
+async def quote_video_upload(
+    request: UploadQuoteRequest,
+    username: str = Depends(require_admin),
+):
     """Return an Autonomi price quote for the selected transcoded renditions."""
     return await _build_upload_quote(
         request.duration_seconds,
@@ -938,10 +1211,13 @@ async def quote_video_upload(request: UploadQuoteRequest):
 @app.post("/videos/upload", response_model=VideoOut)
 async def upload_video(
     background_tasks: BackgroundTasks,
+    username: str = Depends(require_admin),
     file: UploadFile = File(...),
     title: str = Form(...),
     description: str = Form(""),
     resolutions: str = Form("720p"),  # comma-separated, e.g. "480p,720p,1080p,4k"
+    show_original_filename: bool = Form(False),
+    show_manifest_address: bool = Form(False),
 ):
     """Accept a video file and queue it for transcoding + Autonomi upload."""
     selected = [r.strip() for r in resolutions.split(",") if r.strip() in RESOLUTION_PRESETS]
@@ -961,11 +1237,22 @@ async def upload_video(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO videos (id, title, original_filename, description, status, job_dir)
-            VALUES ($1, $2, $3, $4, 'pending', $5)
-            RETURNING id, title, original_filename, description, status, created_at
+            INSERT INTO videos (
+                id, title, original_filename, description, status, job_dir,
+                show_original_filename, show_manifest_address, user_id
+            )
+            VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
+            RETURNING id, title, original_filename, description, status, created_at,
+                      show_original_filename, show_manifest_address
             """,
-            video_id, title, file.filename, description or None, str(job_dir),
+            video_id,
+            title,
+            file.filename,
+            description or None,
+            str(job_dir),
+            show_original_filename,
+            show_manifest_address,
+            username,
         )
 
     background_tasks.add_task(
@@ -980,6 +1267,8 @@ async def upload_video(
         status=row["status"],
         created_at=str(row["created_at"]),
         catalog_address=_read_catalog_address(),
+        show_original_filename=row["show_original_filename"],
+        show_manifest_address=row["show_manifest_address"],
     )
 
 
@@ -990,62 +1279,27 @@ async def list_videos():
     try:
         catalog, catalog_address = await _load_catalog(client)
         for entry in catalog.get("videos", []):
-            videos.append(VideoOut(
-                id=entry["id"],
-                title=entry["title"],
-                original_filename=entry["original_filename"],
-                description=entry.get("description"),
-                status=entry.get("status", "ready"),
-                created_at=entry["created_at"],
-                manifest_address=entry.get("manifest_address"),
-                catalog_address=catalog_address,
-                variants=[
-                    VariantOut(
-                        id=f"{entry['id']}:{variant['resolution']}",
-                        resolution=variant["resolution"],
-                        width=variant["width"],
-                        height=variant["height"],
-                        total_duration=variant.get("total_duration"),
-                        segment_count=variant.get("segment_count"),
-                        segments=[],
-                    )
-                    for variant in entry.get("variants", [])
-                ],
-            ))
+            if entry.get("status", "ready") == "ready":
+                videos.append(_public_entry_to_video_out(entry, catalog_address))
     finally:
         await client.close()
+    return videos
 
+
+@app.get("/admin/videos", response_model=list[VideoOut])
+async def admin_list_videos(username: str = Depends(require_admin)):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT id, title, original_filename, description, status, created_at,
                    manifest_address, catalog_address, error_message, final_quote,
-                   final_quote_created_at, approval_expires_at
+                   final_quote_created_at, approval_expires_at,
+                   show_original_filename, show_manifest_address
             FROM videos
-            WHERE status IN ('pending', 'processing', 'awaiting_approval', 'uploading', 'error', 'expired')
             ORDER BY created_at DESC
             """
         )
-    network_ids = {video.id for video in videos}
-    videos.extend(
-        VideoOut(
-            id=str(r["id"]),
-            title=r["title"],
-            original_filename=r["original_filename"],
-            description=r["description"],
-            status=r["status"],
-            created_at=str(r["created_at"]),
-            manifest_address=r["manifest_address"],
-            catalog_address=r["catalog_address"] or _read_catalog_address(),
-            error_message=r["error_message"],
-            final_quote=_decode_jsonb(r["final_quote"]),
-            final_quote_created_at=str(r["final_quote_created_at"]) if r["final_quote_created_at"] else None,
-            approval_expires_at=str(r["approval_expires_at"]) if r["approval_expires_at"] else None,
-        )
-        for r in rows
-        if str(r["id"]) not in network_ids
-    )
-    return videos
+    return [await _db_video_to_out(row) for row in rows]
 
 
 @app.get("/videos/{video_id}", response_model=VideoOut)
@@ -1055,71 +1309,54 @@ async def get_video(video_id: str):
         loaded = await _load_video_manifest(client, video_id)
         if loaded:
             manifest, manifest_address = loaded
-            return _manifest_to_video_out(manifest, manifest_address)
+            return _manifest_to_video_out(manifest, manifest_address, public=True)
     finally:
         await client.close()
 
+    raise HTTPException(404, "Video not found")
+
+
+@app.get("/admin/videos/{video_id}", response_model=VideoOut)
+async def admin_get_video(video_id: str, username: str = Depends(require_admin)):
+    return await _get_db_video(video_id, include_segments=True)
+
+
+@app.patch("/admin/videos/{video_id}/visibility", response_model=VideoOut)
+async def update_video_visibility(
+    video_id: str,
+    request: VideoVisibilityUpdate,
+    username: str = Depends(require_admin),
+):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, title, original_filename, description, status, created_at,
-                   manifest_address, catalog_address, error_message, final_quote,
-                   final_quote_created_at, approval_expires_at
-            FROM videos WHERE id=$1
+            UPDATE videos
+            SET show_original_filename=$1,
+                show_manifest_address=$2,
+                updated_at=NOW()
+            WHERE id=$3
+            RETURNING status
             """,
+            request.show_original_filename,
+            request.show_manifest_address,
             video_id,
         )
-        if not row:
-            raise HTTPException(404, "Video not found")
+    if not row:
+        raise HTTPException(404, "Video not found")
 
-        variants_rows = await conn.fetch(
-            """
-            SELECT id, resolution, width, height, total_duration, segment_count
-            FROM video_variants WHERE video_id=$1 ORDER BY height
-            """,
-            video_id,
+    if row["status"] == "ready":
+        client = AsyncAntdClient(
+            base_url=ANTD_URL,
+            timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
         )
-        variants = []
-        for v in variants_rows:
-            seg_rows = await conn.fetch(
-                """
-                SELECT segment_index, autonomi_address, duration
-                FROM video_segments WHERE variant_id=$1 ORDER BY segment_index
-                """,
-                str(v["id"]),
-            )
-            variants.append(VariantOut(
-                id=str(v["id"]),
-                resolution=v["resolution"],
-                width=v["width"],
-                height=v["height"],
-                total_duration=v["total_duration"],
-                segment_count=v["segment_count"],
-                segments=[
-                    SegmentOut(
-                        segment_index=s["segment_index"],
-                        autonomi_address=s["autonomi_address"],
-                        duration=s["duration"],
-                    )
-                    for s in seg_rows
-                ],
-            ))
+        try:
+            manifest = await _build_ready_manifest_from_db(video_id)
+            manifest_address, catalog_address = await _publish_video_to_catalog(client, manifest)
+        finally:
+            await client.close()
+        await _set_ready(video_id, manifest_address, catalog_address)
 
-    return VideoOut(
-        id=str(row["id"]),
-        title=row["title"],
-        original_filename=row["original_filename"],
-        description=row["description"],
-        status=row["status"],
-        created_at=str(row["created_at"]),
-        manifest_address=row["manifest_address"],
-        catalog_address=row["catalog_address"] or _read_catalog_address(),
-        error_message=row["error_message"],
-        final_quote=_decode_jsonb(row["final_quote"]),
-        final_quote_created_at=str(row["final_quote_created_at"]) if row["final_quote_created_at"] else None,
-        approval_expires_at=str(row["approval_expires_at"]) if row["approval_expires_at"] else None,
-        variants=variants,
-    )
+    return await _get_db_video(video_id, include_segments=True)
 
 
 @app.get("/videos/{video_id}/status")
@@ -1128,7 +1365,8 @@ async def video_status(video_id: str):
         row = await conn.fetchrow(
             """
             SELECT status, manifest_address, catalog_address, error_message,
-                   final_quote, final_quote_created_at, approval_expires_at
+                   final_quote, final_quote_created_at, approval_expires_at,
+                   show_manifest_address
             FROM videos WHERE id=$1
             """,
             video_id,
@@ -1141,27 +1379,30 @@ async def video_status(video_id: str):
             await client.close()
         if not loaded:
             raise HTTPException(404, "Video not found")
-        _, manifest_address = loaded
+        manifest, manifest_address = loaded
+        show_manifest_address = bool(manifest.get("show_manifest_address"))
         return {
             "video_id": video_id,
             "status": "ready",
-            "manifest_address": manifest_address,
-            "catalog_address": _read_catalog_address(),
+            "manifest_address": manifest_address if show_manifest_address else None,
+            "catalog_address": None,
         }
     return {
         "video_id": video_id,
         "status": row["status"],
-        "manifest_address": row["manifest_address"],
-        "catalog_address": row["catalog_address"] or _read_catalog_address(),
+        "manifest_address": row["manifest_address"] if row["show_manifest_address"] else None,
+        "catalog_address": None,
         "error_message": row["error_message"],
-        "final_quote": _decode_jsonb(row["final_quote"]),
-        "final_quote_created_at": str(row["final_quote_created_at"]) if row["final_quote_created_at"] else None,
-        "approval_expires_at": str(row["approval_expires_at"]) if row["approval_expires_at"] else None,
     }
 
 
+@app.post("/admin/videos/{video_id}/approve", response_model=VideoOut)
 @app.post("/videos/{video_id}/approve", response_model=VideoOut)
-async def approve_video(video_id: str, background_tasks: BackgroundTasks):
+async def approve_video(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    username: str = Depends(require_admin),
+):
     """Approve the final quote and start the Autonomi upload/publish stage."""
     await _cleanup_expired_approvals()
     expired = False
@@ -1212,11 +1453,12 @@ async def approve_video(video_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(410, "Final quote approval window has expired")
 
     background_tasks.add_task(_upload_approved_video, video_id)
-    return await get_video(video_id)
+    return await _get_db_video(video_id, include_segments=True)
 
 
+@app.delete("/admin/videos/{video_id}")
 @app.delete("/videos/{video_id}")
-async def delete_video(video_id: str):
+async def delete_video(video_id: str, username: str = Depends(require_admin)):
     catalog_address = await _remove_video_from_catalog(video_id)
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM videos WHERE id=$1", video_id)
@@ -1337,7 +1579,8 @@ async def _upload_approved_video(video_id: str):
         async with pool.acquire() as conn:
             video_row = await conn.fetchrow(
                 """
-                SELECT title, original_filename, description, created_at, job_dir
+                SELECT title, original_filename, description, created_at, job_dir,
+                       show_original_filename, show_manifest_address
                 FROM videos WHERE id=$1
                 """,
                 video_id,
@@ -1351,11 +1594,15 @@ async def _upload_approved_video(video_id: str):
             "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
             "id": video_id,
             "title": video_row["title"],
-            "original_filename": video_row["original_filename"],
+            "original_filename": (
+                video_row["original_filename"] if video_row["show_original_filename"] else None
+            ),
             "description": video_row["description"],
             "status": "ready",
             "created_at": video_row["created_at"].isoformat(),
             "updated_at": _now_iso(),
+            "show_original_filename": bool(video_row["show_original_filename"]),
+            "show_manifest_address": bool(video_row["show_manifest_address"]),
             "variants": [],
         }
 

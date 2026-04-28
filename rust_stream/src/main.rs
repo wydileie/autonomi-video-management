@@ -39,7 +39,6 @@ struct AppState {
 struct HealthResponse {
     ok: bool,
     autonomi: AutonomiHealth,
-    catalog_address: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -154,7 +153,6 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
         },
     };
 
-    let catalog_address = read_catalog_address(&state);
     let ok = autonomi.ok;
     let status = if ok {
         StatusCode::OK
@@ -162,7 +160,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    (status, axum::Json(HealthResponse { ok, autonomi, catalog_address }))
+    (status, axum::Json(HealthResponse { ok, autonomi }))
 }
 
 /// Serve an HLS playlist (.m3u8) referencing this service's own segment URLs.

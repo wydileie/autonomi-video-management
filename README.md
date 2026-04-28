@@ -138,8 +138,9 @@ docker compose --env-file .env.production \
   up --build -d
 ```
 
-For public deployments, put TLS, authentication, and domain routing in front of
-the stack with your preferred reverse proxy or hosting platform.
+For public deployments, put TLS and domain routing in front of the stack with
+your preferred reverse proxy or hosting platform. Upload and management actions
+are protected by the app's single-admin login.
 
 ---
 
@@ -152,6 +153,9 @@ for deployment. `.env.example` contains the full variable set in one file.
 |---|---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Yes | PostgreSQL root credentials |
 | `ADMIN_DB` / `ADMIN_USER` / `ADMIN_PASS` | Yes | App database credentials |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
+| `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
+| `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `HOST_WORKSPACE_DIR` | Devcontainer/host Docker | Host-machine repo path used for Compose bind mounts |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` / `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | No | Host ports for Nginx, admin API, and stream API |
@@ -196,10 +200,10 @@ video_segments          (one per .ts chunk per variant)
 Autonomi stores the durable playback metadata:
 
 video manifest
-  id, title, variants[], segments[] with Autonomi addresses and durations
+  id, title, visibility flags, variants[], segments[] with Autonomi addresses and durations
 
 catalog manifest
-  videos[] with video id, title, variant summaries, and video manifest address
+  videos[] with video id, title, visibility flags, variant summaries, and video manifest address
 ```
 
 ---
@@ -211,21 +215,29 @@ catalog manifest
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `POST` | `/auth/login` | Sign in as the single admin user |
+| `GET` | `/auth/me` | Validate the current admin bearer token |
 | `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`) |
-| `POST` | `/videos/{id}/approve` | Approve the final quote and start segment upload/catalog publishing |
-| `GET` | `/videos` | List all videos |
-| `GET` | `/videos/{id}` | Get video with variants and segment addresses |
-| `GET` | `/videos/{id}/status` | Poll processing status (`pending` / `processing` / `awaiting_approval` / `uploading` / `ready` / `error` / `expired`) |
-| `DELETE` | `/videos/{id}` | Delete video record (does not remove data from Autonomi) |
-| `GET` | `/catalog` | Return the latest catalog address and decoded network catalog |
+| `GET` | `/videos` | Public list of ready videos, with filename and manifest address redacted unless published |
+| `GET` | `/videos/{id}` | Public video detail for playback, without segment addresses |
+| `GET` | `/videos/{id}/status` | Public processing status with sensitive addresses redacted |
+| `GET` | `/admin/videos` | Admin list of all videos and processing states |
+| `GET` | `/admin/videos/{id}` | Admin video detail with variants and segment addresses |
+| `PATCH` | `/admin/videos/{id}/visibility` | Publish or hide original filename and manifest address in public responses |
+| `POST` | `/admin/videos/{id}/approve` | Approve the final quote and start segment upload/catalog publishing |
+| `DELETE` | `/admin/videos/{id}` | Delete video record (does not remove data from Autonomi) |
+| `GET` | `/catalog` | Admin-only latest catalog address and decoded network catalog |
 
 **Upload example:**
 ```bash
 curl -X POST http://localhost:8000/videos/upload \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -F "file=@myvideo.mp4" \
   -F "title=My Video" \
-  -F "resolutions=480p,720p"
+  -F "resolutions=480p,720p" \
+  -F "show_original_filename=false" \
+  -F "show_manifest_address=false"
 ```
 
 ### Rust Streaming (`/stream`)

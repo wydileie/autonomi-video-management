@@ -17,13 +17,18 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `POST` | `/auth/login` | Single admin login |
+| `GET` | `/auth/me` | Validate admin bearer token |
 | `POST` | `/videos/upload` | Upload + queue transcoding (multipart form) |
-| `POST` | `/videos/{id}/approve` | Approve the final quote and start Autonomi upload |
-| `GET` | `/videos` | List all videos |
-| `GET` | `/videos/{id}` | Video detail with variants and segment addresses |
-| `GET` | `/videos/{id}/status` | Poll status: `pending` / `processing` / `awaiting_approval` / `uploading` / `ready` / `error` / `expired` |
-| `DELETE` | `/videos/{id}` | Delete video record |
-| `GET` | `/catalog` | Latest catalog address and decoded Autonomi catalog |
+| `GET` | `/videos` | Public ready-video list with sensitive metadata redacted |
+| `GET` | `/videos/{id}` | Public playback detail without segment addresses |
+| `GET` | `/videos/{id}/status` | Public status with sensitive addresses redacted |
+| `GET` | `/admin/videos` | Admin list of all videos |
+| `GET` | `/admin/videos/{id}` | Admin detail with variants and segment addresses |
+| `PATCH` | `/admin/videos/{id}/visibility` | Publish or hide original filename and manifest address |
+| `POST` | `/admin/videos/{id}/approve` | Approve the final quote and start Autonomi upload |
+| `DELETE` | `/admin/videos/{id}` | Delete video record |
+| `GET` | `/catalog` | Admin-only latest catalog address and decoded Autonomi catalog |
 
 ### Upload parameters
 
@@ -33,6 +38,8 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `title` | string | Display title |
 | `description` | string | Optional description |
 | `resolutions` | string | Comma-separated: `8k`, `4k`, `1080p`, `720p`, `480p`, `360p` |
+| `show_original_filename` | boolean | Publish the source filename to public web users |
+| `show_manifest_address` | boolean | Publish the backend Autonomi manifest address to public web users |
 
 ## Configuration (environment variables)
 
@@ -43,6 +50,10 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `ADMIN_DB_NAME` | Database name |
 | `ADMIN_DB_USER` | Database user |
 | `ADMIN_DB_PASS` | Database password |
+| `ADMIN_USERNAME` | Single uploader/admin username |
+| `ADMIN_PASSWORD` | Single uploader/admin password |
+| `ADMIN_AUTH_SECRET` | Long random secret for signing admin login tokens |
+| `ADMIN_AUTH_TTL_HOURS` | Admin token lifetime in hours (default: `12`) |
 | `ANTD_URL` | antd daemon REST URL (default: `http://localhost:8082`) |
 | `ANTD_PAYMENT_MODE` | Autonomi payment mode for segment uploads: `auto`, `merkle`, or `single` (default: `auto`) |
 | `ANTD_UPLOAD_VERIFY` | Read each uploaded segment back before publishing a ready manifest (default: `true`) |
@@ -84,11 +95,13 @@ uvicorn src.admin_service:app --reload --port 8000
 
 ```
 POST /videos/upload/quote
+  → requires Authorization: Bearer <admin token>
   → estimate transcoded HLS bytes for the selected resolutions
   → ask antd for current /v1/data/cost storage quotes
   → return total storage/gas estimate before upload starts
 
 POST /videos/upload
+  → requires Authorization: Bearer <admin token>
   → save file to /tmp/video_uploads/{video_id}/original_<name>
   → INSERT into videos (status=pending)
   → BackgroundTask: _process_video()
@@ -99,7 +112,8 @@ POST /videos/upload
       → ask antd for final cost using the actual .ts segment bytes
       → UPDATE videos SET status='awaiting_approval', final_quote=...
 
-POST /videos/{id}/approve
+POST /admin/videos/{id}/approve
+  → requires Authorization: Bearer <admin token>
   → UPDATE videos SET status='uploading'
   → BackgroundTask: _upload_approved_video()
       → for each .ts file:

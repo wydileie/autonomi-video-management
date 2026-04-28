@@ -115,7 +115,8 @@ main {
 }
 
 .upload-card,
-.library-card {
+.library-card,
+.login-card {
   background:
     linear-gradient(180deg, rgba(255, 250, 240, 0.94), rgba(255, 250, 240, 0.82)),
     repeating-linear-gradient(90deg, rgba(23, 33, 27, 0.035) 0 1px, transparent 1px 22px);
@@ -145,7 +146,8 @@ main {
 }
 
 .upload-head h1,
-.library-head h2 {
+.library-head h2,
+.login-card h1 {
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(34px, 5vw, 66px);
   letter-spacing: -0.06em;
@@ -156,6 +158,11 @@ main {
 
 .library-head h2 {
   font-size: clamp(32px, 4vw, 52px);
+}
+
+.login-card h1 {
+  font-size: clamp(34px, 4vw, 56px);
+  margin-bottom: 22px;
 }
 
 .upload-head p,
@@ -291,6 +298,67 @@ main {
 .form-grid input:focus {
   border-color: var(--moss);
   box-shadow: 0 0 0 4px rgba(53, 90, 66, 0.12);
+}
+
+.login-form {
+  max-width: 460px;
+}
+
+.login-form label,
+.privacy-panel label,
+.visibility-panel label {
+  display: block;
+}
+
+.login-form label + label {
+  margin-top: 14px;
+}
+
+.login-form label span {
+  color: var(--muted);
+  display: block;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.login-form input {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  outline: none;
+  padding: 14px 16px;
+  width: 100%;
+}
+
+.privacy-panel,
+.visibility-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.privacy-panel label,
+.visibility-panel label {
+  align-items: center;
+  background: rgba(23, 33, 27, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--ink);
+  display: flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 9px;
+  padding: 12px 14px;
+}
+
+.privacy-panel input,
+.visibility-panel input {
+  accent-color: var(--moss);
+  height: 16px;
+  width: 16px;
 }
 
 .resolution-toolbar {
@@ -688,7 +756,8 @@ main {
   }
 
   .upload-card,
-  .library-card {
+  .library-card,
+  .login-card {
     border-radius: 24px;
     padding: 20px;
   }

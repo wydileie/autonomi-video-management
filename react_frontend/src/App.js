@@ -6,6 +6,7 @@ import "./App.css";
 
 const API = process.env.REACT_APP_API_URL || "/api";
 const STREAM = process.env.REACT_APP_STREAM_URL || "/stream";
+const AUTH_STORAGE_KEY = "autvid_admin_token";
 
 const RESOLUTION_OPTIONS = [
   { value: "8k", label: "8K", width: 7680, height: 4320, bitrate: "~45 Mbps", note: "maximum archive" },
@@ -104,6 +105,10 @@ function statusLabel(status) {
   return (status || "").replace(/_/g, " ");
 }
 
+function authHeaders(token) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 function formatDateTime(value) {
   if (!value) return "";
   return new Date(value).toLocaleString();
@@ -144,11 +149,13 @@ function VideoPlayer({ videoId, resolution }) {
   );
 }
 
-function UploadPanel({ onUploaded }) {
+function UploadPanel({ token, onUploaded }) {
   const fileInputRef = useRef(null);
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
+  const [showOriginalFilename, setShowOriginalFilename] = useState(false);
+  const [showManifestAddress, setShowManifestAddress] = useState(false);
   const [selected, setSelected] = useState(["720p"]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -211,7 +218,10 @@ function UploadPanel({ onUploaded }) {
           resolutions,
           source_width: meta.width,
           source_height: meta.height,
-        }, { signal: controller.signal });
+        }, {
+          headers: authHeaders(token),
+          signal: controller.signal,
+        });
         setQuote({ loading: false, error: "", data: res.data });
       } catch (err) {
         if (axios.isCancel(err) || err.name === "CanceledError") return;
@@ -227,7 +237,7 @@ function UploadPanel({ onUploaded }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [file, meta?.duration, meta?.width, meta?.height, selected]);
+  }, [file, meta?.duration, meta?.width, meta?.height, selected, token]);
 
   const onDrop = (event) => {
     event.preventDefault();
@@ -271,10 +281,12 @@ function UploadPanel({ onUploaded }) {
     fd.append("title", title.trim());
     fd.append("description", desc.trim());
     fd.append("resolutions", resolutionsToUpload.join(","));
+    fd.append("show_original_filename", showOriginalFilename ? "true" : "false");
+    fd.append("show_manifest_address", showManifestAddress ? "true" : "false");
 
     try {
       const res = await axios.post(`${API}/videos/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
+        headers: { "Content-Type": "multipart/form-data", ...authHeaders(token) },
         onUploadProgress: (progressEvent) => {
           if (progressEvent.total) {
             setProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
@@ -284,6 +296,8 @@ function UploadPanel({ onUploaded }) {
       setFile(null);
       setTitle("");
       setDesc("");
+      setShowOriginalFilename(false);
+      setShowManifestAddress(false);
       setSelected(["720p"]);
       setMeta(null);
       setQuote({ loading: false, error: "", data: null });
@@ -374,6 +388,27 @@ function UploadPanel({ onUploaded }) {
           <label>
             <span>Description</span>
             <input value={desc} onChange={(event) => setDesc(event.target.value)} disabled={uploading} />
+          </label>
+        </div>
+
+        <div className="privacy-panel">
+          <label>
+            <input
+              type="checkbox"
+              checked={showOriginalFilename}
+              onChange={(event) => setShowOriginalFilename(event.target.checked)}
+              disabled={uploading}
+            />
+            <span>Publish original filename</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={showManifestAddress}
+              onChange={(event) => setShowManifestAddress(event.target.checked)}
+              disabled={uploading}
+            />
+            <span>Publish manifest address</span>
           </label>
         </div>
 
@@ -484,7 +519,49 @@ function FinalQuotePanel({ quote, expiresAt, onApprove, approving }) {
   );
 }
 
-function Library() {
+function LoginPanel({ onLogin }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const res = await axios.post(`${API}/auth/login`, { username, password });
+      onLogin(res.data);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section className="login-card">
+      <div className="section-kicker">Admin</div>
+      <h1>Sign in to manage uploads.</h1>
+      <form onSubmit={submit} className="login-form">
+        <label>
+          <span>Username</span>
+          <input value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading} />
+        </label>
+        <label>
+          <span>Password</span>
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={loading} />
+        </label>
+        {error && <div className="error-box">{error}</div>}
+        <button className="primary-action" type="submit" disabled={loading}>
+          {loading ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function Library({ admin = false, token = "" }) {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(null);
@@ -495,14 +572,16 @@ function Library() {
 
   const load = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/videos`);
+      const res = await axios.get(`${API}${admin ? "/admin" : ""}/videos`, {
+        headers: authHeaders(token),
+      });
       setVideos(res.data);
     } catch {
       // Keep the current view if the API hiccups during polling.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [admin, token]);
 
   useEffect(() => {
     load();
@@ -521,28 +600,32 @@ function Library() {
     if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
     const interval = setInterval(async () => {
       try {
-        const res = await axios.get(`${API}/videos/${activeDetailId}`);
+        const res = await axios.get(`${API}${admin ? "/admin" : ""}/videos/${activeDetailId}`, {
+          headers: authHeaders(token),
+        });
         setDetail(res.data);
       } catch {
         // Leave the currently expanded row intact if polling misses once.
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeDetailId, activeDetailStatus]);
+  }, [activeDetailId, activeDetailStatus, admin, token]);
 
   const openDetail = async (videoId) => {
     if (detail?.id === videoId) {
       setDetail(null);
       return;
     }
-    const res = await axios.get(`${API}/videos/${videoId}`);
+    const res = await axios.get(`${API}${admin ? "/admin" : ""}/videos/${videoId}`, {
+      headers: authHeaders(token),
+    });
     setDetail(res.data);
   };
 
   const deleteVideo = async (videoId, event) => {
     event.stopPropagation();
     if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
-    await axios.delete(`${API}/videos/${videoId}`);
+    await axios.delete(`${API}/admin/videos/${videoId}`, { headers: authHeaders(token) });
     setVideos((prev) => prev.filter((video) => video.id !== videoId));
     if (detail?.id === videoId) setDetail(null);
     if (playing?.videoId === videoId) setPlaying(null);
@@ -551,7 +634,9 @@ function Library() {
   const approveVideo = async (videoId) => {
     setApproving(videoId);
     try {
-      const res = await axios.post(`${API}/videos/${videoId}/approve`);
+      const res = await axios.post(`${API}/admin/videos/${videoId}/approve`, null, {
+        headers: authHeaders(token),
+      });
       setDetail(res.data);
       await load();
     } catch (err) {
@@ -561,8 +646,22 @@ function Library() {
     }
   };
 
+  const updateVisibility = async (videoId, next) => {
+    const res = await axios.patch(`${API}/admin/videos/${videoId}/visibility`, next, {
+      headers: authHeaders(token),
+    });
+    setDetail(res.data);
+    setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...res.data } : video)));
+  };
+
   if (loading) return <div className="empty-state">Loading the catalog...</div>;
-  if (!videos.length) return <div className="empty-state">No videos yet. Upload one to build your first stream.</div>;
+  if (!videos.length) {
+    return (
+      <div className="empty-state">
+        {admin ? "No videos yet. Upload one to build your first stream." : "No videos are available yet."}
+      </div>
+    );
+  }
 
   return (
     <section className="library-card">
@@ -570,7 +669,7 @@ function Library() {
       <div className="library-head">
         <div>
           <h2>AutVid library</h2>
-          <p>Playback is resolved from the network-hosted catalog and manifest.</p>
+          <p>{admin ? "Manage processing, publishing, and public metadata." : "Browse published streams."}</p>
         </div>
         <span>{videos.length} video{videos.length === 1 ? "" : "s"}</span>
       </div>
@@ -581,7 +680,7 @@ function Library() {
             <button type="button" className="video-summary" onClick={() => openDetail(video.id)}>
               <div>
                 <strong>{video.title}</strong>
-                <span>{video.original_filename}</span>
+                <span>{video.original_filename || video.description || "Published stream"}</span>
               </div>
               <div className="row-meta">
                 <span className={`status ${video.status}`}>{statusLabel(video.status)}</span>
@@ -591,18 +690,18 @@ function Library() {
 
             {detail?.id === video.id && (
               <div className="video-detail">
-                {detail.status === "awaiting_approval" ? (
+                {admin && detail.status === "awaiting_approval" ? (
                   <FinalQuotePanel
                     quote={detail.final_quote}
                     expiresAt={detail.approval_expires_at}
                     approving={approving === video.id}
                     onApprove={() => approveVideo(video.id)}
                   />
-                ) : detail.status === "uploading" ? (
+                ) : admin && detail.status === "uploading" ? (
                   <p className="muted">Uploading approved segments and publishing the network manifest...</p>
-                ) : detail.status === "processing" || detail.status === "pending" ? (
+                ) : admin && (detail.status === "processing" || detail.status === "pending") ? (
                   <p className="muted">Processing renditions and preparing the final quote...</p>
-                ) : detail.status === "error" || detail.status === "expired" ? (
+                ) : admin && (detail.status === "error" || detail.status === "expired") ? (
                   <p className="muted">{detail.error_message || "This video could not be completed."}</p>
                 ) : detail.variants.length === 0 ? (
                   <p className="muted">No variants available.</p>
@@ -626,12 +725,42 @@ function Library() {
                     )}
                   </>
                 )}
-                <div className="detail-footer">
-                  <code>{detail.manifest_address || "Manifest pending"}</code>
-                  <button type="button" className="danger-action" onClick={(event) => deleteVideo(video.id, event)}>
-                    Delete
-                  </button>
-                </div>
+                {admin && (
+                  <div className="visibility-panel">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!detail.show_original_filename}
+                        onChange={(event) => updateVisibility(video.id, {
+                          show_original_filename: event.target.checked,
+                          show_manifest_address: !!detail.show_manifest_address,
+                        })}
+                      />
+                      <span>Publish filename</span>
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={!!detail.show_manifest_address}
+                        onChange={(event) => updateVisibility(video.id, {
+                          show_original_filename: !!detail.show_original_filename,
+                          show_manifest_address: event.target.checked,
+                        })}
+                      />
+                      <span>Publish manifest address</span>
+                    </label>
+                  </div>
+                )}
+                {(admin || detail.manifest_address) && (
+                  <div className="detail-footer">
+                    <code>{detail.manifest_address || "Manifest hidden or pending"}</code>
+                    {admin && (
+                      <button type="button" className="danger-action" onClick={(event) => deleteVideo(video.id, event)}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </article>
@@ -644,10 +773,45 @@ function Library() {
 export default function App() {
   const [tab, setTab] = useState("library");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [auth, setAuth] = useState(() => {
+    const token = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    return token ? { access_token: token, username: "" } : null;
+  });
+
+  useEffect(() => {
+    if (!auth?.access_token) return undefined;
+    let active = true;
+    axios.get(`${API}/auth/me`, { headers: authHeaders(auth.access_token) })
+      .then((res) => {
+        if (active) setAuth((current) => ({ ...current, username: res.data.username }));
+      })
+      .catch(() => {
+        window.localStorage.removeItem(AUTH_STORAGE_KEY);
+        if (active) {
+          setAuth(null);
+          setTab("library");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [auth?.access_token]);
+
+  const handleLogin = (nextAuth) => {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, nextAuth.access_token);
+    setAuth(nextAuth);
+    setTab("manage");
+  };
+
+  const logout = () => {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    setAuth(null);
+    setTab("library");
+  };
 
   const handleUploaded = () => {
     setRefreshKey((value) => value + 1);
-    setTab("library");
+    setTab("manage");
   };
 
   return (
@@ -662,13 +826,23 @@ export default function App() {
         </div>
         <nav>
           <button className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button>
-          <button className={tab === "upload" ? "active" : ""} onClick={() => setTab("upload")}>Upload</button>
+          {auth ? (
+            <>
+              <button className={tab === "manage" ? "active" : ""} onClick={() => setTab("manage")}>Manage</button>
+              <button className={tab === "upload" ? "active" : ""} onClick={() => setTab("upload")}>Upload</button>
+              <button onClick={logout}>Logout</button>
+            </>
+          ) : (
+            <button className={tab === "login" ? "active" : ""} onClick={() => setTab("login")}>Login</button>
+          )}
         </nav>
       </header>
 
       <main>
-        {tab === "upload" && <UploadPanel onUploaded={handleUploaded} />}
-        {tab === "library" && <Library key={refreshKey} />}
+        {tab === "upload" && auth && <UploadPanel token={auth.access_token} onUploaded={handleUploaded} />}
+        {tab === "manage" && auth && <Library key={`admin-${refreshKey}`} admin token={auth.access_token} />}
+        {tab === "login" && !auth && <LoginPanel onLogin={handleLogin} />}
+        {tab === "library" && <Library key={`public-${refreshKey}`} />}
       </main>
     </div>
   );
