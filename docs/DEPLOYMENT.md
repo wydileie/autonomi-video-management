@@ -26,6 +26,18 @@ For example:
 HOST_WORKSPACE_DIR=/Users/you/Repos/autonomi-video-management
 ```
 
+Set `VIDEO_PROCESSING_HOST_PATH` to a host path with enough free disk space for
+original uploads and transcoded segments. This directory is bind-mounted into
+`python_admin` and is required for interrupted transcode/upload jobs to resume
+after a container restart.
+
+```dotenv
+VIDEO_PROCESSING_HOST_PATH=/mnt/large-disk/autonomi-video-processing
+```
+
+Create the directory before starting the stack and make sure the Docker daemon
+can write to it.
+
 Verify:
 
 ```bash
@@ -62,6 +74,7 @@ PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
 PROD_ANTD_NETWORK=default
 ANTD_PAYMENT_MODE=auto
 ANTD_APPROVE_ON_STARTUP=true
+VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
 ```
 
 For public deployments, put TLS, auth, and domain routing in front of the stack
@@ -109,7 +122,8 @@ docker compose --env-file .env.local \
 
 Data already written to Autonomi is permanent. `down -v` only removes local
 volumes such as Postgres state, the latest catalog bookmark, and local devnet
-state.
+state. The processing bind mount at `VIDEO_PROCESSING_HOST_PATH` is a normal
+host directory, so Compose will not delete it.
 
 ## Moving Hosts
 

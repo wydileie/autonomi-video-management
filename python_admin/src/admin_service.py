@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import asyncpg
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -133,6 +133,7 @@ if APPROVAL_CLEANUP_INTERVAL_SECONDS <= 0:
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 catalog_lock = asyncio.Lock()
+active_job_tasks: dict[str, asyncio.Task] = {}
 
 # ── Database pool ─────────────────────────────────────────────────────────────
 
@@ -147,15 +148,20 @@ async def lifespan(app: FastAPI):
     _ensure_catalog_state_dir()
     await _ensure_autonomi_ready()
     await _cleanup_expired_approvals()
+    await _recover_interrupted_jobs()
     cleanup_task = asyncio.create_task(_approval_cleanup_loop())
     try:
         yield
     finally:
         cleanup_task.cancel()
+        for task in list(active_job_tasks.values()):
+            task.cancel()
         try:
             await cleanup_task
         except asyncio.CancelledError:
             pass
+        if active_job_tasks:
+            await asyncio.gather(*active_job_tasks.values(), return_exceptions=True)
         await pool.close()
 
 
@@ -174,6 +180,8 @@ async def _ensure_schema():
                 catalog_address TEXT,
                 error_message TEXT,
                 job_dir TEXT,
+                job_source_path TEXT,
+                requested_resolutions JSONB,
                 final_quote JSONB,
                 final_quote_created_at TIMESTAMPTZ,
                 approval_expires_at TIMESTAMPTZ,
@@ -189,6 +197,8 @@ async def _ensure_schema():
                 ADD COLUMN IF NOT EXISTS catalog_address TEXT,
                 ADD COLUMN IF NOT EXISTS error_message TEXT,
                 ADD COLUMN IF NOT EXISTS job_dir TEXT,
+                ADD COLUMN IF NOT EXISTS job_source_path TEXT,
+                ADD COLUMN IF NOT EXISTS requested_resolutions JSONB,
                 ADD COLUMN IF NOT EXISTS final_quote JSONB,
                 ADD COLUMN IF NOT EXISTS final_quote_created_at TIMESTAMPTZ,
                 ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ,
@@ -303,6 +313,127 @@ async def _approval_cleanup_loop():
             await _cleanup_expired_approvals()
         except Exception as exc:
             log.warning("Approval cleanup failed: %s", exc)
+
+
+def _track_job_task(task_key: str, coro):
+    existing = active_job_tasks.get(task_key)
+    if existing and not existing.done():
+        coro.close()
+        return
+
+    task = asyncio.create_task(coro)
+    active_job_tasks[task_key] = task
+
+    def _forget_task(done_task: asyncio.Task):
+        active_job_tasks.pop(task_key, None)
+        if done_task.cancelled():
+            return
+        exc = done_task.exception()
+        if exc:
+            log.error(
+                "Background job %s crashed outside its handler",
+                task_key,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(_forget_task)
+
+
+def _schedule_processing_job(
+    video_id: str,
+    src_path: Path,
+    resolutions: list[str],
+    job_dir: Path,
+    *,
+    reset_existing: bool = False,
+):
+    _track_job_task(
+        f"process:{video_id}",
+        _process_video(video_id, src_path, resolutions, job_dir, reset_existing=reset_existing),
+    )
+
+
+def _schedule_upload_job(video_id: str):
+    _track_job_task(f"upload:{video_id}", _upload_approved_video(video_id))
+
+
+def _decode_requested_resolutions(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = [part.strip() for part in value.split(",")]
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item) in RESOLUTION_PRESETS]
+
+
+def _recover_source_path(job_dir: Path | None, job_source_path: str | None) -> Path | None:
+    if job_source_path:
+        source_path = Path(job_source_path)
+        if source_path.exists():
+            return source_path
+
+    if job_dir and job_dir.exists():
+        matches = sorted(job_dir.glob("original_*"))
+        for match in matches:
+            if match.is_file():
+                return match
+    return None
+
+
+async def _recover_interrupted_jobs():
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, status, job_dir, job_source_path, requested_resolutions
+            FROM videos
+            WHERE status IN ('pending', 'processing', 'uploading')
+            ORDER BY created_at
+            """
+        )
+
+    recovered_processing = 0
+    recovered_uploads = 0
+    for row in rows:
+        video_id = str(row["id"])
+        status = row["status"]
+        job_dir = Path(row["job_dir"]) if row["job_dir"] else None
+
+        if status in {"pending", "processing"}:
+            resolutions = _decode_requested_resolutions(row["requested_resolutions"])
+            source_path = _recover_source_path(job_dir, row["job_source_path"])
+            if not job_dir or not job_dir.exists() or not source_path or not resolutions:
+                await _set_status(
+                    video_id,
+                    "error",
+                    "Interrupted processing job could not be recovered because its "
+                    "source file or requested resolutions were missing.",
+                )
+                log.warning("Could not recover interrupted processing job %s", video_id)
+                continue
+
+            _schedule_processing_job(
+                video_id,
+                source_path,
+                resolutions,
+                job_dir,
+                reset_existing=True,
+            )
+            recovered_processing += 1
+            continue
+
+        _schedule_upload_job(video_id)
+        recovered_uploads += 1
+
+    if recovered_processing or recovered_uploads:
+        log.info(
+            "Recovered interrupted jobs: processing=%d uploading=%d",
+            recovered_processing,
+            recovered_uploads,
+        )
 
 
 async def _cleanup_expired_approvals():
@@ -1210,7 +1341,6 @@ async def quote_video_upload(
 
 @app.post("/videos/upload", response_model=VideoOut)
 async def upload_video(
-    background_tasks: BackgroundTasks,
     username: str = Depends(require_admin),
     file: UploadFile = File(...),
     title: str = Form(...),
@@ -1239,9 +1369,10 @@ async def upload_video(
             """
             INSERT INTO videos (
                 id, title, original_filename, description, status, job_dir,
+                job_source_path, requested_resolutions,
                 show_original_filename, show_manifest_address, user_id
             )
-            VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10)
             RETURNING id, title, original_filename, description, status, created_at,
                       show_original_filename, show_manifest_address
             """,
@@ -1250,14 +1381,14 @@ async def upload_video(
             file.filename,
             description or None,
             str(job_dir),
+            str(src_path),
+            json.dumps(selected),
             show_original_filename,
             show_manifest_address,
             username,
         )
 
-    background_tasks.add_task(
-        _process_video, video_id, src_path, selected, job_dir
-    )
+    _schedule_processing_job(video_id, src_path, selected, job_dir)
 
     return VideoOut(
         id=str(row["id"]),
@@ -1400,7 +1531,6 @@ async def video_status(video_id: str):
 @app.post("/videos/{video_id}/approve", response_model=VideoOut)
 async def approve_video(
     video_id: str,
-    background_tasks: BackgroundTasks,
     username: str = Depends(require_admin),
 ):
     """Approve the final quote and start the Autonomi upload/publish stage."""
@@ -1452,7 +1582,7 @@ async def approve_video(
             shutil.rmtree(expired_job_dir, ignore_errors=True)
         raise HTTPException(410, "Final quote approval window has expired")
 
-    background_tasks.add_task(_upload_approved_video, video_id)
+    _schedule_upload_job(video_id)
     return await _get_db_video(video_id, include_segments=True)
 
 
@@ -1478,9 +1608,17 @@ async def _process_video(
     src_path: Path,
     resolutions: list[str],
     job_dir: Path,
+    *,
+    reset_existing: bool = False,
 ):
     """Transcode to HLS, produce a final quote, then pause for approval."""
     try:
+        if reset_existing:
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM video_variants WHERE video_id=$1", video_id)
+            for res in resolutions:
+                shutil.rmtree(job_dir / res, ignore_errors=True)
+
         await _set_status(video_id, "processing")
         async with pool.acquire() as conn:
             video_row = await conn.fetchrow(
@@ -1628,7 +1766,8 @@ async def _upload_approved_video(video_id: str):
                 async with pool.acquire() as conn:
                     segment_rows = await conn.fetch(
                         """
-                        SELECT segment_index, local_path, duration, byte_size
+                        SELECT segment_index, local_path, duration, byte_size,
+                               autonomi_address
                         FROM video_segments
                         WHERE variant_id=$1
                         ORDER BY segment_index
@@ -1647,6 +1786,14 @@ async def _upload_approved_video(video_id: str):
                     ANTD_PAYMENT_MODE,
                 )
                 for segment in segment_rows:
+                    if segment["autonomi_address"]:
+                        log.info(
+                            "  seg %03d already uploaded -> %s",
+                            segment["segment_index"],
+                            segment["autonomi_address"],
+                        )
+                        continue
+
                     ts_path = Path(segment["local_path"] or "")
                     if not ts_path.exists():
                         raise RuntimeError(f"Transcoded segment is missing from disk: {ts_path}")
@@ -1776,7 +1923,13 @@ async def _run_ffmpeg(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    try:
+        _, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode != 0:
         detail = stderr.decode(errors="replace").strip()[-2000:]
         if proc.returncode == -9:
@@ -1890,6 +2043,7 @@ async def _set_ready(video_id: str, manifest_address: str, catalog_address: str)
                 catalog_address=$2,
                 error_message=NULL,
                 job_dir=NULL,
+                job_source_path=NULL,
                 approval_expires_at=NULL,
                 updated_at=NOW()
             WHERE id=$3

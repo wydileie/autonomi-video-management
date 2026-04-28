@@ -46,7 +46,7 @@ services:
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
       RUST_STREAM_URL: "http://rust_stream:8081"
-      UPLOAD_TEMP_DIR: "/tmp/video_uploads"
+      UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
     depends_on:
       db:
         condition: service_healthy
@@ -55,7 +55,7 @@ services:
     ports:
       - "${ADMIN_HTTP_PORT:-8000}:8000"
     volumes:
-      - video_tmp:/tmp/video_uploads
+      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
 
   # 3) Rust streaming — HLS manifest generation + Autonomi segment proxy
@@ -66,6 +66,10 @@ services:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
+      STREAM_CATALOG_CACHE_TTL_SECONDS: "${STREAM_CATALOG_CACHE_TTL_SECONDS:-10}"
+      STREAM_MANIFEST_CACHE_TTL_SECONDS: "${STREAM_MANIFEST_CACHE_TTL_SECONDS:-300}"
+      STREAM_SEGMENT_CACHE_TTL_SECONDS: "${STREAM_SEGMENT_CACHE_TTL_SECONDS:-60}"
+      STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
       RUST_LOG: "info"
     networks:
       - appnet
@@ -107,7 +111,6 @@ services:
 
 volumes:
   postgres_data:
-  video_tmp:
   catalog_state:
 
 networks:

@@ -9,7 +9,7 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 3. Quote the real transcoded segment files and wait for user approval.
 4. Upload every approved segment to the Autonomi network via the `antd` daemon.
 5. Publish a video manifest and catalog snapshot to Autonomi.
-6. Use PostgreSQL only as a local upload/job status cache.
+6. Use PostgreSQL as a local upload/job status cache and recovery log.
 7. Expose a REST API for the frontend to poll status and retrieve video details.
 
 ## API
@@ -65,7 +65,7 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | Seconds between cleanup scans for expired final quotes (default: `300`) |
 | `CATALOG_ADDRESS` | Optional bootstrap address for an existing network-hosted catalog |
 | `CATALOG_STATE_PATH` | Local bookmark file for the latest catalog address |
-| `UPLOAD_TEMP_DIR` | Temporary directory for uploads and segments (default: `/tmp/video_uploads`) |
+| `UPLOAD_TEMP_DIR` | Container path for uploads and segments (Compose sets this to `/var/lib/autvid/processing`, backed by `VIDEO_PROCESSING_HOST_PATH`) |
 
 ## Dependencies
 
@@ -102,9 +102,9 @@ POST /videos/upload/quote
 
 POST /videos/upload
   → requires Authorization: Bearer <admin token>
-  → save file to /tmp/video_uploads/{video_id}/original_<name>
-  → INSERT into videos (status=pending)
-  → BackgroundTask: _process_video()
+  → save file to $UPLOAD_TEMP_DIR/{video_id}/original_<name>
+  → INSERT into videos (status=pending, job_source_path, requested_resolutions)
+  → queue worker task: _process_video()
       → for each resolution:
           → FFmpeg → seg_00000.ts, seg_00001.ts, …  (configured HLS segments)
           → INSERT video_variants row
@@ -115,7 +115,7 @@ POST /videos/upload
 POST /admin/videos/{id}/approve
   → requires Authorization: Bearer <admin token>
   → UPDATE videos SET status='uploading'
-  → BackgroundTask: _upload_approved_video()
+  → queue worker task: _upload_approved_video()
       → for each .ts file:
           → AsyncAntdClient.data_put_public(bytes, payment_mode=...)
           → UPDATE video_segments row with address, cost, duration
@@ -123,7 +123,14 @@ POST /admin/videos/{id}/approve
       → Store updated catalog JSON on Autonomi
       → Write latest catalog address bookmark to CATALOG_STATE_PATH
       → UPDATE videos SET status='ready', manifest_address=..., catalog_address=...
-  → cleanup /tmp/video_uploads/{video_id}/
+  → cleanup $UPLOAD_TEMP_DIR/{video_id}/
 ```
+
+On startup the service scans `pending`, `processing`, and `uploading` rows.
+Interrupted transcodes are restarted from the saved source file and requested
+resolutions; interrupted uploads resume from persisted segment rows and skip
+segments that already have Autonomi addresses. In Compose deployments,
+`VIDEO_PROCESSING_HOST_PATH` must point at persistent host storage with enough
+free space for original uploads plus all requested transcoded renditions.
 
 FFmpeg flags produce H.264/AAC MPEG-TS segments with correct aspect ratio padding to fit the target resolution box.

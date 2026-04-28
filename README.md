@@ -25,7 +25,7 @@ Browser
 ### Upload flow
 1. User drops or selects a video file; the browser detects its source resolution and offers 8K / 4K / 1080P / 720p / 480P / 360P renditions without upscaling by default.
 2. The React frontend POSTs the file to the Python admin service.
-3. Python admin saves it to a temp volume and queues a background job.
+3. Python admin saves it to the configured processing bind mount, records the durable job inputs in Postgres, and queues a worker task.
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
 5. Python admin sums the actual transcoded segment sizes and asks `antd` for a final quote using the real segment bytes.
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
@@ -51,7 +51,7 @@ Browser
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
 | `react_frontend` | React | 80 | Upload UI, video library, HLS player |
 | `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
-| `db` | PostgreSQL 16 | 5432 | Upload job/status cache while videos are processing |
+| `db` | PostgreSQL 16 | 5432 | Upload job/status cache and worker recovery state |
 
 ### URL routing (via Nginx)
 
@@ -114,6 +114,10 @@ cp .env.local.example .env.local
 # to the host-machine repo path, not /workspaces/...
 # HOST_WORKSPACE_DIR=/Users/you/path/to/autonomi-video-management
 
+# Optional but recommended for large uploads: point processing files at a
+# large, persistent host disk.
+# VIDEO_PROCESSING_HOST_PATH=/mnt/video-processing/autvid
+
 docker compose --env-file .env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
@@ -157,6 +161,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `HOST_WORKSPACE_DIR` | Devcontainer/host Docker | Host-machine repo path used for Compose bind mounts |
+| `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` / `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | No | Host ports for Nginx, admin API, and stream API |
 | `ANTD_REST_PORT` / `ANTD_GRPC_PORT` | No | Host ports for the Autonomi gateway |
@@ -175,6 +180,10 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | No | Seconds before an unapproved final quote expires and local transcoded files are deleted. Default: `14400` |
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | No | Seconds between cleanup scans for expired final quotes. Default: `300` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
+| `STREAM_CATALOG_CACHE_TTL_SECONDS` | No | Rust stream catalog metadata cache TTL. Default: `10`; set `0` to disable |
+| `STREAM_MANIFEST_CACHE_TTL_SECONDS` | No | Rust stream video manifest cache TTL. Default: `300`; set `0` to disable |
+| `STREAM_SEGMENT_CACHE_TTL_SECONDS` | No | Rust stream segment byte cache TTL and response `Cache-Control` max-age. Default: `60`; set `0` to disable in-process segment caching |
+| `STREAM_SEGMENT_CACHE_MAX_BYTES` | No | Rust stream in-process segment cache byte cap. Default: `67108864` |
 | `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
 | `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |
 | `PROD_EVM_PAYMENT_VAULT_ADDRESS` | Production/custom | Payment vault contract for custom payment networks |
@@ -183,11 +192,12 @@ for deployment. `.env.example` contains the full variable set in one file.
 
 ## Database schema
 
-Managed by the Python admin service (`_ensure_schema()` on startup) and seeded by [`postgres-init/init-dbs.sh`](postgres-init/init-dbs.sh). Postgres is no longer the source of truth for ready video playback; it is a processing/status cache.
+Managed by the Python admin service (`_ensure_schema()` on startup) and seeded by [`postgres-init/init-dbs.sh`](postgres-init/init-dbs.sh). Postgres is no longer the source of truth for ready video playback; it is a processing/status cache and recovery log for interrupted local jobs.
 
 ```
 videos
-  id, title, original_filename, description, status, created_at, user_id
+  id, title, original_filename, description, status, job_dir,
+  job_source_path, requested_resolutions, created_at, user_id
 
 video_variants          (one per resolution per video)
   id, video_id → videos, resolution, width, height,
@@ -196,6 +206,14 @@ video_variants          (one per resolution per video)
 video_segments          (one per .ts chunk per variant)
   id, variant_id → video_variants, segment_index,
   local_path, autonomi_address, duration, byte_size
+
+On startup the admin service scans for `pending`, `processing`, and `uploading`
+rows. Interrupted transcodes are restarted from the saved source file and
+requested resolutions; interrupted uploads resume from persisted segment rows and
+skip segments that already have Autonomi addresses. This requires
+`VIDEO_PROCESSING_HOST_PATH` to point at persistent host storage, because the
+admin container must still be able to read the original upload and transcoded
+segments after a restart.
 
 Autonomi stores the durable playback metadata:
 

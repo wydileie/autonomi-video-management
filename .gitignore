@@ -157,6 +157,9 @@ dmypy.json
 # pytype static type analyzer
 .pytype/
 
+# Local bind-mounted application data
+.autvid/
+
 # Cython debug symbols
 cython_debug/
 

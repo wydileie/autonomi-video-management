@@ -41,6 +41,10 @@ The manifest only exists for videos present in the latest Autonomi catalog with 
 | `ANTD_URL` | antd daemon REST URL (default: `http://localhost:8082`) |
 | `CATALOG_STATE_PATH` | Local bookmark file containing the latest Autonomi catalog address |
 | `CATALOG_ADDRESS` | Optional bootstrap catalog address if no bookmark file exists |
+| `STREAM_CATALOG_CACHE_TTL_SECONDS` | Catalog metadata cache TTL (default: `10`; `0` disables) |
+| `STREAM_MANIFEST_CACHE_TTL_SECONDS` | Video manifest cache TTL (default: `300`; `0` disables) |
+| `STREAM_SEGMENT_CACHE_TTL_SECONDS` | Segment byte cache TTL and response `Cache-Control` max-age (default: `60`; `0` disables in-process segment caching) |
+| `STREAM_SEGMENT_CACHE_MAX_BYTES` | Total in-process segment cache byte cap (default: `67108864`; `0` disables) |
 | `RUST_LOG` | Log level (default: `info`) |
 
 ## Dependencies
@@ -68,10 +72,10 @@ cargo run
 ```
 GET /stream/{video_id}/{resolution}/{index}.ts
   → Read latest catalog address from CATALOG_STATE_PATH or CATALOG_ADDRESS
-  → Fetch catalog JSON from Autonomi
-  → Fetch the video's manifest JSON from Autonomi
+  → Read catalog JSON from TTL cache, or fetch it from Autonomi
+  → Read the video's manifest JSON from TTL cache, or fetch it from Autonomi
   → Resolve resolution + segment_index to an Autonomi segment address
-  → antd_client.data_get_public(&address).await
+  → Read segment bytes from bounded TTL cache, or fetch via antd_client.data_get_public(&address).await
   → Stream bytes with Content-Type: video/mp2t
 ```
 
