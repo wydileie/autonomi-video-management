@@ -6,10 +6,11 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 
 1. Accept video file uploads from the React frontend.
 2. Run FFmpeg to produce HLS `.ts` segments at each requested resolution.
-3. Upload every segment to the Autonomi network via the `antd` daemon.
-4. Publish a video manifest and catalog snapshot to Autonomi.
-5. Use PostgreSQL only as a local upload/job status cache.
-6. Expose a REST API for the frontend to poll status and retrieve video details.
+3. Quote the real transcoded segment files and wait for user approval.
+4. Upload every approved segment to the Autonomi network via the `antd` daemon.
+5. Publish a video manifest and catalog snapshot to Autonomi.
+6. Use PostgreSQL only as a local upload/job status cache.
+7. Expose a REST API for the frontend to poll status and retrieve video details.
 
 ## API
 
@@ -17,9 +18,10 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 |---|---|---|
 | `GET` | `/health` | Health check |
 | `POST` | `/videos/upload` | Upload + queue transcoding (multipart form) |
+| `POST` | `/videos/{id}/approve` | Approve the final quote and start Autonomi upload |
 | `GET` | `/videos` | List all videos |
 | `GET` | `/videos/{id}` | Video detail with variants and segment addresses |
-| `GET` | `/videos/{id}/status` | Poll status: `pending` / `processing` / `ready` / `error` |
+| `GET` | `/videos/{id}/status` | Poll status: `pending` / `processing` / `awaiting_approval` / `uploading` / `ready` / `error` / `expired` |
 | `DELETE` | `/videos/{id}` | Delete video record |
 | `GET` | `/catalog` | Latest catalog address and decoded Autonomi catalog |
 
@@ -48,6 +50,8 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | Per upload/read-back timeout before retrying (default: `120`) |
 | `ANTD_APPROVE_ON_STARTUP` | Run one-time wallet spend approval during startup (default: `true`) |
 | `HLS_SEGMENT_DURATION` | Forced-keyframe segment length in seconds (default: `1`) |
+| `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | Seconds before an unapproved final quote expires and local transcoded files are deleted (default: `14400`) |
+| `APPROVAL_CLEANUP_INTERVAL_SECONDS` | Seconds between cleanup scans for expired final quotes (default: `300`) |
 | `CATALOG_ADDRESS` | Optional bootstrap address for an existing network-hosted catalog |
 | `CATALOG_STATE_PATH` | Local bookmark file for the latest catalog address |
 | `UPLOAD_TEMP_DIR` | Temporary directory for uploads and segments (default: `/tmp/video_uploads`) |
@@ -89,14 +93,21 @@ POST /videos/upload
   → INSERT into videos (status=pending)
   → BackgroundTask: _process_video()
       → for each resolution:
-          → FFmpeg → seg_00000.ts, seg_00001.ts, …  (10s HLS segments)
+          → FFmpeg → seg_00000.ts, seg_00001.ts, …  (configured HLS segments)
           → INSERT video_variants row
-          → for each .ts file:
-              → AsyncAntdClient.data_put_public(bytes, payment_mode=...)
-              → INSERT video_segments row with address, cost, duration
-          → Store video manifest JSON on Autonomi
-          → Store updated catalog JSON on Autonomi
-          → Write latest catalog address bookmark to CATALOG_STATE_PATH
+          → INSERT video_segments rows with local file path, byte size, duration
+      → ask antd for final cost using the actual .ts segment bytes
+      → UPDATE videos SET status='awaiting_approval', final_quote=...
+
+POST /videos/{id}/approve
+  → UPDATE videos SET status='uploading'
+  → BackgroundTask: _upload_approved_video()
+      → for each .ts file:
+          → AsyncAntdClient.data_put_public(bytes, payment_mode=...)
+          → UPDATE video_segments row with address, cost, duration
+      → Store video manifest JSON on Autonomi
+      → Store updated catalog JSON on Autonomi
+      → Write latest catalog address bookmark to CATALOG_STATE_PATH
       → UPDATE videos SET status='ready', manifest_address=..., catalog_address=...
   → cleanup /tmp/video_uploads/{video_id}/
 ```

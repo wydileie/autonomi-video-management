@@ -27,10 +27,12 @@ Browser
 2. The React frontend POSTs the file to the Python admin service.
 3. Python admin saves it to a temp volume and queues a background job.
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
-5. Every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
-6. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
-7. A catalog JSON containing the video list and manifest addresses is stored on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
-8. The job status flips to `ready`. The frontend polls and then activates the player.
+5. Python admin sums the actual transcoded segment sizes and asks `antd` for a final quote using the real segment bytes.
+6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
+7. After approval, every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
+8. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
+9. A catalog JSON containing the video list and manifest addresses is stored on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
+10. The job status flips to `ready`. The frontend polls and then activates the player.
 
 ### Playback flow
 1. The HLS player (hls.js) requests `/stream/{video_id}/{resolution}/playlist.m3u8`.
@@ -164,6 +166,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
+| `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | No | Seconds before an unapproved final quote expires and local transcoded files are deleted. Default: `14400` |
+| `APPROVAL_CLEANUP_INTERVAL_SECONDS` | No | Seconds between cleanup scans for expired final quotes. Default: `300` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
 | `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
 | `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |
@@ -185,7 +189,7 @@ video_variants          (one per resolution per video)
 
 video_segments          (one per .ts chunk per variant)
   id, variant_id → video_variants, segment_index,
-  autonomi_address, duration, byte_size
+  local_path, autonomi_address, duration, byte_size
 
 Autonomi stores the durable playback metadata:
 
@@ -207,9 +211,10 @@ catalog manifest
 | `GET` | `/health` | Health check |
 | `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`) |
+| `POST` | `/videos/{id}/approve` | Approve the final quote and start segment upload/catalog publishing |
 | `GET` | `/videos` | List all videos |
 | `GET` | `/videos/{id}` | Get video with variants and segment addresses |
-| `GET` | `/videos/{id}/status` | Poll processing status (`pending` / `processing` / `ready` / `error`) |
+| `GET` | `/videos/{id}/status` | Poll processing status (`pending` / `processing` / `awaiting_approval` / `uploading` / `ready` / `error` / `expired`) |
 | `DELETE` | `/videos/{id}` | Delete video record (does not remove data from Autonomi) |
 | `GET` | `/catalog` | Return the latest catalog address and decoded network catalog |
 

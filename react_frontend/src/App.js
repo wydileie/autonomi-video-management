@@ -88,6 +88,19 @@ function resolutionByValue(value) {
   return RESOLUTION_OPTIONS.find((option) => option.value === value);
 }
 
+function isActiveStatus(status) {
+  return ["pending", "processing", "awaiting_approval", "uploading"].includes(status);
+}
+
+function statusLabel(status) {
+  return (status || "").replace(/_/g, " ");
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  return new Date(value).toLocaleString();
+}
+
 function VideoPlayer({ videoId, resolution }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -416,7 +429,7 @@ function UploadPanel({ onUploaded }) {
         {uploading && (
           <div className="upload-progress">
             <div>
-              <span>{progress < 100 ? `Uploading source file ${progress}%` : "Transcoding and storing on Autonomi..."}</span>
+              <span>{progress < 100 ? `Uploading source file ${progress}%` : "Transcoding and preparing final quote..."}</span>
               <span>{selected.map((value) => resolutionByValue(value)?.label || value).join(", ")}</span>
             </div>
             <div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
@@ -426,10 +439,37 @@ function UploadPanel({ onUploaded }) {
         {error && <div className="error-box">{error}</div>}
 
         <button className="primary-action" type="submit" disabled={uploading || quote.loading}>
-          {uploading ? "Creating AutVid video..." : "Upload to AutVid"}
+          {uploading ? "Creating final quote..." : "Upload source"}
         </button>
       </form>
     </section>
+  );
+}
+
+function FinalQuotePanel({ quote, expiresAt, onApprove, approving }) {
+  if (!quote) {
+    return <p className="muted">Preparing the final quote from transcoded segments...</p>;
+  }
+
+  return (
+    <div className="quote-panel final-quote-panel">
+      <div className="quote-main">
+        <span className="meta-label">Final Autonomi quote</span>
+        <strong>{formatAttoTokens(quote.storage_cost_atto)}</strong>
+        <p>
+          {formatBytes(quote.actual_media_bytes || quote.estimated_bytes)} of transcoded media
+          across {quote.segment_count} HLS segments. Approval expires {formatDateTime(expiresAt || quote.approval_expires_at)}.
+        </p>
+      </div>
+      <div className="quote-breakdown">
+        <span>{formatWei(quote.estimated_gas_cost_wei)}</span>
+        <span>{formatBytes(quote.metadata_bytes)} metadata estimate</span>
+        <span>{quote.payment_mode} payment mode</span>
+      </div>
+      <button type="button" className="approve-action" onClick={onApprove} disabled={approving}>
+        {approving ? "Approving..." : "Approve upload"}
+      </button>
+    </div>
   );
 }
 
@@ -438,6 +478,9 @@ function Library() {
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [approving, setApproving] = useState(null);
+  const activeDetailId = detail?.id;
+  const activeDetailStatus = detail?.status;
 
   const load = useCallback(async () => {
     try {
@@ -456,12 +499,25 @@ function Library() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (videos.some((video) => video.status === "processing" || video.status === "pending")) {
+      if (videos.some((video) => isActiveStatus(video.status))) {
         load();
       }
     }, 5000);
     return () => clearInterval(interval);
   }, [videos, load]);
+
+  useEffect(() => {
+    if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`${API}/videos/${activeDetailId}`);
+        setDetail(res.data);
+      } catch {
+        // Leave the currently expanded row intact if polling misses once.
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeDetailId, activeDetailStatus]);
 
   const openDetail = async (videoId) => {
     if (detail?.id === videoId) {
@@ -479,6 +535,19 @@ function Library() {
     setVideos((prev) => prev.filter((video) => video.id !== videoId));
     if (detail?.id === videoId) setDetail(null);
     if (playing?.videoId === videoId) setPlaying(null);
+  };
+
+  const approveVideo = async (videoId) => {
+    setApproving(videoId);
+    try {
+      const res = await axios.post(`${API}/videos/${videoId}/approve`);
+      setDetail(res.data);
+      await load();
+    } catch (err) {
+      window.alert(err?.response?.data?.detail || err.message || "Approval failed");
+    } finally {
+      setApproving(null);
+    }
   };
 
   if (loading) return <div className="empty-state">Loading the catalog...</div>;
@@ -504,15 +573,28 @@ function Library() {
                 <span>{video.original_filename}</span>
               </div>
               <div className="row-meta">
-                <span className={`status ${video.status}`}>{video.status}</span>
+                <span className={`status ${video.status}`}>{statusLabel(video.status)}</span>
                 <span>{new Date(video.created_at).toLocaleDateString()}</span>
               </div>
             </button>
 
             {detail?.id === video.id && (
               <div className="video-detail">
-                {detail.variants.length === 0 ? (
-                  <p className="muted">{video.status === "processing" ? "Processing renditions..." : "No variants available."}</p>
+                {detail.status === "awaiting_approval" ? (
+                  <FinalQuotePanel
+                    quote={detail.final_quote}
+                    expiresAt={detail.approval_expires_at}
+                    approving={approving === video.id}
+                    onApprove={() => approveVideo(video.id)}
+                  />
+                ) : detail.status === "uploading" ? (
+                  <p className="muted">Uploading approved segments and publishing the network manifest...</p>
+                ) : detail.status === "processing" || detail.status === "pending" ? (
+                  <p className="muted">Processing renditions and preparing the final quote...</p>
+                ) : detail.status === "error" || detail.status === "expired" ? (
+                  <p className="muted">{detail.error_message || "This video could not be completed."}</p>
+                ) : detail.variants.length === 0 ? (
+                  <p className="muted">No variants available.</p>
                 ) : (
                   <>
                     <div className="variant-actions">

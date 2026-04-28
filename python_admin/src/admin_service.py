@@ -5,10 +5,11 @@ Flow:
   1. Client POSTs a video file + desired resolutions.
   2. We save it to /tmp, create a DB record, and kick off background processing.
   3. Background task runs FFmpeg to produce HLS .ts segments per resolution.
-  4. Each segment is uploaded to the Autonomi network via the antd daemon.
-  5. Segment addresses are published in a video manifest on Autonomi.
-  6. The network catalog is updated with that manifest address.
-  7. The Rust streaming service reads the catalog/manifest from Autonomi.
+  4. The real segment bytes are quoted and the job waits for user approval.
+  5. Approved segments are uploaded to the Autonomi network via the antd daemon.
+  6. Segment addresses are published in a video manifest on Autonomi.
+  7. The network catalog is updated with that manifest address.
+  8. The Rust streaming service reads the catalog/manifest from Autonomi.
 """
 
 import asyncio
@@ -19,7 +20,7 @@ import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import asyncpg
@@ -77,6 +78,12 @@ UPLOAD_QUOTE_TRANSCODED_OVERHEAD = float(
 UPLOAD_QUOTE_MAX_SAMPLE_BYTES = int(
     os.environ.get("UPLOAD_QUOTE_MAX_SAMPLE_BYTES", str(16 * 1024 * 1024))
 )
+FINAL_QUOTE_APPROVAL_TTL_SECONDS = int(
+    os.environ.get("FINAL_QUOTE_APPROVAL_TTL_SECONDS", str(4 * 60 * 60))
+)
+APPROVAL_CLEANUP_INTERVAL_SECONDS = int(
+    os.environ.get("APPROVAL_CLEANUP_INTERVAL_SECONDS", "300")
+)
 VALID_PAYMENT_MODES = {"auto", "merkle", "single"}
 
 if ANTD_PAYMENT_MODE not in VALID_PAYMENT_MODES:
@@ -100,6 +107,12 @@ if ANTD_UPLOAD_RETRIES < 1:
 if ANTD_UPLOAD_TIMEOUT_SECONDS <= 0:
     raise RuntimeError("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero")
 
+if FINAL_QUOTE_APPROVAL_TTL_SECONDS <= 0:
+    raise RuntimeError("FINAL_QUOTE_APPROVAL_TTL_SECONDS must be greater than zero")
+
+if APPROVAL_CLEANUP_INTERVAL_SECONDS <= 0:
+    raise RuntimeError("APPROVAL_CLEANUP_INTERVAL_SECONDS must be greater than zero")
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 catalog_lock = asyncio.Lock()
@@ -116,8 +129,17 @@ async def lifespan(app: FastAPI):
     await _ensure_schema()
     _ensure_catalog_state_dir()
     await _ensure_autonomi_ready()
-    yield
-    await pool.close()
+    await _cleanup_expired_approvals()
+    cleanup_task = asyncio.create_task(_approval_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        await pool.close()
 
 
 async def _ensure_schema():
@@ -134,6 +156,10 @@ async def _ensure_schema():
                 manifest_address TEXT,
                 catalog_address TEXT,
                 error_message TEXT,
+                job_dir TEXT,
+                final_quote JSONB,
+                final_quote_created_at TIMESTAMPTZ,
+                approval_expires_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 user_id TEXT
@@ -142,7 +168,11 @@ async def _ensure_schema():
             ALTER TABLE videos
                 ADD COLUMN IF NOT EXISTS manifest_address TEXT,
                 ADD COLUMN IF NOT EXISTS catalog_address TEXT,
-                ADD COLUMN IF NOT EXISTS error_message TEXT;
+                ADD COLUMN IF NOT EXISTS error_message TEXT,
+                ADD COLUMN IF NOT EXISTS job_dir TEXT,
+                ADD COLUMN IF NOT EXISTS final_quote JSONB,
+                ADD COLUMN IF NOT EXISTS final_quote_created_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ;
 
             CREATE TABLE IF NOT EXISTS video_variants (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -162,18 +192,23 @@ async def _ensure_schema():
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 variant_id UUID NOT NULL REFERENCES video_variants(id) ON DELETE CASCADE,
                 segment_index INTEGER NOT NULL,
-                autonomi_address TEXT NOT NULL,
+                autonomi_address TEXT,
                 autonomi_cost_atto TEXT,
                 autonomi_payment_mode TEXT,
                 duration FLOAT NOT NULL DEFAULT 10.0,
                 byte_size BIGINT,
+                local_path TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE (variant_id, segment_index)
             );
 
             ALTER TABLE video_segments
                 ADD COLUMN IF NOT EXISTS autonomi_cost_atto TEXT,
-                ADD COLUMN IF NOT EXISTS autonomi_payment_mode TEXT;
+                ADD COLUMN IF NOT EXISTS autonomi_payment_mode TEXT,
+                ADD COLUMN IF NOT EXISTS local_path TEXT;
+
+            ALTER TABLE video_segments
+                ALTER COLUMN autonomi_address DROP NOT NULL;
 
             CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
             CREATE INDEX IF NOT EXISTS idx_variants_video ON video_variants(video_id);
@@ -238,6 +273,38 @@ def _write_catalog_address(address: str):
         "note": "This is only a bookmark to the latest network-hosted catalog snapshot.",
     }, indent=2))
     tmp_path.replace(CATALOG_STATE_PATH)
+
+
+async def _approval_cleanup_loop():
+    while True:
+        await asyncio.sleep(APPROVAL_CLEANUP_INTERVAL_SECONDS)
+        try:
+            await _cleanup_expired_approvals()
+        except Exception as exc:
+            log.warning("Approval cleanup failed: %s", exc)
+
+
+async def _cleanup_expired_approvals():
+    """Delete local transcoded files for approval jobs that have gone stale."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos
+            SET status='expired',
+                error_message='Final quote approval window expired; local files were deleted.',
+                updated_at=NOW()
+            WHERE status='awaiting_approval'
+              AND approval_expires_at IS NOT NULL
+              AND approval_expires_at <= NOW()
+            RETURNING id, job_dir
+            """
+        )
+
+    for row in rows:
+        job_dir = row["job_dir"]
+        if job_dir:
+            shutil.rmtree(job_dir, ignore_errors=True)
+        log.info("Expired awaiting approval video %s and removed local files", row["id"])
 
 
 def _empty_catalog() -> dict:
@@ -325,6 +392,17 @@ def _parse_cost_value(value: str | None) -> int:
         return int(value or "0")
     except (TypeError, ValueError):
         return 0
+
+
+def _decode_jsonb(value) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
 
 
 def _ceil_ratio(value: int, numerator: int, denominator: int) -> int:
@@ -479,6 +557,112 @@ async def _build_upload_quote(duration_seconds: float, resolutions: list[str]) -
         await client.close()
 
 
+async def _build_final_upload_quote(video_id: str) -> dict:
+    """Quote the actual transcoded segment bytes that are waiting on disk."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT v.id AS variant_id, v.resolution, v.width, v.height, v.total_duration,
+                   s.segment_index, s.local_path, s.byte_size
+            FROM video_variants v
+            JOIN video_segments s ON s.variant_id = v.id
+            WHERE v.video_id=$1
+            ORDER BY v.height DESC, s.segment_index
+            """,
+            video_id,
+        )
+
+    if not rows:
+        raise RuntimeError("No transcoded segments were found for final quote")
+
+    client = AsyncAntdClient(base_url=ANTD_URL, timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS, 60))
+    quote_cache: dict[int, dict] = {}
+    try:
+        variants_by_id: dict[str, dict] = {}
+        total_storage_cost = 0
+        total_gas_cost = 0
+        total_bytes = 0
+        total_chunks = 0
+
+        for row in rows:
+            path = Path(row["local_path"] or "")
+            if not path.exists():
+                raise RuntimeError(f"Transcoded segment is missing from disk: {path}")
+
+            data = path.read_bytes()
+            estimate = await client.data_cost(data)
+            storage_cost = _parse_cost_value(estimate.cost)
+            gas_cost = _parse_cost_value(estimate.estimated_gas_cost_wei)
+            chunk_count = int(estimate.chunk_count or 0)
+            byte_size = len(data)
+
+            variant_id = str(row["variant_id"])
+            variant = variants_by_id.setdefault(
+                variant_id,
+                {
+                    "resolution": row["resolution"],
+                    "width": row["width"],
+                    "height": row["height"],
+                    "segment_count": 0,
+                    "estimated_bytes": 0,
+                    "actual_bytes": 0,
+                    "chunk_count": 0,
+                    "storage_cost_atto": 0,
+                    "estimated_gas_cost_wei": 0,
+                    "payment_mode": estimate.payment_mode or ANTD_PAYMENT_MODE,
+                },
+            )
+            variant["segment_count"] += 1
+            variant["estimated_bytes"] += byte_size
+            variant["actual_bytes"] += byte_size
+            variant["chunk_count"] += chunk_count
+            variant["storage_cost_atto"] += storage_cost
+            variant["estimated_gas_cost_wei"] += gas_cost
+
+            total_storage_cost += storage_cost
+            total_gas_cost += gas_cost
+            total_bytes += byte_size
+            total_chunks += chunk_count
+
+        manifest_bytes = 4096 + (len(variants_by_id) * 1024) + (len(rows) * 220)
+        catalog_bytes = 2048 + (len(variants_by_id) * 512)
+        metadata_quote = await _quote_data_size(client, manifest_bytes + catalog_bytes, quote_cache)
+
+        total_storage_cost += metadata_quote["storage_cost_atto"]
+        total_gas_cost += metadata_quote["estimated_gas_cost_wei"]
+        total_bytes += manifest_bytes + catalog_bytes
+        total_chunks += metadata_quote["chunk_count"]
+
+        variants = []
+        for variant in variants_by_id.values():
+            variants.append({
+                **variant,
+                "storage_cost_atto": str(variant["storage_cost_atto"]),
+                "estimated_gas_cost_wei": str(variant["estimated_gas_cost_wei"]),
+            })
+
+        return {
+            "quote_type": "final",
+            "duration_seconds": max((float(row["total_duration"] or 0) for row in rows), default=0),
+            "segment_duration": float(HLS_SEGMENT_DURATION),
+            "payment_mode": ANTD_PAYMENT_MODE,
+            "estimated_bytes": total_bytes,
+            "actual_media_bytes": total_bytes - (manifest_bytes + catalog_bytes),
+            "segment_count": len(rows),
+            "chunk_count": total_chunks,
+            "storage_cost_atto": str(total_storage_cost),
+            "estimated_gas_cost_wei": str(total_gas_cost),
+            "metadata_bytes": manifest_bytes + catalog_bytes,
+            "sampled": metadata_quote["sampled"],
+            "approval_ttl_seconds": FINAL_QUOTE_APPROVAL_TTL_SECONDS,
+            "variants": variants,
+        }
+    except AntdError as exc:
+        raise RuntimeError(f"Could not get final Autonomi price quote: {exc}") from exc
+    finally:
+        await client.close()
+
+
 def _video_catalog_entry(manifest: dict, manifest_address: str) -> dict:
     return {
         "id": manifest["id"],
@@ -601,7 +785,7 @@ app.add_middleware(
 
 class SegmentOut(BaseModel):
     segment_index: int
-    autonomi_address: str
+    autonomi_address: str | None = None
     duration: float
 
 
@@ -624,6 +808,10 @@ class VideoOut(BaseModel):
     created_at: str
     manifest_address: str | None = None
     catalog_address: str | None = None
+    error_message: str | None = None
+    final_quote: dict | None = None
+    final_quote_created_at: str | None = None
+    approval_expires_at: str | None = None
     variants: list[VariantOut] = []
 
 
@@ -673,6 +861,7 @@ async def health():
         "ok": status.ok,
         "autonomi": {"ok": status.ok, "network": status.network},
         "payment_mode": ANTD_PAYMENT_MODE,
+        "final_quote_approval_ttl_seconds": FINAL_QUOTE_APPROVAL_TTL_SECONDS,
         "catalog_address": _read_catalog_address(),
     }
 
@@ -722,11 +911,11 @@ async def upload_video(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO videos (id, title, original_filename, description, status)
-            VALUES ($1, $2, $3, $4, 'pending')
+            INSERT INTO videos (id, title, original_filename, description, status, job_dir)
+            VALUES ($1, $2, $3, $4, 'pending', $5)
             RETURNING id, title, original_filename, description, status, created_at
             """,
-            video_id, title, file.filename, description or None,
+            video_id, title, file.filename, description or None, str(job_dir),
         )
 
     background_tasks.add_task(
@@ -780,9 +969,10 @@ async def list_videos():
         rows = await conn.fetch(
             """
             SELECT id, title, original_filename, description, status, created_at,
-                   manifest_address, catalog_address
+                   manifest_address, catalog_address, error_message, final_quote,
+                   final_quote_created_at, approval_expires_at
             FROM videos
-            WHERE status IN ('pending', 'processing', 'error')
+            WHERE status IN ('pending', 'processing', 'awaiting_approval', 'uploading', 'error', 'expired')
             ORDER BY created_at DESC
             """
         )
@@ -797,6 +987,10 @@ async def list_videos():
             created_at=str(r["created_at"]),
             manifest_address=r["manifest_address"],
             catalog_address=r["catalog_address"] or _read_catalog_address(),
+            error_message=r["error_message"],
+            final_quote=_decode_jsonb(r["final_quote"]),
+            final_quote_created_at=str(r["final_quote_created_at"]) if r["final_quote_created_at"] else None,
+            approval_expires_at=str(r["approval_expires_at"]) if r["approval_expires_at"] else None,
         )
         for r in rows
         if str(r["id"]) not in network_ids
@@ -819,7 +1013,8 @@ async def get_video(video_id: str):
         row = await conn.fetchrow(
             """
             SELECT id, title, original_filename, description, status, created_at,
-                   manifest_address, catalog_address
+                   manifest_address, catalog_address, error_message, final_quote,
+                   final_quote_created_at, approval_expires_at
             FROM videos WHERE id=$1
             """,
             video_id,
@@ -869,6 +1064,10 @@ async def get_video(video_id: str):
         created_at=str(row["created_at"]),
         manifest_address=row["manifest_address"],
         catalog_address=row["catalog_address"] or _read_catalog_address(),
+        error_message=row["error_message"],
+        final_quote=_decode_jsonb(row["final_quote"]),
+        final_quote_created_at=str(row["final_quote_created_at"]) if row["final_quote_created_at"] else None,
+        approval_expires_at=str(row["approval_expires_at"]) if row["approval_expires_at"] else None,
         variants=variants,
     )
 
@@ -877,7 +1076,12 @@ async def get_video(video_id: str):
 async def video_status(video_id: str):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT status, manifest_address, catalog_address FROM videos WHERE id=$1", video_id
+            """
+            SELECT status, manifest_address, catalog_address, error_message,
+                   final_quote, final_quote_created_at, approval_expires_at
+            FROM videos WHERE id=$1
+            """,
+            video_id,
         )
     if not row:
         client = AsyncAntdClient(base_url=ANTD_URL, timeout=60)
@@ -899,7 +1103,66 @@ async def video_status(video_id: str):
         "status": row["status"],
         "manifest_address": row["manifest_address"],
         "catalog_address": row["catalog_address"] or _read_catalog_address(),
+        "error_message": row["error_message"],
+        "final_quote": _decode_jsonb(row["final_quote"]),
+        "final_quote_created_at": str(row["final_quote_created_at"]) if row["final_quote_created_at"] else None,
+        "approval_expires_at": str(row["approval_expires_at"]) if row["approval_expires_at"] else None,
     }
+
+
+@app.post("/videos/{video_id}/approve", response_model=VideoOut)
+async def approve_video(video_id: str, background_tasks: BackgroundTasks):
+    """Approve the final quote and start the Autonomi upload/publish stage."""
+    await _cleanup_expired_approvals()
+    expired = False
+    expired_job_dir = None
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT status, approval_expires_at, job_dir
+                FROM videos
+                WHERE id=$1
+                FOR UPDATE
+                """,
+                video_id,
+            )
+            if not row:
+                raise HTTPException(404, "Video not found")
+            if row["status"] != "awaiting_approval":
+                raise HTTPException(409, f"Video is {row['status']}, not awaiting approval")
+            if row["approval_expires_at"] and row["approval_expires_at"] <= datetime.now(timezone.utc):
+                expired = True
+                expired_job_dir = row["job_dir"]
+                await conn.execute(
+                    """
+                    UPDATE videos
+                    SET status='expired',
+                        error_message='Final quote approval window expired; local files were deleted.',
+                        updated_at=NOW()
+                    WHERE id=$1
+                    """,
+                    video_id,
+                )
+            elif not row["job_dir"] or not Path(row["job_dir"]).exists():
+                raise HTTPException(410, "Transcoded files are no longer available")
+            else:
+                await conn.execute(
+                    """
+                    UPDATE videos
+                    SET status='uploading', error_message=NULL, updated_at=NOW()
+                    WHERE id=$1
+                    """,
+                    video_id,
+                )
+
+    if expired:
+        if expired_job_dir:
+            shutil.rmtree(expired_job_dir, ignore_errors=True)
+        raise HTTPException(410, "Final quote approval window has expired")
+
+    background_tasks.add_task(_upload_approved_video, video_id)
+    return await get_video(video_id)
 
 
 @app.delete("/videos/{video_id}")
@@ -924,7 +1187,7 @@ async def _process_video(
     resolutions: list[str],
     job_dir: Path,
 ):
-    """Transcode to HLS at each resolution, upload segments to Autonomi."""
+    """Transcode to HLS, produce a final quote, then pause for approval."""
     try:
         await _set_status(video_id, "processing")
         async with pool.acquire() as conn:
@@ -938,6 +1201,95 @@ async def _process_video(
         if not video_row:
             raise RuntimeError(f"Video row {video_id} disappeared before processing")
 
+        total_duration = await _probe_duration(src_path)
+
+        for res in resolutions:
+            width, height, vbitrate, abitrate = RESOLUTION_PRESETS[res]
+            seg_dir = job_dir / res
+            seg_dir.mkdir(exist_ok=True)
+
+            log.info("Transcoding %s -> %s", video_id, res)
+            await _run_ffmpeg(src_path, seg_dir, width, height, vbitrate, abitrate)
+
+            # Collect segments produced by FFmpeg (sorted by index)
+            ts_files = sorted(seg_dir.glob("seg_*.ts"), key=lambda p: int(p.stem.split("_")[1]))
+            if not ts_files:
+                raise RuntimeError(f"FFmpeg produced no segments for {res}")
+
+            # Insert variant record
+            async with pool.acquire() as conn:
+                variant_row = await conn.fetchrow(
+                    """
+                    INSERT INTO video_variants
+                        (video_id, resolution, width, height, video_bitrate, audio_bitrate,
+                         segment_duration, total_duration, segment_count)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    RETURNING id
+                    """,
+                    video_id,
+                    res,
+                    width,
+                    height,
+                    vbitrate * 1000,
+                    abitrate * 1000,
+                    float(HLS_SEGMENT_DURATION),
+                    total_duration,
+                    len(ts_files),
+                )
+                variant_id = str(variant_row["id"])
+
+            for idx, ts_path in enumerate(ts_files):
+                duration = await _probe_duration(ts_path) or float(HLS_SEGMENT_DURATION)
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO video_segments
+                            (variant_id, segment_index, duration, byte_size, local_path)
+                        VALUES ($1,$2,$3,$4,$5)
+                        ON CONFLICT (variant_id, segment_index) DO UPDATE
+                          SET duration=EXCLUDED.duration,
+                              byte_size=EXCLUDED.byte_size,
+                              local_path=EXCLUDED.local_path
+                        """,
+                        variant_id, idx, duration, ts_path.stat().st_size, str(ts_path),
+                    )
+
+        final_quote = await _build_final_upload_quote(video_id)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=FINAL_QUOTE_APPROVAL_TTL_SECONDS
+        )
+        final_quote["approval_expires_at"] = expires_at.isoformat()
+        final_quote["quote_created_at"] = _now_iso()
+        await _set_awaiting_approval(video_id, final_quote, expires_at)
+        log.info(
+            "Video %s is awaiting approval final_cost=%s expires_at=%s",
+            video_id,
+            final_quote["storage_cost_atto"],
+            expires_at.isoformat(),
+        )
+
+    except Exception as exc:
+        log.exception("Processing failed for %s: %s", video_id, exc)
+        await _set_status(video_id, "error", str(exc))
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+
+async def _upload_approved_video(video_id: str):
+    """Upload approved segment files, publish manifests, and clean local files."""
+    job_dir: Path | None = None
+    try:
+        async with pool.acquire() as conn:
+            video_row = await conn.fetchrow(
+                """
+                SELECT title, original_filename, description, created_at, job_dir
+                FROM videos WHERE id=$1
+                """,
+                video_id,
+            )
+        if not video_row:
+            raise RuntimeError(f"Video row {video_id} disappeared before upload")
+
+        job_dir = Path(video_row["job_dir"]) if video_row["job_dir"] else None
         manifest = {
             "schema_version": 1,
             "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
@@ -956,83 +1308,77 @@ async def _process_video(
             timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
         )
         try:
-            for res in resolutions:
-                width, height, vbitrate, abitrate = RESOLUTION_PRESETS[res]
-                seg_dir = job_dir / res
-                seg_dir.mkdir(exist_ok=True)
-
-                log.info("Transcoding %s -> %s", video_id, res)
-                await _run_ffmpeg(src_path, seg_dir, width, height, vbitrate, abitrate)
-
-                # Collect segments produced by FFmpeg (sorted by index)
-                ts_files = sorted(seg_dir.glob("seg_*.ts"), key=lambda p: int(p.stem.split("_")[1]))
-                if not ts_files:
-                    raise RuntimeError(f"FFmpeg produced no segments for {res}")
-
-                total_duration = await _probe_duration(src_path)
-
-                # Insert variant record
-                async with pool.acquire() as conn:
-                    variant_row = await conn.fetchrow(
-                        """
-                        INSERT INTO video_variants
-                            (video_id, resolution, width, height, video_bitrate, audio_bitrate,
-                             segment_duration, total_duration, segment_count)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                        RETURNING id
-                        """,
-                        video_id, res, width, height, vbitrate * 1000, abitrate * 1000,
-                        float(HLS_SEGMENT_DURATION), total_duration, len(ts_files),
-                    )
-                    variant_id = str(variant_row["id"])
-
-                # Upload each segment as public immutable data for direct HLS proxy reads.
-                log.info(
-                    "Uploading %d segments for %s/%s with payment_mode=%s",
-                    len(ts_files),
+            async with pool.acquire() as conn:
+                variants = await conn.fetch(
+                    """
+                    SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
+                           segment_duration, total_duration
+                    FROM video_variants
+                    WHERE video_id=$1
+                    ORDER BY height DESC
+                    """,
                     video_id,
-                    res,
+                )
+
+            for variant in variants:
+                variant_id = str(variant["id"])
+                async with pool.acquire() as conn:
+                    segment_rows = await conn.fetch(
+                        """
+                        SELECT segment_index, local_path, duration, byte_size
+                        FROM video_segments
+                        WHERE variant_id=$1
+                        ORDER BY segment_index
+                        """,
+                        variant_id,
+                    )
+
+                if not segment_rows:
+                    raise RuntimeError(f"No segments found for {variant['resolution']}")
+
+                log.info(
+                    "Uploading %d approved segments for %s/%s with payment_mode=%s",
+                    len(segment_rows),
+                    video_id,
+                    variant["resolution"],
                     ANTD_PAYMENT_MODE,
                 )
-                for idx, ts_path in enumerate(ts_files):
+                for segment in segment_rows:
+                    ts_path = Path(segment["local_path"] or "")
+                    if not ts_path.exists():
+                        raise RuntimeError(f"Transcoded segment is missing from disk: {ts_path}")
                     data = ts_path.read_bytes()
-                    duration = await _probe_duration(ts_path) or float(HLS_SEGMENT_DURATION)
-                    try:
-                        result = await _put_public_verified(
-                            client,
-                            data,
-                            label=f"{video_id}/{res}/segment-{idx:05d}",
-                        )
-                        address = result.address
-                    except Exception as e:
-                        raise RuntimeError(f"Autonomi upload failed for segment {idx}: {e}") from e
-
+                    result = await _put_public_verified(
+                        client,
+                        data,
+                        label=f"{video_id}/{variant['resolution']}/segment-{segment['segment_index']:05d}",
+                    )
                     async with pool.acquire() as conn:
                         await conn.execute(
                             """
-                            INSERT INTO video_segments
-                                (variant_id, segment_index, autonomi_address,
-                                 autonomi_cost_atto, autonomi_payment_mode, duration, byte_size)
-                            VALUES ($1,$2,$3,$4,$5,$6,$7)
-                            ON CONFLICT (variant_id, segment_index) DO UPDATE
-                              SET autonomi_address=EXCLUDED.autonomi_address,
-                                  autonomi_cost_atto=EXCLUDED.autonomi_cost_atto,
-                                  autonomi_payment_mode=EXCLUDED.autonomi_payment_mode,
-                                  duration=EXCLUDED.duration,
-                                  byte_size=EXCLUDED.byte_size
+                            UPDATE video_segments
+                            SET autonomi_address=$1,
+                                autonomi_cost_atto=$2,
+                                autonomi_payment_mode=$3,
+                                byte_size=$4
+                            WHERE variant_id=$5 AND segment_index=$6
                             """,
-                            variant_id,
-                            idx,
-                            address,
+                            result.address,
                             result.cost,
                             ANTD_PAYMENT_MODE,
-                            duration,
                             len(data),
+                            variant_id,
+                            segment["segment_index"],
                         )
-                    log.info("  seg %03d -> %s (cost=%s)", idx, address, result.cost)
+                    log.info(
+                        "  seg %03d -> %s (cost=%s)",
+                        segment["segment_index"],
+                        result.address,
+                        result.cost,
+                    )
 
                 async with pool.acquire() as conn:
-                    seg_rows = await conn.fetch(
+                    uploaded_segments = await conn.fetch(
                         """
                         SELECT segment_index, autonomi_address, duration, byte_size
                         FROM video_segments
@@ -1044,22 +1390,22 @@ async def _process_video(
 
                 manifest["variants"].append({
                     "id": variant_id,
-                    "resolution": res,
-                    "width": width,
-                    "height": height,
-                    "video_bitrate": vbitrate * 1000,
-                    "audio_bitrate": abitrate * 1000,
-                    "segment_duration": float(HLS_SEGMENT_DURATION),
-                    "total_duration": total_duration,
-                    "segment_count": len(seg_rows),
+                    "resolution": variant["resolution"],
+                    "width": variant["width"],
+                    "height": variant["height"],
+                    "video_bitrate": variant["video_bitrate"],
+                    "audio_bitrate": variant["audio_bitrate"],
+                    "segment_duration": variant["segment_duration"],
+                    "total_duration": variant["total_duration"],
+                    "segment_count": len(uploaded_segments),
                     "segments": [
                         {
-                            "segment_index": s["segment_index"],
-                            "autonomi_address": s["autonomi_address"],
-                            "duration": s["duration"],
-                            "byte_size": s["byte_size"],
+                            "segment_index": segment["segment_index"],
+                            "autonomi_address": segment["autonomi_address"],
+                            "duration": segment["duration"],
+                            "byte_size": segment["byte_size"],
                         }
-                        for s in seg_rows
+                        for segment in uploaded_segments
                     ],
                 })
 
@@ -1069,19 +1415,19 @@ async def _process_video(
             await client.close()
 
         await _set_ready(video_id, manifest_address, catalog_address)
+        if job_dir and job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
         log.info(
             "Video %s is ready manifest=%s catalog=%s",
             video_id,
             manifest_address,
             catalog_address,
         )
-
     except Exception as exc:
-        log.exception("Processing failed for %s: %s", video_id, exc)
+        log.exception("Approved upload failed for %s: %s", video_id, exc)
         await _set_status(video_id, "error", str(exc))
-    finally:
-        # Clean up temp files
-        shutil.rmtree(job_dir, ignore_errors=True)
+        if job_dir and job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
 
 
 async def _run_ffmpeg(
@@ -1156,6 +1502,25 @@ async def _set_status(video_id: str, status: str, error_message: str | None = No
         )
 
 
+async def _set_awaiting_approval(video_id: str, final_quote: dict, expires_at: datetime):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE videos
+            SET status='awaiting_approval',
+                final_quote=$1::jsonb,
+                final_quote_created_at=NOW(),
+                approval_expires_at=$2,
+                error_message=NULL,
+                updated_at=NOW()
+            WHERE id=$3
+            """,
+            json.dumps(final_quote),
+            expires_at,
+            video_id,
+        )
+
+
 async def _set_ready(video_id: str, manifest_address: str, catalog_address: str):
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1165,6 +1530,8 @@ async def _set_ready(video_id: str, manifest_address: str, catalog_address: str)
                 manifest_address=$1,
                 catalog_address=$2,
                 error_message=NULL,
+                job_dir=NULL,
+                approval_expires_at=NULL,
                 updated_at=NOW()
             WHERE id=$3
             """,

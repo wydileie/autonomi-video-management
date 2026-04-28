@@ -424,6 +424,25 @@ main {
   padding: 7px 10px;
 }
 
+.final-quote-panel {
+  align-items: center;
+}
+
+.approve-action {
+  background: var(--moss);
+  border: 0;
+  border-radius: 18px;
+  color: var(--cream);
+  flex: 0 0 auto;
+  font-weight: 900;
+  padding: 14px 18px;
+}
+
+.approve-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .upload-progress {
   background: rgba(23, 33, 27, 0.07);
   border-radius: 20px;
@@ -548,12 +567,15 @@ main {
 }
 
 .status.processing,
-.status.pending {
+.status.pending,
+.status.awaiting_approval,
+.status.uploading {
   background: var(--amber);
   color: var(--ink) !important;
 }
 
-.status.error {
+.status.error,
+.status.expired {
   background: var(--rust);
 }
 
@@ -619,6 +641,7 @@ main {
   .library-head,
   .resolution-toolbar,
   .quote-panel,
+  .final-quote-panel,
   .video-summary,
   .detail-footer {
     align-items: stretch;
