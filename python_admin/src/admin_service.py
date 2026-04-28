@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import secrets
 import uuid
@@ -55,6 +56,21 @@ ANTD_APPROVE_ON_STARTUP = os.environ.get("ANTD_APPROVE_ON_STARTUP", "true").lowe
 }
 UPLOAD_TEMP_DIR = Path(os.environ.get("UPLOAD_TEMP_DIR", "/tmp/video_uploads"))
 UPLOAD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_MAX_FILE_BYTES = int(
+    os.environ.get("UPLOAD_MAX_FILE_BYTES", str(20 * 1024 * 1024 * 1024))
+)
+UPLOAD_MAX_DURATION_SECONDS = float(
+    os.environ.get("UPLOAD_MAX_DURATION_SECONDS", str(4 * 60 * 60))
+)
+UPLOAD_MAX_SOURCE_PIXELS = int(
+    os.environ.get("UPLOAD_MAX_SOURCE_PIXELS", str(7680 * 4320))
+)
+UPLOAD_MAX_SOURCE_LONG_EDGE = int(os.environ.get("UPLOAD_MAX_SOURCE_LONG_EDGE", "7680"))
+UPLOAD_MIN_FREE_BYTES = int(
+    os.environ.get("UPLOAD_MIN_FREE_BYTES", str(5 * 1024 * 1024 * 1024))
+)
+UPLOAD_MAX_CONCURRENT_SAVES = int(os.environ.get("UPLOAD_MAX_CONCURRENT_SAVES", "2"))
+UPLOAD_FFPROBE_TIMEOUT_SECONDS = float(os.environ.get("UPLOAD_FFPROBE_TIMEOUT_SECONDS", "30"))
 CATALOG_STATE_PATH = Path(os.environ.get("CATALOG_STATE_PATH", "/tmp/video_catalog/catalog.json"))
 CATALOG_BOOTSTRAP_ADDRESS = os.environ.get("CATALOG_ADDRESS", "").strip()
 CATALOG_CONTENT_TYPE = "application/vnd.autonomi.video.catalog+json;v=1"
@@ -76,6 +92,7 @@ RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
 }
 
 VideoDimensions = tuple[int, int]
+UploadMediaMetadata = tuple[float, VideoDimensions]
 
 # Keep media chunks comfortably below Autonomi's multi-MB chunk boundary for
 # reliable local-devnet storage and playback. FFmpeg is configured below to
@@ -130,9 +147,31 @@ if FINAL_QUOTE_APPROVAL_TTL_SECONDS <= 0:
 if APPROVAL_CLEANUP_INTERVAL_SECONDS <= 0:
     raise RuntimeError("APPROVAL_CLEANUP_INTERVAL_SECONDS must be greater than zero")
 
+if UPLOAD_MAX_FILE_BYTES <= 0:
+    raise RuntimeError("UPLOAD_MAX_FILE_BYTES must be greater than zero")
+
+if UPLOAD_MAX_DURATION_SECONDS <= 0:
+    raise RuntimeError("UPLOAD_MAX_DURATION_SECONDS must be greater than zero")
+
+if UPLOAD_MAX_SOURCE_PIXELS <= 0:
+    raise RuntimeError("UPLOAD_MAX_SOURCE_PIXELS must be greater than zero")
+
+if UPLOAD_MAX_SOURCE_LONG_EDGE <= 0:
+    raise RuntimeError("UPLOAD_MAX_SOURCE_LONG_EDGE must be greater than zero")
+
+if UPLOAD_MIN_FREE_BYTES < 0:
+    raise RuntimeError("UPLOAD_MIN_FREE_BYTES cannot be negative")
+
+if UPLOAD_MAX_CONCURRENT_SAVES < 1:
+    raise RuntimeError("UPLOAD_MAX_CONCURRENT_SAVES must be at least 1")
+
+if UPLOAD_FFPROBE_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("UPLOAD_FFPROBE_TIMEOUT_SECONDS must be greater than zero")
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 catalog_lock = asyncio.Lock()
+upload_save_semaphore = asyncio.Semaphore(UPLOAD_MAX_CONCURRENT_SAVES)
 active_job_tasks: dict[str, asyncio.Task] = {}
 
 # ── Database pool ─────────────────────────────────────────────────────────────
@@ -589,6 +628,96 @@ def _ceil_ratio(value: int, numerator: int, denominator: int) -> int:
     return (value * numerator + denominator - 1) // denominator
 
 
+def _format_bytes(byte_count: int) -> str:
+    value = float(byte_count)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{byte_count} B"
+        value /= 1024
+    return f"{byte_count} B"
+
+
+def _format_duration(seconds: float) -> str:
+    minutes, sec = divmod(int(math.ceil(seconds)), 60)
+    hours, minute = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minute}m {sec}s"
+    if minute:
+        return f"{minute}m {sec}s"
+    return f"{sec}s"
+
+
+def _sanitize_upload_filename(filename: str | None) -> str:
+    basename = Path(filename or "upload").name
+    stem = Path(basename).stem
+    suffix = Path(basename).suffix.lower()
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    safe_suffix = re.sub(r"[^A-Za-z0-9.]+", "", suffix)[:16]
+
+    if not safe_stem:
+        safe_stem = "upload"
+
+    max_stem_length = max(1, 128 - len(safe_suffix))
+    return f"{safe_stem[:max_stem_length]}{safe_suffix}"
+
+
+def _ensure_upload_disk_space(additional_bytes: int = 0):
+    free_bytes = shutil.disk_usage(UPLOAD_TEMP_DIR).free
+    required_free = UPLOAD_MIN_FREE_BYTES + max(0, additional_bytes)
+    if free_bytes < required_free:
+        raise HTTPException(
+            507,
+            "Not enough upload disk space "
+            f"(free={_format_bytes(free_bytes)}, required={_format_bytes(required_free)})",
+        )
+
+
+def _enforce_upload_media_limits(duration_seconds: float, dimensions: VideoDimensions):
+    width, height = dimensions
+    if duration_seconds > UPLOAD_MAX_DURATION_SECONDS:
+        raise HTTPException(
+            413,
+            "Video duration exceeds upload limit "
+            f"({_format_duration(duration_seconds)} > {_format_duration(UPLOAD_MAX_DURATION_SECONDS)})",
+        )
+
+    pixel_count = width * height
+    long_edge = max(width, height)
+    if long_edge > UPLOAD_MAX_SOURCE_LONG_EDGE or pixel_count > UPLOAD_MAX_SOURCE_PIXELS:
+        max_megapixels = UPLOAD_MAX_SOURCE_PIXELS / 1_000_000
+        raise HTTPException(
+            413,
+            "Video resolution exceeds upload limit "
+            f"({width}x{height}; max long edge {UPLOAD_MAX_SOURCE_LONG_EDGE}px "
+            f"and {max_megapixels:.1f} MP)",
+        )
+
+
+async def _save_upload_stream(file: UploadFile, destination: Path) -> int:
+    bytes_written = 0
+    try:
+        with open(destination, "wb") as f_out:
+            while chunk := await file.read(1024 * 1024):
+                next_size = bytes_written + len(chunk)
+                if next_size > UPLOAD_MAX_FILE_BYTES:
+                    raise HTTPException(
+                        413,
+                        "Upload exceeds max file size "
+                        f"({_format_bytes(UPLOAD_MAX_FILE_BYTES)})",
+                    )
+                _ensure_upload_disk_space(len(chunk))
+                f_out.write(chunk)
+                bytes_written = next_size
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+    if bytes_written == 0:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(400, "Uploaded file is empty")
+    return bytes_written
+
+
 def _estimate_transcoded_bytes(seconds: float, video_kbps: int, audio_kbps: int) -> int:
     if seconds <= 0:
         return 0
@@ -661,9 +790,13 @@ def _target_dimensions_for_source(
 
 
 def _request_source_dimensions(request: "UploadQuoteRequest") -> VideoDimensions | None:
-    if request.source_width and request.source_height:
-        return request.source_width, request.source_height
-    return None
+    if request.source_width is None and request.source_height is None:
+        return None
+    if request.source_width is None or request.source_height is None:
+        raise HTTPException(400, "source_width and source_height must be provided together")
+    if request.source_width <= 0 or request.source_height <= 0:
+        raise HTTPException(400, "source_width and source_height must be greater than zero")
+    return request.source_width, request.source_height
 
 
 async def _build_upload_quote(
@@ -673,6 +806,14 @@ async def _build_upload_quote(
 ) -> dict:
     if duration_seconds <= 0:
         raise HTTPException(400, "duration_seconds must be greater than zero")
+    if source_dimensions:
+        _enforce_upload_media_limits(duration_seconds, source_dimensions)
+    elif duration_seconds > UPLOAD_MAX_DURATION_SECONDS:
+        raise HTTPException(
+            413,
+            "Video duration exceeds upload limit "
+            f"({_format_duration(duration_seconds)} > {_format_duration(UPLOAD_MAX_DURATION_SECONDS)})",
+        )
 
     selected = [resolution for resolution in resolutions if resolution in RESOLUTION_PRESETS]
     if not selected:
@@ -1348,45 +1489,89 @@ async def upload_video(
     resolutions: str = Form("720p"),  # comma-separated, e.g. "480p,720p,1080p,4k"
     show_original_filename: bool = Form(False),
     show_manifest_address: bool = Form(False),
+    content_length: int | None = Header(None),
 ):
     """Accept a video file and queue it for transcoding + Autonomi upload."""
     selected = [r.strip() for r in resolutions.split(",") if r.strip() in RESOLUTION_PRESETS]
     if not selected:
         raise HTTPException(400, f"No valid resolutions. Choose from: {list(RESOLUTION_PRESETS)}")
 
+    multipart_overhead_allowance = 2 * 1024 * 1024
+    if content_length and content_length > UPLOAD_MAX_FILE_BYTES + multipart_overhead_allowance:
+        raise HTTPException(
+            413,
+            "Upload exceeds max file size "
+            f"({_format_bytes(UPLOAD_MAX_FILE_BYTES)})",
+        )
+
     video_id = str(uuid.uuid4())
     job_dir = UPLOAD_TEMP_DIR / video_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save raw upload
-    src_path = job_dir / f"original_{file.filename}"
-    with open(src_path, "wb") as f_out:
-        while chunk := await file.read(1024 * 1024):
-            f_out.write(chunk)
+    safe_filename = _sanitize_upload_filename(file.filename)
+    src_path = job_dir / f"original_{safe_filename}"
+    tmp_src_path = src_path.with_name(f"{src_path.name}.uploading")
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO videos (
-                id, title, original_filename, description, status, job_dir,
-                job_source_path, requested_resolutions,
-                show_original_filename, show_manifest_address, user_id
-            )
-            VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10)
-            RETURNING id, title, original_filename, description, status, created_at,
-                      show_original_filename, show_manifest_address
-            """,
+    try:
+        await asyncio.wait_for(upload_save_semaphore.acquire(), timeout=0.01)
+    except asyncio.TimeoutError as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(429, "Too many uploads are in progress; try again shortly") from exc
+
+    try:
+        if content_length:
+            _ensure_upload_disk_space(content_length)
+        else:
+            _ensure_upload_disk_space()
+
+        bytes_written = await _save_upload_stream(file, tmp_src_path)
+        duration_seconds, source_dimensions = await _probe_upload_media(tmp_src_path)
+        tmp_src_path.replace(src_path)
+        log.info(
+            "Accepted upload %s filename=%s bytes=%d duration=%.2fs dimensions=%sx%s",
             video_id,
-            title,
-            file.filename,
-            description or None,
-            str(job_dir),
-            str(src_path),
-            json.dumps(selected),
-            show_original_filename,
-            show_manifest_address,
-            username,
+            safe_filename,
+            bytes_written,
+            duration_seconds,
+            source_dimensions[0],
+            source_dimensions[1],
         )
+    except HTTPException:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(507, f"Could not store upload safely: {exc}") from exc
+    finally:
+        upload_save_semaphore.release()
+
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO videos (
+                    id, title, original_filename, description, status, job_dir,
+                    job_source_path, requested_resolutions,
+                    show_original_filename, show_manifest_address, user_id
+                )
+                VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10)
+                RETURNING id, title, original_filename, description, status, created_at,
+                          show_original_filename, show_manifest_address
+                """,
+                video_id,
+                title,
+                safe_filename,
+                description or None,
+                str(job_dir),
+                str(src_path),
+                json.dumps(selected),
+                show_original_filename,
+                show_manifest_address,
+                username,
+            )
+    except Exception:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise
 
     _schedule_processing_job(video_id, src_path, selected, job_dir)
 
@@ -1973,6 +2158,90 @@ def _stream_rotation_degrees(stream: dict) -> int:
         return int(float(str(rotation))) % 360
     except (TypeError, ValueError):
         return 0
+
+
+def _parse_probe_duration(data: dict, stream: dict) -> float | None:
+    for source in (stream, data.get("format") or {}):
+        try:
+            duration = float(source.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(duration) and duration > 0:
+            return duration
+    return None
+
+
+async def _probe_upload_media(src: Path) -> UploadMediaMetadata:
+    """Validate that an uploaded source has a real video stream we can process."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_streams",
+        "-show_format",
+        "-of", "json",
+        str(src),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(500, "ffprobe is required to validate uploaded media") from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=UPLOAD_FFPROBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.communicate()
+        raise HTTPException(400, "Could not validate uploaded media before timeout") from exc
+
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="replace").strip()[-500:]
+        message = "Uploaded file is not a readable video"
+        if detail:
+            message = f"{message}: {detail}"
+        raise HTTPException(400, message)
+
+    try:
+        data = json.loads(stdout.decode())
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "Uploaded file probe returned invalid metadata") from exc
+
+    stream = next(
+        (
+            candidate
+            for candidate in data.get("streams") or []
+            if candidate.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if not stream:
+        raise HTTPException(400, "Uploaded file does not contain a video stream")
+
+    try:
+        width = int(stream["width"])
+        height = int(stream["height"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(400, "Uploaded video stream has no usable dimensions") from exc
+
+    if width <= 0 or height <= 0:
+        raise HTTPException(400, "Uploaded video stream has invalid dimensions")
+
+    if _stream_rotation_degrees(stream) in {90, 270}:
+        dimensions = (height, width)
+    else:
+        dimensions = (width, height)
+
+    duration = _parse_probe_duration(data, stream)
+    if duration is None:
+        raise HTTPException(400, "Uploaded video has no usable duration")
+
+    _enforce_upload_media_limits(duration, dimensions)
+    return duration, dimensions
 
 
 async def _probe_video_dimensions(src: Path) -> VideoDimensions | None:

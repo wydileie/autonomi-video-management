@@ -174,6 +174,13 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_UPLOAD_RETRIES` | No | Number of upload/verify attempts per segment. Default: `3` |
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
+| `UPLOAD_MAX_FILE_BYTES` | No | Max accepted source upload bytes. Default: `21474836480` (20 GiB) |
+| `UPLOAD_MAX_DURATION_SECONDS` | No | Max accepted source duration from server-side `ffprobe`. Default: `14400` |
+| `UPLOAD_MAX_SOURCE_PIXELS` | No | Max accepted source pixel count after rotation metadata. Default: `33177600` (8K) |
+| `UPLOAD_MAX_SOURCE_LONG_EDGE` | No | Max accepted source long edge in pixels after rotation metadata. Default: `7680` |
+| `UPLOAD_MIN_FREE_BYTES` | No | Processing-disk free-space headroom required before and during upload writes. Default: `5368709120` (5 GiB) |
+| `UPLOAD_MAX_CONCURRENT_SAVES` | No | Max concurrent source uploads being streamed/probed to disk. Default: `2` |
+| `UPLOAD_FFPROBE_TIMEOUT_SECONDS` | No | Server-side upload validation `ffprobe` timeout. Default: `30` |
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
 | `FFMPEG_THREADS` | No | Maximum FFmpeg/x264 encoder threads. Default: `2` to reduce memory use for high-resolution portrait transcodes |
 | `FFMPEG_FILTER_THREADS` | No | Maximum FFmpeg filter graph threads. Default: `1` |

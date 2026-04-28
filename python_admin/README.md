@@ -60,6 +60,13 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `ANTD_UPLOAD_RETRIES` | Upload/read-back attempts per segment (default: `3`) |
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | Per upload/read-back timeout before retrying (default: `120`) |
 | `ANTD_APPROVE_ON_STARTUP` | Run one-time wallet spend approval during startup (default: `true`) |
+| `UPLOAD_MAX_FILE_BYTES` | Max accepted source upload bytes (default: `21474836480`, 20 GiB) |
+| `UPLOAD_MAX_DURATION_SECONDS` | Max accepted source duration according to `ffprobe` (default: `14400`, 4 hours) |
+| `UPLOAD_MAX_SOURCE_PIXELS` | Max accepted source pixel count after rotation metadata (default: `33177600`, 8K) |
+| `UPLOAD_MAX_SOURCE_LONG_EDGE` | Max accepted source long edge in pixels after rotation metadata (default: `7680`) |
+| `UPLOAD_MIN_FREE_BYTES` | Required free processing-disk headroom before and during upload writes (default: `5368709120`, 5 GiB) |
+| `UPLOAD_MAX_CONCURRENT_SAVES` | Max concurrent source files being streamed/probed to disk (default: `2`) |
+| `UPLOAD_FFPROBE_TIMEOUT_SECONDS` | Timeout for server-side upload validation probe (default: `30`) |
 | `HLS_SEGMENT_DURATION` | Forced-keyframe segment length in seconds (default: `1`) |
 | `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | Seconds before an unapproved final quote expires and local transcoded files are deleted (default: `14400`) |
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | Seconds between cleanup scans for expired final quotes (default: `300`) |
@@ -102,7 +109,11 @@ POST /videos/upload/quote
 
 POST /videos/upload
   → requires Authorization: Bearer <admin token>
-  → save file to $UPLOAD_TEMP_DIR/{video_id}/original_<name>
+  → sanitize the source filename
+  → stream file to $UPLOAD_TEMP_DIR/{video_id}/original_<name>.uploading
+      while enforcing file-size, disk-space, and concurrent-upload limits
+  → validate source duration and display resolution with ffprobe
+  → rename validated source to $UPLOAD_TEMP_DIR/{video_id}/original_<name>
   → INSERT into videos (status=pending, job_source_path, requested_resolutions)
   → queue worker task: _process_video()
       → for each resolution:
