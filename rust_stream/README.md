@@ -16,6 +16,8 @@ The player never contacts the Autonomi network directly — this service acts as
 | `GET` | `/health` | Health check for the `antd` daemon and catalog address availability |
 | `GET` | `/stream/{video_id}/{resolution}/playlist.m3u8` | HLS manifest |
 | `GET` | `/stream/{video_id}/{resolution}/{index}.ts` | TS segment (Autonomi proxy) |
+| `GET` | `/stream/manifest/{manifest_address}/{resolution}/playlist.m3u8` | HLS manifest by manifest address |
+| `GET` | `/stream/manifest/{manifest_address}/{resolution}/{index}.ts` | TS segment by manifest address |
 
 ### Example manifest response
 
@@ -51,7 +53,7 @@ The manifest only exists for videos present in the latest Autonomi catalog with 
 
 - `axum` — HTTP server
 - `tokio` — async runtime
-- `antd-client` — Autonomi SDK; calls `data_get_public` on the `antd` daemon
+- `reqwest` — calls the `antd` REST daemon's `/v1/data/public/{address}` endpoint
 - `tower-http` — CORS middleware
 - `serde`, `serde_json`, `anyhow`, `tracing`
 
@@ -80,3 +82,4 @@ GET /stream/{video_id}/{resolution}/{index}.ts
 ```
 
 Both the manifest and segment handlers return `404` if the video is not found or is not yet `ready`.
+The manifest-address routes are used by the admin UI to preview ready videos before they are published into the public catalog.

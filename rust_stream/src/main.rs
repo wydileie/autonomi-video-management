@@ -7,8 +7,10 @@
 //!
 //! Endpoints:
 //!   GET  /health
-//!   GET  /stream/{video_id}/{resolution}/playlist.m3u8   → HLS manifest
-//!   GET  /stream/{video_id}/{resolution}/{seg_index}.ts  → TS segment bytes
+//!   GET  /stream/{video_id}/{resolution}/playlist.m3u8                 → Public HLS manifest
+//!   GET  /stream/{video_id}/{resolution}/{seg_index}.ts                → Public TS segment bytes
+//!   GET  /stream/manifest/{manifest_address}/{resolution}/playlist.m3u8 → HLS manifest by address
+//!   GET  /stream/manifest/{manifest_address}/{resolution}/{seg_index}.ts → TS segment by address
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -18,7 +20,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use antd_client::Client as AntdClient;
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -27,6 +28,7 @@ use axum::{
     routing::get,
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
@@ -37,7 +39,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[derive(Clone)]
 struct AppState {
-    antd: AntdClient,
+    antd: AntdRestClient,
     catalog_state_path: PathBuf,
     catalog_bootstrap_address: Option<String>,
     cache: Arc<AppCache>,
@@ -87,6 +89,23 @@ struct AutonomiHealth {
     ok: bool,
     network: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Clone)]
+struct AntdRestClient {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+#[derive(Deserialize)]
+struct AntdHealthResponse {
+    status: String,
+    network: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AntdPublicDataResponse {
+    data: String,
 }
 
 fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
@@ -291,6 +310,44 @@ impl SegmentCache {
     }
 }
 
+impl AntdRestClient {
+    fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn health(&self) -> anyhow::Result<AntdHealthResponse> {
+        self.get_json("/health").await
+    }
+
+    async fn data_get_public(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+        let payload: AntdPublicDataResponse = self
+            .get_json(&format!("/v1/data/public/{}", address.trim()))
+            .await?;
+        BASE64
+            .decode(payload.data)
+            .map_err(|err| anyhow::anyhow!("antd returned invalid base64 public data: {err}"))
+    }
+
+    async fn get_json<T>(&self, path: &str) -> anyhow::Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self.client.get(&url).send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "".to_string());
+            anyhow::bail!("GET {path} failed: {status} {body}");
+        }
+
+        response.json::<T>().await.map_err(Into::into)
+    }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -310,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(|value| !value.is_empty());
     let cache_config = CacheConfig::from_env();
 
-    let antd = AntdClient::new(&antd_url);
+    let antd = AntdRestClient::new(&antd_url);
 
     let state = AppState {
         antd,
@@ -344,6 +401,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/stream/health", get(health))
         .route(
+            "/stream/manifest/:manifest_address/:resolution/playlist.m3u8",
+            get(hls_manifest_by_address),
+        )
+        .route(
+            "/stream/manifest/:manifest_address/:resolution/:segment_index",
+            get(hls_segment_by_address),
+        )
+        .route(
             "/stream/:video_id/:resolution/playlist.m3u8",
             get(hls_manifest),
         )
@@ -367,8 +432,8 @@ async fn main() -> anyhow::Result<()> {
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
     let autonomi = match state.antd.health().await {
         Ok(status) => AutonomiHealth {
-            ok: status.ok,
-            network: Some(status.network),
+            ok: status.status.eq_ignore_ascii_case("ok"),
+            network: status.network,
             error: None,
         },
         Err(err) => AutonomiHealth {
@@ -402,6 +467,20 @@ async fn hls_manifest(
     }
 }
 
+/// Serve an HLS playlist directly from a known video manifest address.
+async fn hls_manifest_by_address(
+    State(state): State<AppState>,
+    Path((manifest_address, resolution)): Path<(String, String)>,
+) -> Response {
+    match build_manifest_from_address(&state, &manifest_address, &resolution).await {
+        Ok(manifest) => (StatusCode::OK, playlist_headers(&state), manifest).into_response(),
+        Err(e) => {
+            error!("manifest-by-address error: {e}");
+            (StatusCode::NOT_FOUND, e).into_response()
+        }
+    }
+}
+
 /// Proxy a .ts segment from Autonomi to the video player.
 async fn hls_segment(
     State(state): State<AppState>,
@@ -418,6 +497,26 @@ async fn hls_segment(
         Ok(bytes) => (StatusCode::OK, segment_headers(&state), Body::from(bytes)).into_response(),
         Err(e) => {
             error!("segment fetch error: {e}");
+            (StatusCode::NOT_FOUND, e).into_response()
+        }
+    }
+}
+
+/// Proxy a .ts segment using a known video manifest address.
+async fn hls_segment_by_address(
+    State(state): State<AppState>,
+    Path((manifest_address, resolution, seg_param)): Path<(String, String, String)>,
+) -> Response {
+    let index_str = seg_param.trim_end_matches(".ts");
+    let seg_index: i32 = match index_str.parse() {
+        Ok(n) => n,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid segment index").into_response(),
+    };
+
+    match fetch_segment_from_address(&state, &manifest_address, &resolution, seg_index).await {
+        Ok(bytes) => (StatusCode::OK, segment_headers(&state), Body::from(bytes)).into_response(),
+        Err(e) => {
+            error!("segment-by-address fetch error: {e}");
             (StatusCode::NOT_FOUND, e).into_response()
         }
     }
@@ -481,6 +580,30 @@ async fn build_manifest(
     resolution: &str,
 ) -> Result<String, String> {
     let manifest = load_video_manifest(state, video_id).await?;
+    render_manifest(&manifest, resolution, |segment_index| {
+        format!("/stream/{video_id}/{resolution}/{segment_index}.ts")
+    })
+}
+
+async fn build_manifest_from_address(
+    state: &AppState,
+    manifest_address: &str,
+    resolution: &str,
+) -> Result<String, String> {
+    let manifest = load_manifest(state, manifest_address).await?;
+    render_manifest(&manifest, resolution, |segment_index| {
+        format!("/stream/manifest/{manifest_address}/{resolution}/{segment_index}.ts")
+    })
+}
+
+fn render_manifest<F>(
+    manifest: &VideoManifest,
+    resolution: &str,
+    segment_url: F,
+) -> Result<String, String>
+where
+    F: Fn(i32) -> String,
+{
     if manifest.status != "ready" {
         return Err("video not ready".to_string());
     }
@@ -507,8 +630,9 @@ async fn build_manifest(
 
     for seg in &variant.segments {
         m3u8.push_str(&format!(
-            "#EXTINF:{:.3},\n/stream/{video_id}/{resolution}/{}.ts\n",
-            seg.duration, seg.segment_index,
+            "#EXTINF:{:.3},\n{}\n",
+            seg.duration,
+            segment_url(seg.segment_index),
         ));
     }
     m3u8.push_str("#EXT-X-ENDLIST\n");
@@ -523,6 +647,29 @@ async fn fetch_segment(
     seg_index: i32,
 ) -> Result<Vec<u8>, String> {
     let manifest = load_video_manifest(state, video_id).await?;
+    let segment_address = manifest
+        .variants
+        .iter()
+        .find(|variant| variant.resolution == resolution)
+        .and_then(|variant| {
+            variant
+                .segments
+                .iter()
+                .find(|segment| segment.segment_index == seg_index)
+        })
+        .map(|segment| segment.autonomi_address.clone())
+        .ok_or_else(|| "segment not found".to_string())?;
+
+    fetch_segment_data(state, &segment_address).await
+}
+
+async fn fetch_segment_from_address(
+    state: &AppState,
+    manifest_address: &str,
+    resolution: &str,
+    seg_index: i32,
+) -> Result<Vec<u8>, String> {
+    let manifest = load_manifest(state, manifest_address).await?;
     let segment_address = manifest
         .variants
         .iter()
@@ -682,7 +829,7 @@ mod tests {
         };
 
         AppState {
-            antd: AntdClient::new("http://127.0.0.1:0"),
+            antd: AntdRestClient::new("http://127.0.0.1:0"),
             catalog_state_path: env::temp_dir().join(format!(
                 "rust_stream_missing_catalog_{}.json",
                 std::process::id()
@@ -800,6 +947,31 @@ mod tests {
         assert_eq!(
             body.as_ref(),
             b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:3.200,\n/stream/video-1/720p/0.ts\n#EXTINF:4.400,\n/stream/video-1/720p/1.ts\n#EXT-X-ENDLIST\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn hls_manifest_by_address_route_renders_manifest_address_segment_urls() {
+        let state = test_state(None);
+        state.cache.manifests.lock().await.insert(
+            TEST_MANIFEST_ADDRESS.to_string(),
+            CachedValue {
+                value: ready_manifest(),
+                expires_at: Instant::now() + Duration::from_secs(60),
+            },
+        );
+
+        let response = hls_manifest_by_address(
+            State(state),
+            Path((TEST_MANIFEST_ADDRESS.to_string(), "720p".to_string())),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            body.as_ref(),
+            b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:3.200,\n/stream/manifest/test-manifest/720p/0.ts\n#EXTINF:4.400,\n/stream/manifest/test-manifest/720p/1.ts\n#EXT-X-ENDLIST\n"
         );
     }
 

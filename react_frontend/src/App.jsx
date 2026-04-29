@@ -122,12 +122,15 @@ function variantDisplayLabel(resolution) {
   return resolutionByValue(resolution)?.label || resolution;
 }
 
-function VideoPlayer({ videoId, variants, resolution, onResolutionChange }) {
+function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolutionChange }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const [qualityOpen, setQualityOpen] = useState(false);
   const [playbackError, setPlaybackError] = useState("");
-  const src = `${STREAM}/${videoId}/${resolution}/playlist.m3u8`;
+  const streamBase = manifestAddress
+    ? `${STREAM}/manifest/${manifestAddress}`
+    : `${STREAM}/${videoId}`;
+  const src = `${streamBase}/${resolution}/playlist.m3u8`;
   const selectedLabel = variantDisplayLabel(resolution);
 
   useEffect(() => {
@@ -850,6 +853,7 @@ function Library({ admin = false, token = "" }) {
                       return (
                         <VideoPlayer
                           videoId={video.id}
+                          manifestAddress={admin ? detail.manifest_address : null}
                           variants={detail.variants}
                           resolution={selectedVariant.resolution}
                           onResolutionChange={(nextResolution) => setPlaying({

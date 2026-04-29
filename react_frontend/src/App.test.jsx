@@ -420,6 +420,48 @@ test("shows a playback error when HLS segment loading fails", async () => {
   expect(text()).toContain("Playback failed because the video segments could not be loaded.");
 });
 
+test("uses the manifest-address stream route for admin preview before publishing", async () => {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstance = {
+    attachMedia: vi.fn(),
+    destroy: vi.fn(),
+    loadSource: vi.fn(),
+    on: vi.fn(),
+  };
+  Hls.mockImplementation(() => hlsInstance);
+  const adminVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Operators only",
+    id: "admin-preview",
+    is_public: false,
+    original_filename: "source.mov",
+    status: "ready",
+    title: "Preview test",
+  };
+  setupGetRoutes({
+    adminVideos: [adminVideo],
+    details: {
+      "/api/admin/videos/admin-preview": {
+        ...adminVideo,
+        manifest_address: "0xmanifest",
+        show_manifest_address: false,
+        show_original_filename: false,
+        variants: [{ id: "variant-1", resolution: "720p", segment_count: 4 }],
+      },
+    },
+  });
+
+  await renderApp();
+  await click(findButton("Manage"));
+  await waitFor(() => expect(text()).toContain("Preview test"));
+  await click(findButton("Preview test"));
+
+  expect(hlsInstance.loadSource).toHaveBeenCalledWith(
+    "/stream/manifest/0xmanifest/720p/playlist.m3u8",
+  );
+});
+
 test("publishes and unpublishes ready videos from admin controls", async () => {
   window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
   const adminVideo = {
