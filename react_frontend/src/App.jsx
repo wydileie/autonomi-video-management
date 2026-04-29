@@ -241,7 +241,6 @@ function UploadPanel({ token, onUploaded }) {
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
-  const [showOriginalFilename, setShowOriginalFilename] = useState(false);
   const [showManifestAddress, setShowManifestAddress] = useState(false);
   const [selected, setSelected] = useState(["720p"]);
   const [uploading, setUploading] = useState(false);
@@ -368,7 +367,7 @@ function UploadPanel({ token, onUploaded }) {
     fd.append("title", title.trim());
     fd.append("description", desc.trim());
     fd.append("resolutions", resolutionsToUpload.join(","));
-    fd.append("show_original_filename", showOriginalFilename ? "true" : "false");
+    fd.append("show_original_filename", "false");
     fd.append("show_manifest_address", showManifestAddress ? "true" : "false");
 
     try {
@@ -383,7 +382,6 @@ function UploadPanel({ token, onUploaded }) {
       setFile(null);
       setTitle("");
       setDesc("");
-      setShowOriginalFilename(false);
       setShowManifestAddress(false);
       setSelected(["720p"]);
       setMeta(null);
@@ -479,15 +477,6 @@ function UploadPanel({ token, onUploaded }) {
         </div>
 
         <div className="privacy-panel">
-          <label>
-            <input
-              type="checkbox"
-              checked={showOriginalFilename}
-              onChange={(event) => setShowOriginalFilename(event.target.checked)}
-              disabled={uploading}
-            />
-            <span>Publish original filename</span>
-          </label>
           <label>
             <input
               type="checkbox"
@@ -889,20 +878,9 @@ function Library({ admin = false, token = "" }) {
                       <label>
                         <input
                           type="checkbox"
-                          checked={!!detail.show_original_filename}
-                          onChange={(event) => updateVisibility(video.id, {
-                            show_original_filename: event.target.checked,
-                            show_manifest_address: !!detail.show_manifest_address,
-                          })}
-                        />
-                        <span>Publish filename</span>
-                      </label>
-                      <label>
-                        <input
-                          type="checkbox"
                           checked={!!detail.show_manifest_address}
                           onChange={(event) => updateVisibility(video.id, {
-                            show_original_filename: !!detail.show_original_filename,
+                            show_original_filename: false,
                             show_manifest_address: event.target.checked,
                           })}
                         />

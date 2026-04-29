@@ -3,7 +3,10 @@ use std::{
     env, fs,
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration as StdDuration, Instant},
 };
 
@@ -52,6 +55,8 @@ struct AppState {
     pool: PgPool,
     antd: AntdRestClient,
     catalog_lock: Arc<Mutex<()>>,
+    catalog_publish_lock: Arc<Mutex<()>>,
+    catalog_publish_epoch: Arc<AtomicU64>,
     upload_save_semaphore: Arc<Semaphore>,
 }
 
@@ -167,7 +172,8 @@ struct AdminMeOut {
 
 #[derive(Deserialize)]
 struct VideoVisibilityUpdate {
-    show_original_filename: bool,
+    #[serde(default, rename = "show_original_filename")]
+    _show_original_filename: bool,
     show_manifest_address: bool,
 }
 
@@ -225,12 +231,10 @@ struct VideoOut {
 struct CatalogEntryInput {
     video_id: String,
     title: String,
-    original_filename: Option<String>,
     description: Option<String>,
     created_at: String,
     updated_at: String,
     manifest_address: String,
-    show_original_filename: bool,
     show_manifest_address: bool,
     variants: Vec<Value>,
 }
@@ -372,6 +376,8 @@ async fn main() -> anyhow::Result<()> {
         pool,
         antd,
         catalog_lock: Arc::new(Mutex::new(())),
+        catalog_publish_lock: Arc::new(Mutex::new(())),
+        catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
         upload_save_semaphore: Arc::new(Semaphore::new(config.upload_max_concurrent_saves)),
     };
     cleanup_expired_approvals(&state).await?;
@@ -969,6 +975,10 @@ async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_videos_is_public ON videos(is_public);
         CREATE INDEX IF NOT EXISTS idx_variants_video ON video_variants(video_id);
         CREATE INDEX IF NOT EXISTS idx_segments_variant ON video_segments(variant_id);
+
+        UPDATE videos
+        SET show_original_filename=FALSE
+        WHERE show_original_filename=TRUE;
     "#;
 
     for statement in SCHEMA_SQL
@@ -1223,7 +1233,7 @@ async fn update_video_visibility(
         RETURNING status, is_public
         "#,
     )
-    .bind(request.show_original_filename)
+    .bind(false)
     .bind(request.show_manifest_address)
     .bind(video_uuid)
     .fetch_optional(&state.pool)
@@ -1234,16 +1244,8 @@ async fn update_video_visibility(
     let status: String = row.try_get("status").unwrap_or_default();
     let is_public: bool = row.try_get("is_public").unwrap_or(false);
     if status == STATUS_READY && is_public {
-        let (manifest_address, catalog_address) =
-            publish_existing_video_to_catalog(&state, &video_id).await?;
-        set_publication(
-            &state,
-            &video_id,
-            true,
-            Some(&manifest_address),
-            Some(&catalog_address),
-        )
-        .await?;
+        let epoch = refresh_local_catalog_from_db(&state, "visibility").await?;
+        schedule_catalog_publish(state.clone(), epoch, format!("visibility:{video_id}"));
     }
 
     Ok(Json(get_db_video(&state, &video_id, true).await?))
@@ -1362,7 +1364,7 @@ async fn update_video_publication(
 ) -> Result<Json<VideoOut>, ApiError> {
     require_admin(&state, &headers)?;
     let video_uuid = parse_video_uuid(&video_id)?;
-    let row = sqlx::query("SELECT status FROM videos WHERE id=$1")
+    let row = sqlx::query("SELECT status, manifest_address FROM videos WHERE id=$1")
         .bind(video_uuid)
         .fetch_optional(&state.pool)
         .await
@@ -1377,20 +1379,27 @@ async fn update_video_publication(
                 "Only ready videos can be published",
             ));
         }
-        let (manifest_address, catalog_address) =
-            publish_existing_video_to_catalog(&state, &video_id).await?;
-        set_publication(
-            &state,
-            &video_id,
-            true,
-            Some(&manifest_address),
-            Some(&catalog_address),
-        )
-        .await?;
+        let manifest_address = if let Some(address) = row
+            .try_get::<Option<String>, _>("manifest_address")
+            .ok()
+            .flatten()
+        {
+            address
+        } else {
+            ensure_video_manifest_address(&state, &video_id).await?
+        };
+        set_publication(&state, &video_id, true, Some(&manifest_address), None).await?;
     } else {
-        let catalog_address = remove_video_from_catalog(&state, &video_id).await?;
-        set_publication(&state, &video_id, false, None, catalog_address.as_deref()).await?;
+        set_publication(&state, &video_id, false, None, None).await?;
     }
+
+    let reason = if request.is_public {
+        "publish"
+    } else {
+        "unpublish"
+    };
+    let epoch = refresh_local_catalog_from_db(&state, reason).await?;
+    schedule_catalog_publish(state.clone(), epoch, format!("{reason}:{video_id}"));
 
     Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
@@ -1402,7 +1411,6 @@ async fn delete_video(
 ) -> Result<Json<Value>, ApiError> {
     require_admin(&state, &headers)?;
     let video_uuid = parse_video_uuid(&video_id)?;
-    let catalog_address = remove_video_from_catalog(&state, &video_id).await?;
     let job_dir_row = sqlx::query("SELECT job_dir FROM videos WHERE id=$1")
         .bind(video_uuid)
         .fetch_optional(&state.pool)
@@ -1414,9 +1422,12 @@ async fn delete_video(
         .await
         .map_err(db_error)?;
 
-    if result.rows_affected() == 0 && catalog_address.is_none() {
+    if result.rows_affected() == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "Video not found"));
     }
+
+    let epoch = refresh_local_catalog_from_db(&state, "delete").await?;
+    schedule_catalog_publish(state.clone(), epoch, format!("delete:{video_id}"));
 
     if let Some(row) = job_dir_row {
         if let Ok(Some(job_dir)) = row.try_get::<Option<String>, _>("job_dir") {
@@ -1427,7 +1438,7 @@ async fn delete_video(
 
     Ok(Json(json!({
         "deleted": video_id,
-        "catalog_address": catalog_address,
+        "catalog_address": read_catalog_address(&state.config),
     })))
 }
 
@@ -1481,7 +1492,6 @@ async fn accept_upload(
     let mut title: Option<String> = None;
     let mut description = String::new();
     let mut resolutions = String::from("720p");
-    let mut show_original_filename = false;
     let mut show_manifest_address = false;
     let mut original_filename: Option<String> = None;
     let mut source_path: Option<PathBuf> = None;
@@ -1593,7 +1603,7 @@ async fn accept_upload(
                 "title" => title = Some(text.trim().to_string()),
                 "description" => description = text.trim().to_string(),
                 "resolutions" => resolutions = text,
-                "show_original_filename" => show_original_filename = parse_form_bool(&text),
+                "show_original_filename" => {}
                 "show_manifest_address" => show_manifest_address = parse_form_bool(&text),
                 _ => {}
             }
@@ -1644,7 +1654,7 @@ async fn accept_upload(
     .bind(job_dir.to_string_lossy().as_ref())
     .bind(source_path.to_string_lossy().as_ref())
     .bind(json!(selected))
-    .bind(show_original_filename)
+    .bind(false)
     .bind(show_manifest_address)
     .bind(username)
     .execute(&state.pool)
@@ -2155,20 +2165,41 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
     left.as_bytes().ct_eq(right.as_bytes()).into()
 }
 
+fn read_catalog_state_value(config: &Config) -> Option<Value> {
+    fs::read_to_string(&config.catalog_state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+}
+
+fn catalog_address_from_state(value: &Value) -> Option<String> {
+    value
+        .get("catalog_address")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|address| !address.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn read_catalog_address(config: &Config) -> Option<String> {
-    if let Ok(raw) = fs::read_to_string(&config.catalog_state_path) {
-        if let Ok(value) = serde_json::from_str::<Value>(&raw) {
-            if let Some(address) = value
-                .get("catalog_address")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|address| !address.is_empty())
-            {
-                return Some(address.to_string());
-            }
-        }
+    read_catalog_state_value(config)
+        .as_ref()
+        .and_then(catalog_address_from_state)
+        .or_else(|| config.catalog_bootstrap_address.clone())
+}
+
+fn read_catalog_snapshot(config: &Config) -> Option<(Value, Option<String>)> {
+    let value = read_catalog_state_value(config)?;
+    let mut catalog = value.get("catalog")?.clone();
+    if !catalog.is_object() {
+        return None;
     }
-    config.catalog_bootstrap_address.clone()
+    if !catalog.get("videos").is_some_and(Value::is_array) {
+        catalog["videos"] = json!([]);
+    }
+    Some((
+        catalog,
+        catalog_address_from_state(&value).or_else(|| config.catalog_bootstrap_address.clone()),
+    ))
 }
 
 fn empty_catalog() -> Value {
@@ -2181,6 +2212,10 @@ fn empty_catalog() -> Value {
 }
 
 async fn load_catalog(state: &AppState) -> Result<(Value, Option<String>), ApiError> {
+    if let Some(snapshot) = read_catalog_snapshot(&state.config) {
+        return Ok(snapshot);
+    }
+
     let Some(address) = read_catalog_address(&state.config) else {
         return Ok((empty_catalog(), None));
     };
@@ -2343,10 +2378,6 @@ async fn db_video_to_out(
 }
 
 fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<&str>) -> VideoOut {
-    let show_original_filename = entry
-        .get("show_original_filename")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let show_manifest_address = entry
         .get("show_manifest_address")
         .and_then(Value::as_bool)
@@ -2354,11 +2385,7 @@ fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<&str>) -> V
     VideoOut {
         id: string_field(entry, "id"),
         title: string_field(entry, "title"),
-        original_filename: if show_original_filename {
-            opt_string_field(entry, "original_filename")
-        } else {
-            None
-        },
+        original_filename: None,
         description: opt_string_field(entry, "description"),
         status: opt_string_field(entry, "status").unwrap_or_else(|| STATUS_READY.into()),
         created_at: string_field(entry, "created_at"),
@@ -2369,7 +2396,7 @@ fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<&str>) -> V
         },
         catalog_address: catalog_address.map(str::to_string),
         is_public: true,
-        show_original_filename,
+        show_original_filename: false,
         show_manifest_address,
         error_message: None,
         final_quote: None,
@@ -2418,7 +2445,7 @@ fn manifest_to_video_out(
     VideoOut {
         id: video_id.clone(),
         title: string_field(manifest, "title"),
-        original_filename: if !public || show_original_filename {
+        original_filename: if !public {
             opt_string_field(manifest, "original_filename")
         } else {
             None
@@ -2439,7 +2466,11 @@ fn manifest_to_video_out(
             read_catalog_address(&state.config)
         },
         is_public: public,
-        show_original_filename,
+        show_original_filename: if public {
+            false
+        } else {
+            show_original_filename
+        },
         show_manifest_address,
         error_message: None,
         final_quote: None,
@@ -2486,26 +2517,17 @@ fn manifest_to_video_out(
 fn apply_catalog_visibility(
     video: &mut VideoOut,
     entry: &Value,
-    manifest: &Value,
+    _manifest: &Value,
     manifest_address: &str,
 ) {
-    let show_original_filename = entry
-        .get("show_original_filename")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     let show_manifest_address = entry
         .get("show_manifest_address")
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    video.show_original_filename = show_original_filename;
+    video.show_original_filename = false;
     video.show_manifest_address = show_manifest_address;
-    video.original_filename = if show_original_filename {
-        opt_string_field(entry, "original_filename")
-            .or_else(|| opt_string_field(manifest, "original_filename"))
-    } else {
-        None
-    };
+    video.original_filename = None;
     video.manifest_address = if show_manifest_address {
         Some(manifest_address.to_string())
     } else {
@@ -2973,11 +2995,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
         "id": video_id,
         "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
-        "original_filename": if video_row.try_get::<bool, _>("show_original_filename").unwrap_or(false) {
-            video_row.try_get::<Option<String>, _>("original_filename").ok().flatten()
-        } else {
-            None
-        },
+        "original_filename": Value::Null,
         "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
         "status": STATUS_READY,
         "created_at": video_row
@@ -2985,7 +3003,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         "updated_at": Utc::now().to_rfc3339(),
-        "show_original_filename": video_row.try_get::<bool, _>("show_original_filename").unwrap_or(false),
+        "show_original_filename": false,
         "show_manifest_address": video_row.try_get::<bool, _>("show_manifest_address").unwrap_or(false),
         "variants": [],
     });
@@ -3309,19 +3327,12 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
         }));
     }
 
-    let show_original_filename = video_row
-        .try_get::<bool, _>("show_original_filename")
-        .unwrap_or(false);
     Ok(json!({
         "schema_version": 1,
         "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
         "id": video_id,
         "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
-        "original_filename": if show_original_filename {
-            video_row.try_get::<Option<String>, _>("original_filename").ok().flatten()
-        } else {
-            None
-        },
+        "original_filename": Value::Null,
         "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
         "status": STATUS_READY,
         "created_at": video_row
@@ -3329,7 +3340,7 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         "updated_at": Utc::now().to_rfc3339(),
-        "show_original_filename": show_original_filename,
+        "show_original_filename": false,
         "show_manifest_address": video_row
             .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
@@ -3369,13 +3380,9 @@ async fn build_catalog_entry_from_db(
     .await
     .map_err(db_error)?;
 
-    let show_original_filename = video_row
-        .try_get::<bool, _>("show_original_filename")
-        .unwrap_or(false);
     let input = CatalogEntryInput {
         video_id: video_id.to_string(),
         title: video_row.try_get("title").unwrap_or_default(),
-        original_filename: video_row.try_get("original_filename").ok().flatten(),
         description: video_row.try_get("description").ok().flatten(),
         created_at: video_row
             .try_get::<DateTime<Utc>, _>("created_at")
@@ -3383,7 +3390,6 @@ async fn build_catalog_entry_from_db(
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         updated_at: Utc::now().to_rfc3339(),
         manifest_address,
-        show_original_filename,
         show_manifest_address: video_row
             .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
@@ -3407,26 +3413,22 @@ fn video_catalog_entry_from_input(input: CatalogEntryInput) -> Value {
     json!({
         "id": input.video_id,
         "title": input.title,
-        "original_filename": if input.show_original_filename {
-            input.original_filename
-        } else {
-            None
-        },
+        "original_filename": Value::Null,
         "description": input.description,
         "status": STATUS_READY,
         "created_at": input.created_at,
         "updated_at": input.updated_at,
         "manifest_address": input.manifest_address,
-        "show_original_filename": input.show_original_filename,
+        "show_original_filename": false,
         "show_manifest_address": input.show_manifest_address,
         "variants": input.variants,
     })
 }
 
-async fn publish_existing_video_to_catalog(
+async fn ensure_video_manifest_address(
     state: &AppState,
     video_id: &str,
-) -> Result<(String, String), ApiError> {
+) -> Result<String, ApiError> {
     let existing_manifest_address = sqlx::query("SELECT manifest_address FROM videos WHERE id=$1")
         .bind(parse_video_uuid(video_id)?)
         .fetch_optional(&state.pool)
@@ -3437,63 +3439,147 @@ async fn publish_existing_video_to_catalog(
         .ok()
         .flatten();
 
-    let manifest_address = if let Some(address) = existing_manifest_address {
-        address
-    } else {
-        let manifest = build_ready_manifest_from_db(state, video_id).await?;
-        store_json_public(state, &manifest).await?
-    };
-    let entry = build_catalog_entry_from_db(state, video_id, manifest_address.clone()).await?;
-    let catalog_address = publish_catalog_entry(state, entry).await?;
-    Ok((manifest_address, catalog_address))
-}
-
-async fn publish_catalog_entry(state: &AppState, entry: Value) -> Result<String, ApiError> {
-    let _guard = state.catalog_lock.lock().await;
-    let (mut catalog, _) = load_catalog(state).await?;
-    catalog["schema_version"] = json!(1);
-    catalog["content_type"] = json!(CATALOG_CONTENT_TYPE);
-    catalog["updated_at"] = json!(Utc::now().to_rfc3339());
-    let entry_id = string_field(&entry, "id");
-    let mut videos = catalog
-        .get("videos")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|video| video.get("id").and_then(Value::as_str) != Some(entry_id.as_str()))
-        .collect::<Vec<_>>();
-    videos.insert(0, entry);
-    catalog["videos"] = json!(videos);
-    let catalog_address = store_json_public(state, &catalog).await?;
-    write_catalog_address(&state.config, &catalog_address)?;
-    Ok(catalog_address)
-}
-
-async fn remove_video_from_catalog(
-    state: &AppState,
-    video_id: &str,
-) -> Result<Option<String>, ApiError> {
-    let _guard = state.catalog_lock.lock().await;
-    let (mut catalog, current_address) = load_catalog(state).await?;
-    let original_videos = catalog
-        .get("videos")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let videos = original_videos
-        .iter()
-        .filter(|video| video.get("id").and_then(Value::as_str) != Some(video_id))
-        .cloned()
-        .collect::<Vec<_>>();
-    if videos.len() == original_videos.len() {
-        return Ok(current_address);
+    if let Some(address) = existing_manifest_address {
+        return Ok(address);
     }
-    catalog["videos"] = json!(videos);
-    catalog["updated_at"] = json!(Utc::now().to_rfc3339());
+
+    let manifest = build_ready_manifest_from_db(state, video_id).await?;
+    let manifest_address = store_json_public(state, &manifest).await?;
+    sqlx::query("UPDATE videos SET manifest_address=$1, updated_at=NOW() WHERE id=$2")
+        .bind(&manifest_address)
+        .bind(parse_video_uuid(video_id)?)
+        .execute(&state.pool)
+        .await
+        .map_err(db_error)?;
+    Ok(manifest_address)
+}
+
+async fn build_public_catalog_from_db(state: &AppState) -> Result<Value, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, manifest_address
+        FROM videos
+        WHERE status=$1
+          AND is_public=TRUE
+          AND manifest_address IS NOT NULL
+        ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+        "#,
+    )
+    .bind(STATUS_READY)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let mut videos = Vec::with_capacity(rows.len());
+    for row in rows {
+        let video_id: Uuid = row.try_get("id").map_err(db_error)?;
+        let Some(manifest_address) = row
+            .try_get::<Option<String>, _>("manifest_address")
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        videos.push(
+            build_catalog_entry_from_db(state, &video_id.to_string(), manifest_address).await?,
+        );
+    }
+
+    Ok(json!({
+        "schema_version": 1,
+        "content_type": CATALOG_CONTENT_TYPE,
+        "updated_at": Utc::now().to_rfc3339(),
+        "videos": videos,
+    }))
+}
+
+async fn refresh_local_catalog_from_db(state: &AppState, reason: &str) -> Result<u64, ApiError> {
+    let catalog = build_public_catalog_from_db(state).await?;
+    let video_count = catalog
+        .get("videos")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let _guard = state.catalog_lock.lock().await;
+    let epoch = state.catalog_publish_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+    let catalog_address = read_catalog_address(&state.config);
+    write_catalog_state(
+        &state.config,
+        catalog_address.as_deref(),
+        Some(&catalog),
+        true,
+    )?;
+    info!(
+        "Queued local catalog update epoch={} reason={} videos={}",
+        epoch, reason, video_count
+    );
+    Ok(epoch)
+}
+
+fn schedule_catalog_publish(state: AppState, epoch: u64, reason: impl Into<String>) {
+    let reason = reason.into();
+    tokio::spawn(async move {
+        if let Err(err) = publish_current_catalog_to_network(&state, epoch, &reason).await {
+            error!(
+                "Background catalog publish failed epoch={} reason={}: {:?}",
+                epoch, reason, err
+            );
+        }
+    });
+}
+
+async fn publish_current_catalog_to_network(
+    state: &AppState,
+    epoch: u64,
+    reason: &str,
+) -> Result<(), ApiError> {
+    sleep(StdDuration::from_millis(250)).await;
+    if state.catalog_publish_epoch.load(Ordering::SeqCst) != epoch {
+        info!(
+            "Skipping stale catalog publish epoch={} reason={}",
+            epoch, reason
+        );
+        return Ok(());
+    }
+
+    let _publish_guard = state.catalog_publish_lock.lock().await;
+    if state.catalog_publish_epoch.load(Ordering::SeqCst) != epoch {
+        info!(
+            "Skipping stale catalog publish epoch={} reason={}",
+            epoch, reason
+        );
+        return Ok(());
+    }
+
+    let catalog = build_public_catalog_from_db(state).await?;
+    let video_count = catalog
+        .get("videos")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let start = Instant::now();
     let catalog_address = store_json_public(state, &catalog).await?;
-    write_catalog_address(&state.config, &catalog_address)?;
-    Ok(Some(catalog_address))
+
+    let _state_guard = state.catalog_lock.lock().await;
+    if state.catalog_publish_epoch.load(Ordering::SeqCst) != epoch {
+        info!(
+            "Discarding stale catalog publish result epoch={} reason={} address={}",
+            epoch, reason, catalog_address
+        );
+        return Ok(());
+    }
+
+    write_catalog_state(&state.config, Some(&catalog_address), Some(&catalog), false)?;
+    set_current_catalog_address(state, &catalog_address).await?;
+    info!(
+        "Published catalog epoch={} reason={} videos={} address={} in {:.2}s",
+        epoch,
+        reason,
+        video_count,
+        catalog_address,
+        start.elapsed().as_secs_f64()
+    );
+    Ok(())
 }
 
 async fn store_json_public(state: &AppState, payload: &Value) -> Result<String, ApiError> {
@@ -3592,7 +3678,12 @@ async fn put_public_verified_inner(
     ))
 }
 
-fn write_catalog_address(config: &Config, address: &str) -> Result<(), ApiError> {
+fn write_catalog_state(
+    config: &Config,
+    address: Option<&str>,
+    catalog: Option<&Value>,
+    publish_pending: bool,
+) -> Result<(), ApiError> {
     if let Some(parent) = config.catalog_state_path.parent() {
         fs::create_dir_all(parent).map_err(|err| {
             ApiError::new(
@@ -3602,11 +3693,15 @@ fn write_catalog_address(config: &Config, address: &str) -> Result<(), ApiError>
         })?;
     }
     let tmp_path = config.catalog_state_path.with_extension("tmp");
-    let payload = json!({
-        "catalog_address": address,
+    let mut payload = json!({
+        "catalog_address": address.unwrap_or(""),
         "updated_at": Utc::now().to_rfc3339(),
-        "note": "This is only a bookmark to the latest network-hosted catalog snapshot.",
+        "publish_pending": publish_pending,
+        "note": "Local catalog snapshot plus the latest network-hosted catalog address.",
     });
+    if let Some(catalog) = catalog {
+        payload["catalog"] = catalog.clone();
+    }
     fs::write(
         &tmp_path,
         serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string()),
@@ -3729,6 +3824,25 @@ async fn set_publication(
     .bind(manifest_address)
     .bind(catalog_address)
     .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn set_current_catalog_address(
+    state: &AppState,
+    catalog_address: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET catalog_address=$1
+        WHERE status=$2
+        "#,
+    )
+    .bind(catalog_address)
+    .bind(STATUS_READY)
     .execute(&state.pool)
     .await
     .map_err(db_error)?;

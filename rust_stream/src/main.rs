@@ -148,7 +148,8 @@ fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
 
 #[derive(Deserialize)]
 struct CatalogState {
-    catalog_address: String,
+    catalog_address: Option<String>,
+    catalog: Option<Catalog>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -688,21 +689,35 @@ async fn fetch_segment_from_address(
 
 fn read_catalog_address(state: &AppState) -> Option<String> {
     if let Ok(raw) = fs::read_to_string(&state.catalog_state_path) {
-        match serde_json::from_str::<CatalogState>(&raw) {
-            Ok(catalog_state) if !catalog_state.catalog_address.trim().is_empty() => {
-                return Some(catalog_state.catalog_address);
+        if let Ok(catalog_state) = serde_json::from_str::<CatalogState>(&raw) {
+            if let Some(address) = catalog_state
+                .catalog_address
+                .map(|address| address.trim().to_string())
+                .filter(|address| !address.is_empty())
+            {
+                return Some(address);
             }
-            _ => {}
         }
     }
 
     state.catalog_bootstrap_address.clone()
 }
 
+fn read_catalog_snapshot(state: &AppState) -> Option<Catalog> {
+    fs::read_to_string(&state.catalog_state_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<CatalogState>(&raw).ok())
+        .and_then(|catalog_state| catalog_state.catalog)
+}
+
 async fn load_video_manifest(state: &AppState, video_id: &str) -> Result<VideoManifest, String> {
-    let catalog_address =
-        read_catalog_address(state).ok_or_else(|| "catalog address not configured".to_string())?;
-    let catalog = load_catalog(state, &catalog_address).await?;
+    let catalog = if let Some(catalog) = read_catalog_snapshot(state) {
+        catalog
+    } else {
+        let catalog_address = read_catalog_address(state)
+            .ok_or_else(|| "catalog address not configured".to_string())?;
+        load_catalog(state, &catalog_address).await?
+    };
 
     let manifest_address = catalog
         .videos
