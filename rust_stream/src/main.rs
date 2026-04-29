@@ -269,7 +269,8 @@ impl SegmentCache {
         let expired_addresses = self
             .entries
             .iter()
-            .filter_map(|(address, entry)| (entry.expires_at <= now).then(|| address.to_string()))
+            .filter(|(_, entry)| entry.expires_at <= now)
+            .map(|(address, _)| address.to_string())
             .collect::<Vec<_>>();
 
         for address in expired_addresses {

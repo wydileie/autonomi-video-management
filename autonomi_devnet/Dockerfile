@@ -54,7 +54,12 @@ COPY --from=builder /usr/local/bin/antd /usr/local/bin/antd
 COPY --from=builder /usr/local/bin/ant-devnet /usr/local/bin/ant-devnet
 COPY start-local-devnet.sh /usr/local/bin/start-local-devnet.sh
 
-RUN chmod +x /usr/local/bin/start-local-devnet.sh
+RUN mkdir -p /data && \
+    useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin appuser && \
+    chown -R appuser:appuser /data /home/appuser && \
+    chmod +x /usr/local/bin/start-local-devnet.sh
+
+USER appuser
 
 VOLUME ["/data"]
 EXPOSE 8082 50051

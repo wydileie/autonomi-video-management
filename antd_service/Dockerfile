@@ -33,6 +33,9 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /usr/local/bin/antd /usr/local/bin/antd
 
+RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin appuser
+USER appuser
+
 # REST on 8082, gRPC on 50051
 EXPOSE 8082 50051
 

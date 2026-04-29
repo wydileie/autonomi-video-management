@@ -31,8 +31,8 @@ Browser
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
 7. After approval, every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
 8. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
-9. A catalog JSON containing the video list and manifest addresses is stored on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
-10. The job status flips to `ready`. The frontend polls and then activates the player.
+9. The job status flips to `ready`. Admins can then publish or unpublish the video from the public library.
+10. Publishing stores a catalog JSON containing the public video list and manifest addresses on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
 
 ### Playback flow
 1. The HLS player (hls.js) requests `/stream/{video_id}/{resolution}/playlist.m3u8`.
@@ -123,8 +123,8 @@ make ci
 ```
 
 The Python target runs `python -m unittest discover` under `python_admin/tests`.
-The Rust target runs `cargo test` in `rust_stream`. The React target runs the
-Create React App test command in non-watch CI mode.
+The Rust targets run `cargo test` and `cargo clippy` in `rust_stream`. The
+React target runs the Vite/Vitest test command once.
 
 ---
 
@@ -140,10 +140,6 @@ plus one overlay:
 
 ```bash
 cp .env.local.example .env.local
-
-# If running from inside a devcontainer with OrbStack/Docker Desktop, set this
-# to the host-machine repo path, not /workspaces/...
-# HOST_WORKSPACE_DIR=/Users/you/path/to/autonomi-video-management
 
 # Optional but recommended for large uploads: point processing files at a
 # large, persistent host disk.
@@ -200,11 +196,11 @@ for deployment. `.env.example` contains the full variable set in one file.
 |---|---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Yes | PostgreSQL root credentials |
 | `ADMIN_DB` / `ADMIN_USER` / `ADMIN_PASS` | Yes | App database credentials |
+| `APP_ENV` | Production | Set to `production` in deployments. Production mode rejects default or weak admin credentials at startup |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
-| `HOST_WORKSPACE_DIR` | Devcontainer/host Docker | Host-machine repo path used for Compose bind mounts |
-| `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart |
+| `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart. A one-shot Compose init container creates and chowns it for the non-root admin service user |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
 | `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | Local/debug only | Direct host ports for the admin and stream services when using a local/debug compose override |
@@ -289,13 +285,14 @@ catalog manifest
 | `GET` | `/auth/me` | Validate the current admin bearer token |
 | `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`) |
-| `GET` | `/videos` | Public list of ready videos, with filename and manifest address redacted unless published |
+| `GET` | `/videos` | Public list of published ready videos, with filename and manifest address redacted unless enabled |
 | `GET` | `/videos/{id}` | Public video detail for playback, without segment addresses |
 | `GET` | `/videos/{id}/status` | Public processing status with sensitive addresses redacted |
 | `GET` | `/admin/videos` | Admin list of all videos and processing states |
 | `GET` | `/admin/videos/{id}` | Admin video detail with variants and segment addresses |
+| `PATCH` | `/admin/videos/{id}/publication` | Publish or hide a ready video from the public catalog |
 | `PATCH` | `/admin/videos/{id}/visibility` | Publish or hide original filename and manifest address in public responses |
-| `POST` | `/admin/videos/{id}/approve` | Approve the final quote and start segment upload/catalog publishing |
+| `POST` | `/admin/videos/{id}/approve` | Approve the final quote and start segment upload/manifest storage |
 | `DELETE` | `/admin/videos/{id}` | Delete video record (does not remove data from Autonomi) |
 | `GET` | `/catalog` | Admin-only latest catalog address and decoded network catalog |
 
@@ -365,11 +362,12 @@ autonomi-video-management/
 │   └── src/main.rs             # Axum: HLS manifest + Autonomi segment proxy
 ├── react_frontend/
 │   ├── Dockerfile
+│   ├── index.html
 │   ├── package.json
-│   ├── public/index.html
+│   ├── vite.config.mjs
 │   └── src/
-│       ├── index.js
-│       └── App.js              # Upload form, video library, hls.js player
+│       ├── main.jsx
+│       └── App.jsx             # Upload form, video library, hls.js player
 ├── nginx/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
 ├── postgres-init/

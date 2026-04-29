@@ -18,14 +18,6 @@ docker compose --env-file .env.local \
   up --build
 ```
 
-If you run this from inside the devcontainer while Docker is provided by the
-host, set `HOST_WORKSPACE_DIR` in `.env.local` to the host path of the repo.
-For example:
-
-```dotenv
-HOST_WORKSPACE_DIR=/Users/you/Repos/autonomi-video-management
-```
-
 Set `VIDEO_PROCESSING_HOST_PATH` to a host path with enough free disk space for
 original uploads and transcoded segments. This directory is bind-mounted into
 `python_admin` and is required for interrupted transcode/upload jobs to resume
@@ -35,8 +27,10 @@ after a container restart.
 VIDEO_PROCESSING_HOST_PATH=/mnt/large-disk/autonomi-video-processing
 ```
 
-Create the directory before starting the stack and make sure the Docker daemon
-can write to it.
+The Compose stack runs a one-shot `init_permissions` container before the app
+starts. It creates this directory when Docker has not already created it, then
+chowns the bind mount and catalog volume for the non-root admin service user
+(UID/GID `1000`).
 
 Verify:
 
@@ -81,6 +75,10 @@ docker compose --env-file .env.production \
 Required production values:
 
 ```dotenv
+APP_ENV=production
+ADMIN_USERNAME=autvid-admin
+ADMIN_PASSWORD=<long random admin password>
+ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
 PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
 PROD_ANTD_NETWORK=default
 ANTD_PAYMENT_MODE=auto

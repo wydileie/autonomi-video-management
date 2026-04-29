@@ -1,8 +1,29 @@
 services:
+  init_devnet_permissions:
+    image: alpine:3.20
+    container_name: autvid_init_devnet_permissions
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /data
+        chown -R 10001:10001 /data
+        chmod -R u+rwX,g+rwX,o+rX /data
+    volumes:
+      - autonomi_devnet_data:/data
+    security_opt:
+      - no-new-privileges:true
+
   antd:
+    image: autonomi-video-management-antd-devnet
     build:
       context: ./autonomi_devnet
     container_name: autonomi_local_devnet
+    depends_on:
+      init_devnet_permissions:
+        condition: service_completed_successfully
     environment:
       ANT_DEVNET_PRESET: "${ANT_DEVNET_PRESET:-default}"
       ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
@@ -21,6 +42,10 @@ services:
       timeout: 5s
       retries: 24
       start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
   python_admin:

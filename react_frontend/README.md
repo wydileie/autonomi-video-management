@@ -25,7 +25,7 @@ npm install
 REACT_APP_API_URL=http://localhost/api \
 REACT_APP_STREAM_URL=http://localhost/stream \
 npm start
-# Opens http://localhost:3000
+# Opens http://localhost:5173
 ```
 
 The local stack should already be running behind Nginx:
@@ -48,7 +48,7 @@ npm run build
 # Output: build/
 ```
 
-The production Dockerfile uses a multi-stage build: Node 18 Alpine builds the static assets, then copies them into an `nginx:alpine` image with a simple SPA fallback config (all routes → `index.html`).
+The production Dockerfile uses a multi-stage build: Node 18 Alpine builds the static assets with Vite, then copies them into an `nginx:1.27-alpine` image with a simple SPA fallback config (all routes -> `index.html`).
 
 ## Dependencies
 
@@ -57,18 +57,19 @@ The production Dockerfile uses a multi-stage build: Node 18 Alpine builds the st
 | `react` / `react-dom` | UI framework |
 | `hls.js` | HLS adaptive streaming player |
 | `axios` | HTTP requests to the admin API |
-| `react-scripts` | CRA build tooling |
+| `vite` / `vitest` | Build tooling and unit test runner |
 
 ## Project structure
 
 ```
+index.html     # Vite HTML shell
+vite.config.mjs
 src/
-└── App.js      # All components in one file: App, UploadPanel, Library, VideoPlayer
-public/
-└── index.html  # HTML shell
+├── main.jsx
+└── App.jsx     # All components in one file: App, UploadPanel, Library, VideoPlayer
 ```
 
-`App.js` contains four components:
+`App.jsx` contains four components:
 
 | Component | Description |
 |---|---|

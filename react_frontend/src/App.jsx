@@ -4,8 +4,8 @@ import axios from "axios";
 import Hls from "hls.js";
 import "./App.css";
 
-const API = process.env.REACT_APP_API_URL || "/api";
-const STREAM = process.env.REACT_APP_STREAM_URL || "/stream";
+const API = import.meta.env.REACT_APP_API_URL || import.meta.env.VITE_API_URL || "/api";
+const STREAM = import.meta.env.REACT_APP_STREAM_URL || import.meta.env.VITE_STREAM_URL || "/stream";
 const AUTH_STORAGE_KEY = "autvid_admin_token";
 
 const RESOLUTION_OPTIONS = [
@@ -107,6 +107,10 @@ function statusLabel(status) {
 
 function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function requestErrorMessage(err, fallback) {
+  return err?.response?.data?.detail || err.message || fallback;
 }
 
 function formatDateTime(value) {
@@ -567,6 +571,10 @@ function Library({ admin = false, token = "" }) {
   const [playing, setPlaying] = useState(null);
   const [detail, setDetail] = useState(null);
   const [approving, setApproving] = useState(null);
+  const [publishing, setPublishing] = useState(null);
+  const [loadError, setLoadError] = useState("");
+  const [detailError, setDetailError] = useState("");
+  const [actionError, setActionError] = useState("");
   const activeDetailId = detail?.id;
   const activeDetailStatus = detail?.status;
 
@@ -576,8 +584,9 @@ function Library({ admin = false, token = "" }) {
         headers: authHeaders(token),
       });
       setVideos(res.data);
-    } catch {
-      // Keep the current view if the API hiccups during polling.
+      setLoadError("");
+    } catch (err) {
+      setLoadError(requestErrorMessage(err, "Could not load the video catalog."));
     } finally {
       setLoading(false);
     }
@@ -604,8 +613,9 @@ function Library({ admin = false, token = "" }) {
           headers: authHeaders(token),
         });
         setDetail(res.data);
-      } catch {
-        // Leave the currently expanded row intact if polling misses once.
+        setDetailError("");
+      } catch (err) {
+        setDetailError(requestErrorMessage(err, "Could not refresh video details."));
       }
     }, 5000);
     return () => clearInterval(interval);
@@ -616,23 +626,35 @@ function Library({ admin = false, token = "" }) {
       setDetail(null);
       return;
     }
-    const res = await axios.get(`${API}${admin ? "/admin" : ""}/videos/${videoId}`, {
-      headers: authHeaders(token),
-    });
-    setDetail(res.data);
+    setDetailError("");
+    setActionError("");
+    try {
+      const res = await axios.get(`${API}${admin ? "/admin" : ""}/videos/${videoId}`, {
+        headers: authHeaders(token),
+      });
+      setDetail(res.data);
+    } catch (err) {
+      setDetailError(requestErrorMessage(err, "Could not load video details."));
+    }
   };
 
   const deleteVideo = async (videoId, event) => {
     event.stopPropagation();
     if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
-    await axios.delete(`${API}/admin/videos/${videoId}`, { headers: authHeaders(token) });
-    setVideos((prev) => prev.filter((video) => video.id !== videoId));
-    if (detail?.id === videoId) setDetail(null);
-    if (playing?.videoId === videoId) setPlaying(null);
+    setActionError("");
+    try {
+      await axios.delete(`${API}/admin/videos/${videoId}`, { headers: authHeaders(token) });
+      setVideos((prev) => prev.filter((video) => video.id !== videoId));
+      if (detail?.id === videoId) setDetail(null);
+      if (playing?.videoId === videoId) setPlaying(null);
+    } catch (err) {
+      setActionError(requestErrorMessage(err, "Delete failed."));
+    }
   };
 
   const approveVideo = async (videoId) => {
     setApproving(videoId);
+    setActionError("");
     try {
       const res = await axios.post(`${API}/admin/videos/${videoId}/approve`, null, {
         headers: authHeaders(token),
@@ -640,21 +662,47 @@ function Library({ admin = false, token = "" }) {
       setDetail(res.data);
       await load();
     } catch (err) {
-      window.alert(err?.response?.data?.detail || err.message || "Approval failed");
+      const message = requestErrorMessage(err, "Approval failed.");
+      setActionError(message);
+      window.alert(message);
     } finally {
       setApproving(null);
     }
   };
 
   const updateVisibility = async (videoId, next) => {
-    const res = await axios.patch(`${API}/admin/videos/${videoId}/visibility`, next, {
-      headers: authHeaders(token),
-    });
-    setDetail(res.data);
-    setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...res.data } : video)));
+    setActionError("");
+    try {
+      const res = await axios.patch(`${API}/admin/videos/${videoId}/visibility`, next, {
+        headers: authHeaders(token),
+      });
+      setDetail(res.data);
+      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...res.data } : video)));
+    } catch (err) {
+      setActionError(requestErrorMessage(err, "Visibility update failed."));
+    }
+  };
+
+  const updatePublication = async (videoId, isPublic) => {
+    setPublishing(videoId);
+    setActionError("");
+    try {
+      const res = await axios.patch(`${API}/admin/videos/${videoId}/publication`, { is_public: isPublic }, {
+        headers: authHeaders(token),
+      });
+      setDetail(res.data);
+      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...res.data } : video)));
+    } catch (err) {
+      setActionError(requestErrorMessage(err, isPublic ? "Publish failed." : "Unpublish failed."));
+    } finally {
+      setPublishing(null);
+    }
   };
 
   if (loading) return <div className="empty-state">Loading the catalog...</div>;
+  if (loadError && !videos.length) {
+    return <div className="empty-state error-state">{loadError}</div>;
+  }
   if (!videos.length) {
     return (
       <div className="empty-state">
@@ -673,6 +721,9 @@ function Library({ admin = false, token = "" }) {
         </div>
         <span>{videos.length} video{videos.length === 1 ? "" : "s"}</span>
       </div>
+      {loadError && <div className="error-box">{loadError}</div>}
+      {detailError && <div className="error-box">{detailError}</div>}
+      {actionError && <div className="error-box">{actionError}</div>}
 
       <div className="video-list">
         {videos.map((video) => (
@@ -683,6 +734,11 @@ function Library({ admin = false, token = "" }) {
                 <span>{video.original_filename || video.description || "Published stream"}</span>
               </div>
               <div className="row-meta">
+                {admin && (
+                  <span className={`status ${video.is_public ? "public" : "private"}`}>
+                    {video.is_public ? "public" : "hidden"}
+                  </span>
+                )}
                 <span className={`status ${video.status}`}>{statusLabel(video.status)}</span>
                 <span>{new Date(video.created_at).toLocaleDateString()}</span>
               </div>
@@ -726,30 +782,49 @@ function Library({ admin = false, token = "" }) {
                   </>
                 )}
                 {admin && (
-                  <div className="visibility-panel">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={!!detail.show_original_filename}
-                        onChange={(event) => updateVisibility(video.id, {
-                          show_original_filename: event.target.checked,
-                          show_manifest_address: !!detail.show_manifest_address,
-                        })}
-                      />
-                      <span>Publish filename</span>
-                    </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={!!detail.show_manifest_address}
-                        onChange={(event) => updateVisibility(video.id, {
-                          show_original_filename: !!detail.show_original_filename,
-                          show_manifest_address: event.target.checked,
-                        })}
-                      />
-                      <span>Publish manifest address</span>
-                    </label>
-                  </div>
+                  <>
+                    {detail.status === "ready" && (
+                      <div className="publication-panel">
+                        <button
+                          type="button"
+                          className={detail.is_public ? "secondary-action" : "primary-action compact-action"}
+                          disabled={publishing === video.id}
+                          onClick={() => updatePublication(video.id, !detail.is_public)}
+                        >
+                          {publishing === video.id
+                            ? "Updating..."
+                            : detail.is_public ? "Unpublish" : "Publish"}
+                        </button>
+                        <span className={`status ${detail.is_public ? "public" : "private"}`}>
+                          {detail.is_public ? "public" : "hidden"}
+                        </span>
+                      </div>
+                    )}
+                    <div className="visibility-panel">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={!!detail.show_original_filename}
+                          onChange={(event) => updateVisibility(video.id, {
+                            show_original_filename: event.target.checked,
+                            show_manifest_address: !!detail.show_manifest_address,
+                          })}
+                        />
+                        <span>Publish filename</span>
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={!!detail.show_manifest_address}
+                          onChange={(event) => updateVisibility(video.id, {
+                            show_original_filename: !!detail.show_original_filename,
+                            show_manifest_address: event.target.checked,
+                          })}
+                        />
+                        <span>Publish manifest address</span>
+                      </label>
+                    </div>
+                  </>
                 )}
                 {(admin || detail.manifest_address) && (
                   <div className="detail-footer">

@@ -1,5 +1,6 @@
 services:
   antd:
+    image: autonomi-video-management-antd-service
     build:
       context: ./antd_service
     container_name: antd_daemon
@@ -27,6 +28,10 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
 
   python_admin:
@@ -34,6 +39,7 @@ services:
       antd:
         condition: service_healthy
     environment:
+      APP_ENV: "production"
       ANTD_URL: "http://antd:8082"
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
 

@@ -144,6 +144,7 @@ class FakeConnection:
                 row["status"] = "ready"
                 row["manifest_address"] = manifest_address
                 row["catalog_address"] = catalog_address
+                row["is_public"] = False
                 row["error_message"] = None
                 row["job_dir"] = None
                 row["job_source_path"] = None
@@ -233,6 +234,7 @@ def make_store(tmp_path):
                 "final_quote": {"storage_cost_atto": "123"},
                 "final_quote_created_at": now,
                 "approval_expires_at": now + timedelta(hours=1),
+                "is_public": False,
                 "show_original_filename": False,
                 "show_manifest_address": False,
             }

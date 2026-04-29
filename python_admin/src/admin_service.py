@@ -82,6 +82,109 @@ def _parse_allowed_origins(raw_origins: str) -> list[str]:
     return origins
 
 
+PRODUCTION_ENV_NAMES = {"prod", "production"}
+UNSAFE_ADMIN_AUTH_VALUES = {
+    "",
+    "admin",
+    "administrator",
+    "changeme",
+    "change-me",
+    "change_me",
+    "default",
+    "password",
+    "please-change-me",
+    "replace-me",
+    "secret",
+    "test",
+    "test-secret",
+}
+
+
+def _is_production_environment() -> bool:
+    return any(
+        os.environ.get(name, "").strip().lower() in PRODUCTION_ENV_NAMES
+        for name in ("APP_ENV", "ENVIRONMENT")
+    )
+
+
+def _parse_admin_auth_ttl_hours(raw_ttl: str) -> int:
+    try:
+        ttl_hours = int(raw_ttl)
+    except ValueError as exc:
+        raise RuntimeError("ADMIN_AUTH_TTL_HOURS must be an integer") from exc
+    if ttl_hours <= 0:
+        raise RuntimeError("ADMIN_AUTH_TTL_HOURS must be greater than zero")
+    return ttl_hours
+
+
+def _is_unsafe_admin_auth_value(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in UNSAFE_ADMIN_AUTH_VALUES:
+        return True
+    return any(
+        placeholder in normalized
+        for placeholder in (
+            "change-me",
+            "change_me",
+            "changeme",
+            "change-this",
+            "change_this",
+            "changethis",
+            "replace-me",
+            "replace_me",
+            "replace-this",
+            "replace_this",
+        )
+    )
+
+
+def _validate_admin_auth_config(
+    username: str,
+    password: str,
+    secret: str,
+    ttl_hours: int,
+) -> None:
+    if ttl_hours <= 0:
+        raise RuntimeError("ADMIN_AUTH_TTL_HOURS must be greater than zero")
+
+    if not _is_production_environment():
+        return
+
+    unsafe_fields = [
+        name
+        for name, value in (
+            ("ADMIN_USERNAME", username),
+            ("ADMIN_PASSWORD", password),
+            ("ADMIN_AUTH_SECRET", secret),
+        )
+        if _is_unsafe_admin_auth_value(value)
+    ]
+    if unsafe_fields:
+        raise RuntimeError(
+            "Unsafe admin auth configuration for production: "
+            + ", ".join(unsafe_fields)
+            + " must not use default, weak, or change-me values"
+        )
+
+    if secrets.compare_digest(secret, password):
+        raise RuntimeError(
+            "Unsafe admin auth configuration for production: "
+            "ADMIN_AUTH_SECRET must not equal ADMIN_PASSWORD"
+        )
+
+    if len(password) < 12:
+        raise RuntimeError(
+            "Unsafe admin auth configuration for production: "
+            "ADMIN_PASSWORD must be at least 12 characters"
+        )
+
+    if len(secret) < 32:
+        raise RuntimeError(
+            "Unsafe admin auth configuration for production: "
+            "ADMIN_AUTH_SECRET must be at least 32 characters"
+        )
+
+
 CORS_ALLOWED_ORIGINS = _parse_allowed_origins(
     os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost,http://127.0.0.1")
 )
@@ -110,7 +213,15 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 ADMIN_AUTH_SECRET = os.environ.get("ADMIN_AUTH_SECRET") or ADMIN_PASSWORD
 ADMIN_AUTH_ALGORITHM = "HS256"
-ADMIN_AUTH_TTL_HOURS = int(os.environ.get("ADMIN_AUTH_TTL_HOURS", "12"))
+ADMIN_AUTH_TTL_HOURS = _parse_admin_auth_ttl_hours(
+    os.environ.get("ADMIN_AUTH_TTL_HOURS", "12")
+)
+_validate_admin_auth_config(
+    ADMIN_USERNAME,
+    ADMIN_PASSWORD,
+    ADMIN_AUTH_SECRET,
+    ADMIN_AUTH_TTL_HOURS,
+)
 
 # Resolution presets: name -> (width, height, video_kbps, audio_kbps)
 RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
@@ -265,6 +376,7 @@ async def _ensure_schema():
                 final_quote JSONB,
                 final_quote_created_at TIMESTAMPTZ,
                 approval_expires_at TIMESTAMPTZ,
+                is_public BOOLEAN NOT NULL DEFAULT FALSE,
                 show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
                 show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -282,6 +394,7 @@ async def _ensure_schema():
                 ADD COLUMN IF NOT EXISTS final_quote JSONB,
                 ADD COLUMN IF NOT EXISTS final_quote_created_at TIMESTAMPTZ,
                 ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE,
                 ADD COLUMN IF NOT EXISTS show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
                 ADD COLUMN IF NOT EXISTS show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE;
 
@@ -322,6 +435,7 @@ async def _ensure_schema():
                 ALTER COLUMN autonomi_address DROP NOT NULL;
 
             CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+            CREATE INDEX IF NOT EXISTS idx_videos_is_public ON videos(is_public);
             CREATE INDEX IF NOT EXISTS idx_variants_video ON video_variants(video_id);
             CREATE INDEX IF NOT EXISTS idx_segments_variant ON video_segments(variant_id);
         """)
@@ -1146,6 +1260,7 @@ def _public_entry_to_video_out(entry: dict, catalog_address: str | None) -> "Vid
         created_at=entry["created_at"],
         manifest_address=entry.get("manifest_address") if show_manifest_address else None,
         catalog_address=None,
+        is_public=True,
         show_original_filename=show_original_filename,
         show_manifest_address=show_manifest_address,
         variants=[
@@ -1180,6 +1295,7 @@ def _manifest_to_video_out(
         created_at=manifest["created_at"],
         manifest_address=(manifest_address or manifest.get("manifest_address")) if (not public or show_manifest_address) else None,
         catalog_address=_read_catalog_address() if not public else None,
+        is_public=public,
         show_original_filename=show_original_filename,
         show_manifest_address=show_manifest_address,
         variants=[
@@ -1243,6 +1359,7 @@ class VideoOut(BaseModel):
     created_at: str
     manifest_address: str | None = None
     catalog_address: str | None = None
+    is_public: bool = False
     show_original_filename: bool = False
     show_manifest_address: bool = False
     error_message: str | None = None
@@ -1271,6 +1388,10 @@ class AdminMeOut(BaseModel):
 class VideoVisibilityUpdate(BaseModel):
     show_original_filename: bool
     show_manifest_address: bool
+
+
+class VideoPublicationUpdate(BaseModel):
+    is_public: bool
 
 
 class UploadQuoteRequest(BaseModel):
@@ -1352,6 +1473,7 @@ async def _db_video_to_out(row, *, include_segments: bool = False) -> VideoOut:
         created_at=str(row["created_at"]),
         manifest_address=row["manifest_address"],
         catalog_address=row["catalog_address"] or _read_catalog_address(),
+        is_public=row["is_public"],
         show_original_filename=row["show_original_filename"],
         show_manifest_address=row["show_manifest_address"],
         error_message=row["error_message"],
@@ -1369,7 +1491,7 @@ async def _get_db_video(video_id: str, *, include_segments: bool = False) -> Vid
             SELECT id, title, original_filename, description, status, created_at,
                    manifest_address, catalog_address, error_message, final_quote,
                    final_quote_created_at, approval_expires_at,
-                   show_original_filename, show_manifest_address
+                   is_public, show_original_filename, show_manifest_address
             FROM videos WHERE id=$1
             """,
             video_id,
@@ -1651,7 +1773,7 @@ async def admin_list_videos(username: str = Depends(require_admin)):
             SELECT id, title, original_filename, description, status, created_at,
                    manifest_address, catalog_address, error_message, final_quote,
                    final_quote_created_at, approval_expires_at,
-                   show_original_filename, show_manifest_address
+                   is_public, show_original_filename, show_manifest_address
             FROM videos
             ORDER BY created_at DESC
             """
@@ -1692,7 +1814,7 @@ async def update_video_visibility(
                 show_manifest_address=$2,
                 updated_at=NOW()
             WHERE id=$3
-            RETURNING status
+            RETURNING status, is_public
             """,
             request.show_original_filename,
             request.show_manifest_address,
@@ -1701,7 +1823,7 @@ async def update_video_visibility(
     if not row:
         raise HTTPException(404, "Video not found")
 
-    if row["status"] == STATUS_READY:
+    if row["status"] == STATUS_READY and row["is_public"]:
         client = AsyncAntdClient(
             base_url=ANTD_URL,
             timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
@@ -1711,7 +1833,42 @@ async def update_video_visibility(
             manifest_address, catalog_address = await _publish_video_to_catalog(client, manifest)
         finally:
             await client.close()
-        await _set_ready(video_id, manifest_address, catalog_address)
+        await _set_publication(video_id, True, manifest_address, catalog_address)
+
+    return await _get_db_video(video_id, include_segments=True)
+
+
+@app.patch("/admin/videos/{video_id}/publication", response_model=VideoOut)
+async def update_video_publication(
+    video_id: str,
+    request: VideoPublicationUpdate,
+    username: str = Depends(require_admin),
+):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status FROM videos WHERE id=$1",
+            video_id,
+        )
+    if not row:
+        raise HTTPException(404, "Video not found")
+
+    if request.is_public:
+        if row["status"] != STATUS_READY:
+            raise HTTPException(409, "Only ready videos can be published")
+
+        client = AsyncAntdClient(
+            base_url=ANTD_URL,
+            timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS + 30, 60),
+        )
+        try:
+            manifest = await _build_ready_manifest_from_db(video_id)
+            manifest_address, catalog_address = await _publish_video_to_catalog(client, manifest)
+        finally:
+            await client.close()
+        await _set_publication(video_id, True, manifest_address, catalog_address)
+    else:
+        catalog_address = await _remove_video_from_catalog(video_id)
+        await _set_publication(video_id, False, catalog_address=catalog_address)
 
     return await _get_db_video(video_id, include_segments=True)
 
@@ -2086,7 +2243,8 @@ async def _upload_approved_video(video_id: str):
                 })
 
             manifest["updated_at"] = _now_iso()
-            manifest_address, catalog_address = await _publish_video_to_catalog(client, manifest)
+            manifest_address = await _store_json_public(client, manifest)
+            catalog_address = _read_catalog_address()
         finally:
             await client.close()
 
@@ -2094,7 +2252,7 @@ async def _upload_approved_video(video_id: str):
         if job_dir and job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
         log.info(
-            "Video %s is ready manifest=%s catalog=%s",
+            "Video %s is ready manifest=%s catalog=%s public=false",
             video_id,
             manifest_address,
             catalog_address,
@@ -2343,7 +2501,7 @@ async def _set_awaiting_approval(video_id: str, final_quote: dict, expires_at: d
         )
 
 
-async def _set_ready(video_id: str, manifest_address: str, catalog_address: str):
+async def _set_ready(video_id: str, manifest_address: str, catalog_address: str | None):
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -2351,6 +2509,7 @@ async def _set_ready(video_id: str, manifest_address: str, catalog_address: str)
             SET status='ready',
                 manifest_address=$1,
                 catalog_address=$2,
+                is_public=FALSE,
                 error_message=NULL,
                 job_dir=NULL,
                 job_source_path=NULL,
@@ -2359,4 +2518,24 @@ async def _set_ready(video_id: str, manifest_address: str, catalog_address: str)
             WHERE id=$3
             """,
             manifest_address, catalog_address, video_id,
+        )
+
+
+async def _set_publication(
+    video_id: str,
+    is_public: bool,
+    manifest_address: str | None = None,
+    catalog_address: str | None = None,
+):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE videos
+            SET is_public=$1,
+                manifest_address=COALESCE($2, manifest_address),
+                catalog_address=COALESCE($3, catalog_address),
+                updated_at=NOW()
+            WHERE id=$4
+            """,
+            is_public, manifest_address, catalog_address, video_id,
         )

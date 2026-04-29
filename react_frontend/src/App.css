@@ -559,7 +559,13 @@ main {
   padding: 16px 24px;
 }
 
-.primary-action:disabled {
+.compact-action {
+  margin-top: 0;
+  padding: 10px 16px;
+}
+
+.primary-action:disabled,
+.secondary-action:disabled {
   cursor: wait;
   opacity: 0.62;
 }
@@ -572,6 +578,10 @@ main {
   color: var(--muted);
   padding: 48px;
   text-align: center;
+}
+
+.empty-state.error-state {
+  color: #7c2d1b;
 }
 
 .video-list {
@@ -634,6 +644,14 @@ main {
   background: var(--moss);
 }
 
+.status.public {
+  background: var(--moss);
+}
+
+.status.private {
+  background: #6c756f;
+}
+
 .status.processing,
 .status.pending,
 .status.awaiting_approval,
@@ -650,6 +668,23 @@ main {
 .video-detail {
   border-top: 1px solid var(--line);
   padding: 18px;
+}
+
+.publication-panel {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.secondary-action {
+  background: rgba(23, 33, 27, 0.07);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: var(--ink);
+  font-weight: 900;
+  padding: 10px 16px;
 }
 
 .variant-actions {

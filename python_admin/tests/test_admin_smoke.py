@@ -71,7 +71,7 @@ class FakeConnection:
             row["show_original_filename"] = args[0]
             row["show_manifest_address"] = args[1]
             row["updated_at"] = datetime.now(timezone.utc)
-            return {"status": row["status"]}
+            return {"status": row["status"], "is_public": row["is_public"]}
 
         return self.store["videos"].get(video_id)
 
@@ -128,10 +128,22 @@ class FakeConnection:
             row["status"] = "ready"
             row["manifest_address"] = manifest_address
             row["catalog_address"] = catalog_address
+            row["is_public"] = False
             row["error_message"] = None
             row["approval_expires_at"] = None
             row["job_dir"] = None
             row["job_source_path"] = None
+            return "UPDATE 1"
+
+        if "SET is_public=$1" in query:
+            is_public, manifest_address, catalog_address, video_id = args
+            row = self.store["videos"][str(video_id)]
+            row["is_public"] = is_public
+            if manifest_address is not None:
+                row["manifest_address"] = manifest_address
+            if catalog_address is not None:
+                row["catalog_address"] = catalog_address
+            row["updated_at"] = datetime.now(timezone.utc)
             return "UPDATE 1"
 
         return "UPDATE 0"
@@ -198,6 +210,7 @@ def make_store(tmp_path):
                 "final_quote": {"storage_cost_atto": "123"},
                 "final_quote_created_at": now,
                 "approval_expires_at": now + timedelta(hours=1),
+                "is_public": False,
                 "show_original_filename": False,
                 "show_manifest_address": False,
             }
@@ -320,7 +333,7 @@ class AdminSmokeTests(unittest.TestCase):
         self.assertEqual(after.status_code, 200)
         self.assertEqual(after.json()["status"], "uploading")
 
-    def test_manifest_generation_redacts_private_fields_until_visibility_enabled(self):
+    def test_publish_button_controls_public_catalog_metadata(self):
         video_id = next(iter(self.store["videos"]))
         self.store["videos"][video_id]["status"] = "ready"
 
@@ -331,6 +344,17 @@ class AdminSmokeTests(unittest.TestCase):
             manifest["variants"][0]["segments"][0]["autonomi_address"],
             "segment-addr",
         )
+
+        response = self.client.patch(
+            f"/admin/videos/{video_id}/publication",
+            json={"is_public": True},
+            headers=self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["is_public"])
+        catalog = json.loads(FakeAntdClient.storage[body["catalog_address"]].decode("utf-8"))
+        self.assertIsNone(catalog["videos"][0]["original_filename"])
 
         response = self.client.patch(
             f"/admin/videos/{video_id}/visibility",
@@ -349,9 +373,20 @@ class AdminSmokeTests(unittest.TestCase):
         self.assertEqual(public_entry["original_filename"], "private-source.mp4")
         self.assertEqual(public_entry["manifest_address"], body["manifest_address"])
 
+        response = self.client.patch(
+            f"/admin/videos/{video_id}/publication",
+            json={"is_public": False},
+            headers=self.auth_header(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["is_public"])
+        catalog = json.loads(FakeAntdClient.storage[response.json()["catalog_address"]].decode("utf-8"))
+        self.assertEqual(catalog["videos"], [])
+
     def test_public_catalog_hides_manifest_and_delete_removes_video(self):
         video_id = next(iter(self.store["videos"]))
         self.store["videos"][video_id]["status"] = "ready"
+        self.store["videos"][video_id]["is_public"] = True
         manifest = asyncio.run(admin._build_ready_manifest_from_db(video_id))
         entry = admin._video_catalog_entry(manifest, "manifest-hidden")
         catalog = {

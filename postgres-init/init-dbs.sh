@@ -27,9 +27,12 @@ CREATE TABLE IF NOT EXISTS videos (
     catalog_address  TEXT,
     error_message    TEXT,
     job_dir          TEXT,
+    job_source_path  TEXT,
+    requested_resolutions JSONB,
     final_quote      JSONB,
     final_quote_created_at TIMESTAMPTZ,
     approval_expires_at TIMESTAMPTZ,
+    is_public       BOOLEAN NOT NULL DEFAULT FALSE,
     show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
     show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ DEFAULT NOW(),
@@ -55,7 +58,7 @@ CREATE TABLE IF NOT EXISTS video_segments (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     variant_id       UUID NOT NULL REFERENCES video_variants(id) ON DELETE CASCADE,
     segment_index    INTEGER NOT NULL,
-    autonomi_address TEXT NOT NULL,
+    autonomi_address TEXT,
     autonomi_cost_atto TEXT,
     autonomi_payment_mode TEXT,
     duration         FLOAT NOT NULL DEFAULT 10.0,
@@ -66,6 +69,7 @@ CREATE TABLE IF NOT EXISTS video_segments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_videos_status    ON videos(status);
+CREATE INDEX IF NOT EXISTS idx_videos_is_public ON videos(is_public);
 CREATE INDEX IF NOT EXISTS idx_variants_video   ON video_variants(video_id);
 CREATE INDEX IF NOT EXISTS idx_segments_variant ON video_segments(variant_id);
 

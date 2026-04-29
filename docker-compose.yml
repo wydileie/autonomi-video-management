@@ -2,14 +2,15 @@ services:
 
   # 1) Postgres
   db:
-    image: postgres:16
+    image: autonomi-video-management-postgres
+    build:
+      context: ./postgres-init
     container_name: postgres_db
     environment:
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ${HOST_WORKSPACE_DIR:-.}/postgres-init/:/docker-entrypoint-initdb.d/:ro
     networks:
       - appnet
     healthcheck:
@@ -18,11 +19,31 @@ services:
       timeout: 5s
       retries: 5
 
-  # 2) Python Admin — video ingestion, FFmpeg transcoding, metadata API
+  # 2) One-shot permissions init for non-root app containers
+  init_permissions:
+    image: alpine:3.20
+    container_name: autvid_init_permissions
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /var/lib/autvid/processing /catalog
+        chown -R 1000:1000 /var/lib/autvid/processing /catalog
+        chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid/processing /catalog
+    volumes:
+      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
+      - catalog_state:/catalog
+    security_opt:
+      - no-new-privileges:true
+
+  # 3) Python Admin — video ingestion, FFmpeg transcoding, metadata API
   python_admin:
     build: ./python_admin
     container_name: python_admin
     environment:
+      APP_ENV: "${APP_ENV:-development}"
       ADMIN_DB_HOST: db
       ADMIN_DB_PORT: "5432"
       ADMIN_DB_NAME: "${ADMIN_DB}"
@@ -58,6 +79,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      init_permissions:
+        condition: service_completed_successfully
     networks:
       - appnet
     expose:
@@ -65,8 +88,27 @@ services:
     volumes:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, sys, urllib.request; payload=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)); sys.exit(0 if payload.get('ok') else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
 
-  # 3) Rust streaming — HLS manifest generation + Autonomi segment proxy
+  # 4) Rust streaming — HLS manifest generation + Autonomi segment proxy
   rust_stream:
     build: ./rust_stream
     container_name: rust_stream
@@ -80,14 +122,30 @@ services:
       STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_LOG: "info"
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
     networks:
       - appnet
     expose:
       - "8081"
     volumes:
       - catalog_state:/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
 
-  # 4) React front end
+  # 5) React front end
   react_frontend:
     build:
       context: ./react_frontend
@@ -101,22 +159,54 @@ services:
     networks:
       - appnet
     expose:
-      - "80"
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+      - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
 
-  # 5) Nginx Reverse Proxy
+  # 6) Nginx Reverse Proxy
   nginx:
-    image: nginx:latest
+    image: autonomi-video-management-nginx
+    build:
+      context: ./nginx
     container_name: nginx_proxy
     depends_on:
-      - python_admin
-      - rust_stream
-      - react_frontend
-    volumes:
-      - ${HOST_WORKSPACE_DIR:-.}/nginx/conf.d/:/etc/nginx/conf.d
+      python_admin:
+        condition: service_healthy
+      rust_stream:
+        condition: service_healthy
+      react_frontend:
+        condition: service_healthy
     ports:
-      - "${APP_HTTP_PORT:-80}:80"
+      - "${APP_HTTP_PORT:-80}:8080"
     networks:
       - appnet
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    user: "101:101"
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+      - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
 
 volumes:
   postgres_data:

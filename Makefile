@@ -1,4 +1,4 @@
-.PHONY: help install-python install-react test test-python test-rust test-react build-react ci
+.PHONY: help install-python install-react test test-python test-rust clippy-rust test-react build-react ci
 
 PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
@@ -10,6 +10,7 @@ help:
 	@echo "  make install-python  Install Python admin dependencies"
 	@echo "  make test-python     Run Python admin unittest discovery"
 	@echo "  make test-rust       Run Rust stream cargo tests"
+	@echo "  make clippy-rust     Run Rust stream clippy checks"
 	@echo "  make install-react   Install React frontend dependencies"
 	@echo "  make build-react     Build the React frontend"
 	@echo "  make test-react      Run React tests in CI mode"
@@ -25,6 +26,9 @@ test-python:
 test-rust:
 	cd rust_stream && $(CARGO) test
 
+clippy-rust:
+	cd rust_stream && $(CARGO) clippy --all-targets -- -D warnings
+
 install-react:
 	cd react_frontend && $(NPM) ci
 
@@ -32,8 +36,8 @@ build-react:
 	cd react_frontend && $(NPM) run build
 
 test-react:
-	cd react_frontend && CI=true $(NPM) test -- --watchAll=false
+	cd react_frontend && CI=true $(NPM) test
 
 test: test-python test-rust test-react
 
-ci: install-python test-python test-rust install-react build-react test-react
+ci: install-python test-python test-rust clippy-rust install-react build-react test-react

@@ -1,28 +1,31 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { vi } from "vitest";
 import axios from "axios";
 import App from "./App";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-jest.mock("axios", () => ({
-  get: jest.fn(),
-  post: jest.fn(),
-  patch: jest.fn(),
-  delete: jest.fn(),
-  isCancel: jest.fn(() => false),
+vi.mock("axios", () => ({
+  default: {
+    get: vi.fn(),
+    post: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
+    isCancel: vi.fn(() => false),
+  },
 }));
 
-jest.mock("hls.js", () => {
-  const Hls = jest.fn().mockImplementation(() => ({
-    attachMedia: jest.fn(),
-    destroy: jest.fn(),
-    loadSource: jest.fn(),
-    on: jest.fn(),
+vi.mock("hls.js", () => {
+  const Hls = vi.fn().mockImplementation(() => ({
+    attachMedia: vi.fn(),
+    destroy: vi.fn(),
+    loadSource: vi.fn(),
+    on: vi.fn(),
   }));
   Hls.Events = { MANIFEST_PARSED: "manifestParsed" };
-  Hls.isSupported = jest.fn(() => false);
-  return Hls;
+  Hls.isSupported = vi.fn(() => false);
+  return { default: Hls };
 });
 
 const AUTH_STORAGE_KEY = "autvid_admin_token";
@@ -113,25 +116,25 @@ function setupGetRoutes({
 }
 
 beforeEach(() => {
-  jest.useRealTimers();
-  jest.clearAllMocks();
+  vi.useRealTimers();
+  vi.clearAllMocks();
   window.localStorage.clear();
   if (!URL.createObjectURL) {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: jest.fn(),
+      value: vi.fn(),
     });
   }
   if (!URL.revokeObjectURL) {
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: jest.fn(),
+      value: vi.fn(),
     });
   }
-  jest.spyOn(window, "confirm").mockReturnValue(true);
-  jest.spyOn(window, "alert").mockImplementation(() => {});
-  jest.spyOn(URL, "createObjectURL").mockReturnValue("blob:video");
-  jest.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  vi.spyOn(window, "alert").mockImplementation(() => {});
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:video");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
 });
 
 afterEach(async () => {
@@ -143,10 +146,10 @@ afterEach(async () => {
   if (container) {
     container.remove();
   }
-  jest.useRealTimers();
+  vi.useRealTimers();
   root = null;
   container = null;
-  jest.restoreAllMocks();
+  vi.restoreAllMocks();
 });
 
 test("logs in, stores the admin token, and sends bearer auth on admin requests", async () => {
@@ -182,12 +185,12 @@ test("logs in, stores the admin token, and sends bearer auth on admin requests",
 });
 
 test("shows an upload quote after local video metadata is available", async () => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
   window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
   setupGetRoutes();
 
   const realCreateElement = document.createElement.bind(document);
-  jest.spyOn(document, "createElement").mockImplementation((tagName, options) => {
+  vi.spyOn(document, "createElement").mockImplementation((tagName, options) => {
     const element = realCreateElement(tagName, options);
     if (tagName === "video") {
       Object.defineProperties(element, {
@@ -243,7 +246,7 @@ test("shows an upload quote after local video metadata is available", async () =
   expect(text()).toContain("1920 x 1080");
 
   await act(async () => {
-    jest.advanceTimersByTime(260);
+    vi.advanceTimersByTime(260);
   });
   await flushPromises();
 
@@ -365,4 +368,131 @@ test("keeps public catalog metadata redacted when filename and manifest are hidd
   expect(text()).not.toContain("Manifest hidden or pending");
   expect(text()).not.toContain("Delete");
   expect(text()).not.toContain("Publish manifest address");
+});
+
+test("publishes and unpublishes ready videos from admin controls", async () => {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  const adminVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Operators only",
+    id: "admin-publication",
+    is_public: false,
+    original_filename: "source.mov",
+    status: "ready",
+    title: "Publication test",
+  };
+  let detail = {
+    ...adminVideo,
+    manifest_address: "0xmanifest",
+    show_manifest_address: false,
+    show_original_filename: false,
+    variants: [{ id: "variant-1", resolution: "720p", segment_count: 4 }],
+  };
+
+  setupGetRoutes({
+    adminVideos: [adminVideo],
+    details: { "/api/admin/videos/admin-publication": detail },
+  });
+  axios.patch.mockImplementation((url, body, config) => {
+    if (url === "/api/admin/videos/admin-publication/publication") {
+      expect(config.headers).toEqual({ Authorization: "Bearer stored-token" });
+      detail = { ...detail, is_public: body.is_public };
+      return Promise.resolve({ data: detail });
+    }
+    return Promise.reject(new Error(`Unexpected PATCH ${url}`));
+  });
+
+  await renderApp();
+  await click(findButton("Manage"));
+  await waitFor(() => expect(text()).toContain("Publication test"));
+  await click(findButton("Publication test"));
+
+  await click(findButton(/^Publish$/));
+  expect(axios.patch).toHaveBeenCalledWith(
+    "/api/admin/videos/admin-publication/publication",
+    { is_public: true },
+    { headers: { Authorization: "Bearer stored-token" } },
+  );
+  expect(text()).toContain("Unpublish");
+
+  await click(findButton("Unpublish"));
+  expect(axios.patch).toHaveBeenCalledWith(
+    "/api/admin/videos/admin-publication/publication",
+    { is_public: false },
+    { headers: { Authorization: "Bearer stored-token" } },
+  );
+  expect(text()).toContain("Publish");
+});
+
+test("shows a catalog load error when the initial library request fails", async () => {
+  axios.get.mockRejectedValue(new Error("Catalog offline"));
+
+  await renderApp();
+
+  await waitFor(() => expect(text()).toContain("Catalog offline"));
+  expect(text()).not.toContain("No videos are available yet.");
+});
+
+test("shows detail, delete, and visibility failures without removing the current row", async () => {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  const adminVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Operators only",
+    id: "admin-1",
+    original_filename: "source.mov",
+    status: "published",
+    title: "Admin stream",
+  };
+  const detail = {
+    ...adminVideo,
+    manifest_address: "0xmanifest",
+    show_manifest_address: false,
+    show_original_filename: false,
+    variants: [{ id: "variant-1", resolution: "720p", segment_count: 4 }],
+  };
+  let detailFails = true;
+
+  axios.get.mockImplementation((url) => {
+    if (url === "/api/auth/me") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/api/admin/videos") {
+      return Promise.resolve({ data: [adminVideo] });
+    }
+    if (url === "/api/videos") {
+      return Promise.resolve({ data: [] });
+    }
+    if (url === "/api/admin/videos/admin-1") {
+      if (detailFails) return Promise.reject(new Error("Detail timed out"));
+      return Promise.resolve({ data: detail });
+    }
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+  axios.delete.mockRejectedValue(new Error("Delete refused"));
+  axios.patch.mockRejectedValue(new Error("Visibility refused"));
+
+  await renderApp();
+  await click(findButton("Manage"));
+  await waitFor(() => expect(text()).toContain("Admin stream"));
+
+  await click(findButton("Admin stream"));
+  expect(text()).toContain("Detail timed out");
+
+  detailFails = false;
+  await click(findButton("Admin stream"));
+  await waitFor(() => expect(text()).toContain("0xmanifest"));
+
+  await click(findButton("Delete"));
+  expect(text()).toContain("Delete refused");
+  expect(text()).toContain("Admin stream");
+
+  const publishFilename = Array.from(container.querySelectorAll(".visibility-panel input"))
+    .find((input) => input.type === "checkbox");
+  await act(async () => {
+    publishFilename.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushPromises();
+
+  expect(text()).toContain("Visibility refused");
+  expect(text()).toContain("Admin stream");
 });
