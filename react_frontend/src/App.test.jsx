@@ -66,6 +66,16 @@ async function click(element) {
   await flushPromises();
 }
 
+async function mouseLeave(element) {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("mouseout", {
+      bubbles: true,
+      relatedTarget: document.body,
+    }));
+  });
+  await flushPromises();
+}
+
 async function renderApp() {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -418,6 +428,87 @@ test("shows a playback error when HLS segment loading fails", async () => {
   });
 
   expect(text()).toContain("Playback failed because the video segments could not be loaded.");
+});
+
+test("closes the playback resolution menu when the pointer leaves it", async () => {
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-quality",
+    original_filename: "",
+    status: "published",
+    title: "Quality stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-quality": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 4 },
+          { id: "variant-480", resolution: "480p", segment_count: 4 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Quality stream"));
+  await click(findButton("Quality stream"));
+
+  await click(container.querySelector(".quality-toggle"));
+  expect(container.querySelector(".quality-menu")).not.toBeNull();
+
+  await mouseLeave(container.querySelector(".player-quality"));
+  expect(container.querySelector(".quality-menu")).toBeNull();
+});
+
+test("hides playback resolution controls after idle playback", async () => {
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-idle-quality",
+    original_filename: "",
+    status: "published",
+    title: "Idle quality stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-idle-quality": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 4 },
+          { id: "variant-480", resolution: "480p", segment_count: 4 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Idle quality stream"));
+  await click(findButton("Idle quality stream"));
+  await click(container.querySelector(".quality-toggle"));
+
+  const playerShell = container.querySelector(".player-shell");
+  const video = container.querySelector("video");
+  expect(playerShell.classList.contains("controls-active")).toBe(true);
+  expect(container.querySelector(".quality-menu")).not.toBeNull();
+
+  vi.useFakeTimers();
+  Object.defineProperty(video, "paused", { configurable: true, value: false });
+  await act(async () => {
+    video.dispatchEvent(new Event("play", { bubbles: true }));
+  });
+
+  await act(async () => {
+    vi.advanceTimersByTime(2200);
+  });
+
+  expect(playerShell.classList.contains("controls-active")).toBe(false);
+  expect(container.querySelector(".quality-menu")).toBeNull();
 });
 
 test("uses the manifest-address stream route for admin preview before publishing", async () => {

@@ -8,6 +8,7 @@ import { API_BASE_URL, STREAM_BASE_URL } from "./runtimeConfig";
 const API = API_BASE_URL;
 const STREAM = STREAM_BASE_URL;
 const AUTH_STORAGE_KEY = "autvid_admin_token";
+const PLAYER_CONTROLS_IDLE_MS = 2200;
 
 const RESOLUTION_OPTIONS = [
   { value: "8k", label: "8K", width: 7680, height: 4320, bitrate: "~45 Mbps", note: "maximum archive" },
@@ -126,13 +127,45 @@ function variantDisplayLabel(resolution) {
 function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolutionChange }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
+  const controlsIdleTimerRef = useRef(null);
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [controlsActive, setControlsActive] = useState(true);
   const [playbackError, setPlaybackError] = useState("");
   const streamBase = manifestAddress
     ? `${STREAM}/manifest/${manifestAddress}`
     : `${STREAM}/${videoId}`;
   const src = `${streamBase}/${resolution}/playlist.m3u8`;
   const selectedLabel = variantDisplayLabel(resolution);
+
+  const clearControlsIdleTimer = useCallback(() => {
+    if (controlsIdleTimerRef.current) {
+      clearTimeout(controlsIdleTimerRef.current);
+      controlsIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const hideControls = useCallback(() => {
+    clearControlsIdleTimer();
+    setQualityOpen(false);
+    setControlsActive(false);
+  }, [clearControlsIdleTimer]);
+
+  const scheduleControlsIdleHide = useCallback(() => {
+    clearControlsIdleTimer();
+    const video = videoRef.current;
+    if (!video || video.paused || video.ended) return;
+
+    controlsIdleTimerRef.current = setTimeout(() => {
+      setQualityOpen(false);
+      setControlsActive(false);
+      controlsIdleTimerRef.current = null;
+    }, PLAYER_CONTROLS_IDLE_MS);
+  }, [clearControlsIdleTimer]);
+
+  const showControls = useCallback(() => {
+    setControlsActive(true);
+    scheduleControlsIdleHide();
+  }, [scheduleControlsIdleHide]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -186,16 +219,49 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
   }, [src]);
 
   useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    const handlePlay = () => {
+      setControlsActive(true);
+      scheduleControlsIdleHide();
+    };
+    const handlePause = () => {
+      clearControlsIdleTimer();
+      setControlsActive(true);
+    };
+
+    video.addEventListener("play", handlePlay);
+    video.addEventListener("pause", handlePause);
+    video.addEventListener("ended", handlePause);
+    return () => {
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("pause", handlePause);
+      video.removeEventListener("ended", handlePause);
+    };
+  }, [clearControlsIdleTimer, scheduleControlsIdleHide]);
+
+  useEffect(() => clearControlsIdleTimer, [clearControlsIdleTimer]);
+
+  useEffect(() => {
     setQualityOpen(false);
   }, [resolution]);
 
   return (
-    <div className="player-shell">
+    <div
+      className={`player-shell${controlsActive ? " controls-active" : ""}`}
+      onFocusCapture={showControls}
+      onMouseEnter={showControls}
+      onMouseLeave={hideControls}
+      onMouseMove={showControls}
+      onTouchStart={showControls}
+    >
       <video ref={videoRef} className="player" controls playsInline />
       {playbackError && <div className="player-error">{playbackError}</div>}
       {variants.length > 0 && (
         <div
-          className="player-quality"
+          className={`player-quality${qualityOpen ? " open" : ""}`}
+          onMouseLeave={() => setQualityOpen(false)}
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)) setQualityOpen(false);
           }}
@@ -206,7 +272,10 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
             aria-label="Quality"
             aria-expanded={qualityOpen}
             aria-haspopup="menu"
-            onClick={() => setQualityOpen((open) => !open)}
+            onClick={() => {
+              setQualityOpen((open) => !open);
+              showControls();
+            }}
           >
             <span className="gear-icon" aria-hidden="true" />
             <span>{selectedLabel}</span>

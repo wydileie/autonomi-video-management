@@ -727,9 +727,20 @@ main {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  opacity: 0;
+  pointer-events: none;
   position: absolute;
   right: 18px;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
   z-index: 2;
+}
+
+.player-shell.controls-active .player-quality,
+.player-quality.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .quality-toggle {
