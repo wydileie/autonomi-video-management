@@ -194,10 +194,9 @@ docker compose --env-file .env.local \
 ```
 
 The overlay also publishes `rust_admin` directly at
-`http://localhost:${RUST_ADMIN_HTTP_PORT:-8002}`. It currently matches health,
-auth, quote, catalog, and read/status APIs; upload/transcode, approval,
-publication, and delete still intentionally return `501` until those workflows
-are migrated from `python_admin`.
+`http://localhost:${RUST_ADMIN_HTTP_PORT:-8002}`. It is intended to match the
+Python admin API contract, including upload/transcode, final quote approval,
+Autonomi segment upload, publication/catalog updates, and delete.
 
 ### Production
 

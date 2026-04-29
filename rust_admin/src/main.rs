@@ -1,13 +1,14 @@
 use std::{
+    collections::HashMap,
     env, fs,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path as FsPath, PathBuf},
     sync::Arc,
     time::Duration as StdDuration,
 };
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -21,21 +22,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use subtle::ConstantTimeEq;
-use tokio::net::TcpListener;
+use tokio::{
+    fs as tokio_fs,
+    io::AsyncWriteExt,
+    net::TcpListener,
+    process::Command,
+    sync::{Mutex, Semaphore},
+    time::sleep,
+};
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
+const STATUS_PENDING: &str = "pending";
+const STATUS_PROCESSING: &str = "processing";
+const STATUS_AWAITING_APPROVAL: &str = "awaiting_approval";
+const STATUS_UPLOADING: &str = "uploading";
 const STATUS_READY: &str = "ready";
+const STATUS_ERROR: &str = "error";
 const DEFAULT_API_PORT: u16 = 8000;
 const CATALOG_CONTENT_TYPE: &str = "application/vnd.autonomi.video.catalog+json;v=1";
+const VIDEO_MANIFEST_CONTENT_TYPE: &str = "application/vnd.autonomi.video.manifest+json;v=1";
 
 #[derive(Clone)]
 struct AppState {
     config: Arc<Config>,
     pool: PgPool,
     antd: AntdRestClient,
+    catalog_lock: Arc<Mutex<()>>,
+    upload_save_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -51,13 +67,24 @@ struct Config {
     catalog_bootstrap_address: Option<String>,
     cors_allowed_origins: Vec<HeaderValue>,
     bind_addr: SocketAddr,
+    upload_temp_dir: PathBuf,
+    upload_max_file_bytes: u64,
+    upload_min_free_bytes: u64,
+    upload_max_concurrent_saves: usize,
+    upload_ffprobe_timeout_seconds: f64,
     hls_segment_duration: f64,
+    ffmpeg_threads: usize,
+    ffmpeg_filter_threads: usize,
     upload_max_duration_seconds: f64,
     upload_max_source_pixels: i64,
     upload_max_source_long_edge: i64,
     upload_quote_transcoded_overhead: f64,
     upload_quote_max_sample_bytes: usize,
     final_quote_approval_ttl_seconds: i64,
+    approval_cleanup_interval_seconds: u64,
+    antd_upload_verify: bool,
+    antd_upload_retries: usize,
+    antd_upload_timeout_seconds: f64,
     antd_approve_on_startup: bool,
 }
 
@@ -84,6 +111,12 @@ struct AntdDataCostResponse {
     chunk_count: Option<i64>,
     estimated_gas_cost_wei: Option<String>,
     payment_mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AntdDataPutResponse {
+    address: String,
+    cost: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -212,6 +245,48 @@ struct UploadQuoteOut {
     variants: Vec<UploadQuoteVariantOut>,
 }
 
+struct AcceptedUpload {
+    video_id: String,
+    source_path: PathBuf,
+    resolutions: Vec<String>,
+    job_dir: PathBuf,
+    video: VideoOut,
+}
+
+struct UploadMediaMetadata {
+    duration_seconds: f64,
+    dimensions: (i32, i32),
+}
+
+struct CommandOutput {
+    status_code: Option<i32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+struct JobDirGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl JobDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for JobDirGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -234,15 +309,6 @@ impl ApiError {
             detail: detail.into(),
             authenticate: true,
         }
-    }
-
-    fn not_implemented(workflow: &str) -> Self {
-        Self::new(
-            StatusCode::NOT_IMPLEMENTED,
-            format!(
-                "rust_admin does not yet implement {workflow}; use python_admin for this workflow during migration"
-            ),
-        )
     }
 }
 
@@ -273,14 +339,27 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     ensure_schema(&pool).await?;
 
-    let antd = AntdRestClient::new(&config.antd_url)?;
+    fs::create_dir_all(&config.upload_temp_dir)?;
+    if let Some(parent) = config.catalog_state_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let antd = AntdRestClient::new(
+        &config.antd_url,
+        config.antd_upload_timeout_seconds.max(60.0) + 30.0,
+    )?;
     ensure_autonomi_ready(&config, &antd).await?;
 
     let state = AppState {
         config: config.clone(),
         pool,
         antd,
+        catalog_lock: Arc::new(Mutex::new(())),
+        upload_save_semaphore: Arc::new(Semaphore::new(config.upload_max_concurrent_saves)),
     };
+    cleanup_expired_approvals(&state).await?;
+    recover_interrupted_jobs(state.clone()).await?;
+    tokio::spawn(approval_cleanup_loop(state.clone()));
 
     let app = Router::new()
         .route("/health", get(health))
@@ -288,16 +367,26 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/me", get(auth_me))
         .route("/catalog", get(get_catalog))
         .route("/videos/upload/quote", post(quote_video_upload))
-        .route("/videos/upload", post(upload_video_not_migrated))
+        .route("/videos/upload", post(upload_video))
         .route("/videos", get(list_videos))
         .route("/admin/videos", get(admin_list_videos))
-        .route("/videos/:video_id", get(get_video).delete(delete_video_not_migrated))
-        .route("/admin/videos/:video_id", get(admin_get_video).delete(delete_video_not_migrated))
+        .route("/videos/:video_id", get(get_video).delete(delete_video))
+        .route(
+            "/admin/videos/:video_id",
+            get(admin_get_video).delete(delete_video),
+        )
         .route("/videos/:video_id/status", get(video_status))
-        .route("/videos/:video_id/approve", post(approve_video_not_migrated))
-        .route("/admin/videos/:video_id/approve", post(approve_video_not_migrated))
-        .route("/admin/videos/:video_id/visibility", patch(update_video_visibility))
-        .route("/admin/videos/:video_id/publication", patch(update_publication_not_migrated))
+        .route("/videos/:video_id/approve", post(approve_video))
+        .route("/admin/videos/:video_id/approve", post(approve_video))
+        .route(
+            "/admin/videos/:video_id/visibility",
+            patch(update_video_visibility),
+        )
+        .route(
+            "/admin/videos/:video_id/publication",
+            patch(update_video_publication),
+        )
+        .layer(DefaultBodyLimit::disable())
         .layer(cors_layer(&config)?)
         .with_state(state);
 
@@ -330,6 +419,12 @@ impl Config {
         if admin_auth_ttl_hours <= 0 {
             anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
         }
+        validate_admin_auth_config(
+            &admin_username,
+            &admin_password,
+            &admin_auth_secret,
+            admin_auth_ttl_hours,
+        )?;
 
         let antd_payment_mode = env::var("ANTD_PAYMENT_MODE").unwrap_or_else(|_| "auto".into());
         if !matches!(antd_payment_mode.as_str(), "auto" | "merkle" | "single") {
@@ -339,6 +434,15 @@ impl Config {
         let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 1.0)?;
         if hls_segment_duration <= 0.0 {
             anyhow::bail!("HLS_SEGMENT_DURATION must be greater than zero");
+        }
+
+        let ffmpeg_threads = parse_usize_env("FFMPEG_THREADS", 2)?;
+        if ffmpeg_threads < 1 {
+            anyhow::bail!("FFMPEG_THREADS must be at least 1");
+        }
+        let ffmpeg_filter_threads = parse_usize_env("FFMPEG_FILTER_THREADS", 1)?;
+        if ffmpeg_filter_threads < 1 {
+            anyhow::bail!("FFMPEG_FILTER_THREADS must be at least 1");
         }
 
         let upload_quote_transcoded_overhead =
@@ -351,6 +455,52 @@ impl Config {
             parse_usize_env("UPLOAD_QUOTE_MAX_SAMPLE_BYTES", 16 * 1024 * 1024)?;
         if upload_quote_max_sample_bytes < 1 {
             anyhow::bail!("UPLOAD_QUOTE_MAX_SAMPLE_BYTES must be at least 1");
+        }
+
+        let upload_max_file_bytes =
+            parse_u64_env("UPLOAD_MAX_FILE_BYTES", 20 * 1024 * 1024 * 1024)?;
+        if upload_max_file_bytes == 0 {
+            anyhow::bail!("UPLOAD_MAX_FILE_BYTES must be greater than zero");
+        }
+        let upload_min_free_bytes = parse_u64_env("UPLOAD_MIN_FREE_BYTES", 5 * 1024 * 1024 * 1024)?;
+        let upload_max_concurrent_saves = parse_usize_env("UPLOAD_MAX_CONCURRENT_SAVES", 2)?;
+        if upload_max_concurrent_saves < 1 {
+            anyhow::bail!("UPLOAD_MAX_CONCURRENT_SAVES must be at least 1");
+        }
+        let upload_ffprobe_timeout_seconds = parse_f64_env("UPLOAD_FFPROBE_TIMEOUT_SECONDS", 30.0)?;
+        if upload_ffprobe_timeout_seconds <= 0.0 {
+            anyhow::bail!("UPLOAD_FFPROBE_TIMEOUT_SECONDS must be greater than zero");
+        }
+        let upload_max_duration_seconds =
+            parse_f64_env("UPLOAD_MAX_DURATION_SECONDS", 4.0 * 60.0 * 60.0)?;
+        if upload_max_duration_seconds <= 0.0 {
+            anyhow::bail!("UPLOAD_MAX_DURATION_SECONDS must be greater than zero");
+        }
+        let upload_max_source_pixels = parse_i64_env("UPLOAD_MAX_SOURCE_PIXELS", 7680 * 4320)?;
+        if upload_max_source_pixels <= 0 {
+            anyhow::bail!("UPLOAD_MAX_SOURCE_PIXELS must be greater than zero");
+        }
+        let upload_max_source_long_edge = parse_i64_env("UPLOAD_MAX_SOURCE_LONG_EDGE", 7680)?;
+        if upload_max_source_long_edge <= 0 {
+            anyhow::bail!("UPLOAD_MAX_SOURCE_LONG_EDGE must be greater than zero");
+        }
+        let final_quote_approval_ttl_seconds =
+            parse_i64_env("FINAL_QUOTE_APPROVAL_TTL_SECONDS", 4 * 60 * 60)?;
+        if final_quote_approval_ttl_seconds <= 0 {
+            anyhow::bail!("FINAL_QUOTE_APPROVAL_TTL_SECONDS must be greater than zero");
+        }
+        let approval_cleanup_interval_seconds =
+            parse_u64_env("APPROVAL_CLEANUP_INTERVAL_SECONDS", 300)?;
+        if approval_cleanup_interval_seconds == 0 {
+            anyhow::bail!("APPROVAL_CLEANUP_INTERVAL_SECONDS must be greater than zero");
+        }
+        let antd_upload_retries = parse_usize_env("ANTD_UPLOAD_RETRIES", 3)?;
+        if antd_upload_retries < 1 {
+            anyhow::bail!("ANTD_UPLOAD_RETRIES must be at least 1");
+        }
+        let antd_upload_timeout_seconds = parse_f64_env("ANTD_UPLOAD_TIMEOUT_SECONDS", 120.0)?;
+        if antd_upload_timeout_seconds <= 0.0 {
+            anyhow::bail!("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero");
         }
 
         Ok(Self {
@@ -371,16 +521,26 @@ impl Config {
                 .filter(|value| !value.is_empty()),
             cors_allowed_origins: cors_allowed_origins()?,
             bind_addr,
+            upload_temp_dir: PathBuf::from(
+                env::var("UPLOAD_TEMP_DIR").unwrap_or_else(|_| "/tmp/video_uploads".into()),
+            ),
+            upload_max_file_bytes,
+            upload_min_free_bytes,
+            upload_max_concurrent_saves,
+            upload_ffprobe_timeout_seconds,
             hls_segment_duration,
-            upload_max_duration_seconds: parse_f64_env("UPLOAD_MAX_DURATION_SECONDS", 4.0 * 60.0 * 60.0)?,
-            upload_max_source_pixels: parse_i64_env("UPLOAD_MAX_SOURCE_PIXELS", 7680 * 4320)?,
-            upload_max_source_long_edge: parse_i64_env("UPLOAD_MAX_SOURCE_LONG_EDGE", 7680)?,
+            ffmpeg_threads,
+            ffmpeg_filter_threads,
+            upload_max_duration_seconds,
+            upload_max_source_pixels,
+            upload_max_source_long_edge,
             upload_quote_transcoded_overhead,
             upload_quote_max_sample_bytes,
-            final_quote_approval_ttl_seconds: parse_i64_env(
-                "FINAL_QUOTE_APPROVAL_TTL_SECONDS",
-                4 * 60 * 60,
-            )?,
+            final_quote_approval_ttl_seconds,
+            approval_cleanup_interval_seconds,
+            antd_upload_verify: parse_bool_env("ANTD_UPLOAD_VERIFY", true),
+            antd_upload_retries,
+            antd_upload_timeout_seconds,
             antd_approve_on_startup: parse_bool_env("ANTD_APPROVE_ON_STARTUP", true),
         })
     }
@@ -394,6 +554,13 @@ fn parse_i64_env(name: &str, default_value: i64) -> anyhow::Result<i64> {
     env::var(name)
         .unwrap_or_else(|_| default_value.to_string())
         .parse::<i64>()
+        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
+}
+
+fn parse_u64_env(name: &str, default_value: u64) -> anyhow::Result<u64> {
+    env::var(name)
+        .unwrap_or_else(|_| default_value.to_string())
+        .parse::<u64>()
         .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
 }
 
@@ -413,8 +580,109 @@ fn parse_f64_env(name: &str, default_value: f64) -> anyhow::Result<f64> {
 
 fn parse_bool_env(name: &str, default_value: bool) -> bool {
     env::var(name)
-        .map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no"
+            )
+        })
         .unwrap_or(default_value)
+}
+
+fn duration_from_secs_f64(seconds: f64) -> StdDuration {
+    StdDuration::from_millis((seconds.max(0.001) * 1000.0).ceil() as u64)
+}
+
+fn is_production_environment() -> bool {
+    ["APP_ENV", "ENVIRONMENT"].iter().any(|name| {
+        matches!(
+            env::var(name)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "prod" | "production"
+        )
+    })
+}
+
+fn is_unsafe_admin_auth_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "" | "admin"
+            | "administrator"
+            | "changeme"
+            | "change-me"
+            | "change_me"
+            | "default"
+            | "password"
+            | "please-change-me"
+            | "replace-me"
+            | "secret"
+            | "test"
+            | "test-secret"
+    ) || [
+        "change-me",
+        "change_me",
+        "changeme",
+        "change-this",
+        "change_this",
+        "changethis",
+        "replace-me",
+        "replace_me",
+        "replace-this",
+        "replace_this",
+    ]
+    .iter()
+    .any(|placeholder| normalized.contains(placeholder))
+}
+
+fn validate_admin_auth_config(
+    username: &str,
+    password: &str,
+    secret: &str,
+    ttl_hours: i64,
+) -> anyhow::Result<()> {
+    if ttl_hours <= 0 {
+        anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
+    }
+    if !is_production_environment() {
+        return Ok(());
+    }
+
+    let mut unsafe_fields = Vec::new();
+    if is_unsafe_admin_auth_value(username) {
+        unsafe_fields.push("ADMIN_USERNAME");
+    }
+    if is_unsafe_admin_auth_value(password) {
+        unsafe_fields.push("ADMIN_PASSWORD");
+    }
+    if is_unsafe_admin_auth_value(secret) {
+        unsafe_fields.push("ADMIN_AUTH_SECRET");
+    }
+    if !unsafe_fields.is_empty() {
+        anyhow::bail!(
+            "Unsafe admin auth configuration for production: {} must not use default, weak, or change-me values",
+            unsafe_fields.join(", ")
+        );
+    }
+    if constant_time_eq(secret, password) {
+        anyhow::bail!(
+            "Unsafe admin auth configuration for production: ADMIN_AUTH_SECRET must not equal ADMIN_PASSWORD"
+        );
+    }
+    if password.len() < 12 {
+        anyhow::bail!(
+            "Unsafe admin auth configuration for production: ADMIN_PASSWORD must be at least 12 characters"
+        );
+    }
+    if secret.len() < 32 {
+        anyhow::bail!(
+            "Unsafe admin auth configuration for production: ADMIN_AUTH_SECRET must be at least 32 characters"
+        );
+    }
+    Ok(())
 }
 
 fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
@@ -449,7 +717,13 @@ fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
 fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
     Ok(CorsLayer::new()
         .allow_origin(AllowOrigin::list(config.cors_allowed_origins.clone()))
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             header::ACCEPT,
             header::AUTHORIZATION,
@@ -459,11 +733,11 @@ fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
 }
 
 impl AntdRestClient {
-    fn new(base_url: &str) -> anyhow::Result<Self> {
+    fn new(base_url: &str, timeout_seconds: f64) -> anyhow::Result<Self> {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
-                .timeout(StdDuration::from_secs(60))
+                .timeout(duration_from_secs_f64(timeout_seconds))
                 .build()?,
         })
     }
@@ -474,18 +748,30 @@ impl AntdRestClient {
     }
 
     async fn wallet_address(&self) -> anyhow::Result<Value> {
-        self.request_json(reqwest::Method::GET, "/v1/wallet/address", Option::<Value>::None)
-            .await
+        self.request_json(
+            reqwest::Method::GET,
+            "/v1/wallet/address",
+            Option::<Value>::None,
+        )
+        .await
     }
 
     async fn wallet_balance(&self) -> anyhow::Result<Value> {
-        self.request_json(reqwest::Method::GET, "/v1/wallet/balance", Option::<Value>::None)
-            .await
+        self.request_json(
+            reqwest::Method::GET,
+            "/v1/wallet/balance",
+            Option::<Value>::None,
+        )
+        .await
     }
 
     async fn wallet_approve(&self) -> anyhow::Result<Value> {
-        self.request_json(reqwest::Method::POST, "/v1/wallet/approve", Option::<Value>::None)
-            .await
+        self.request_json(
+            reqwest::Method::POST,
+            "/v1/wallet/approve",
+            Option::<Value>::None,
+        )
+        .await
     }
 
     async fn data_get_public(&self, address: &str) -> anyhow::Result<Vec<u8>> {
@@ -506,6 +792,22 @@ impl AntdRestClient {
             reqwest::Method::POST,
             "/v1/data/cost",
             Some(json!({ "data": BASE64.encode(data) })),
+        )
+        .await
+    }
+
+    async fn data_put_public(
+        &self,
+        data: &[u8],
+        payment_mode: &str,
+    ) -> anyhow::Result<AntdDataPutResponse> {
+        self.request_json(
+            reqwest::Method::POST,
+            "/v1/data/public",
+            Some(json!({
+                "data": BASE64.encode(data),
+                "payment_mode": payment_mode,
+            })),
         )
         .await
     }
@@ -633,7 +935,11 @@ async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_segments_variant ON video_segments(variant_id);
     "#;
 
-    for statement in SCHEMA_SQL.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
+    for statement in SCHEMA_SQL
+        .split(';')
+        .map(str::trim)
+        .filter(|sql| !sql.is_empty())
+    {
         sqlx::query(statement).execute(pool).await?;
     }
     Ok(())
@@ -651,7 +957,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
             implementation: "rust_admin",
-            parity: "migration",
+            parity: "python_admin_compatible",
         })
         .into_response(),
         Err(err) => Json(HealthResponse {
@@ -664,7 +970,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
             implementation: "rust_admin",
-            parity: "migration",
+            parity: "python_admin_compatible",
         })
         .into_response(),
     }
@@ -738,7 +1044,13 @@ async fn list_videos(State(state): State<AppState>) -> Result<Json<Vec<VideoOut>
         .and_then(Value::as_array)
         .unwrap_or(&Vec::new())
         .iter()
-        .filter(|entry| entry.get("status").and_then(Value::as_str).unwrap_or(STATUS_READY) == STATUS_READY)
+        .filter(|entry| {
+            entry
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or(STATUS_READY)
+                == STATUS_READY
+        })
         .map(|entry| catalog_entry_to_video_out(entry, catalog_address.as_deref()))
         .collect();
     Ok(Json(videos))
@@ -787,7 +1099,12 @@ async fn get_video(
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
 
     let manifest = load_json_from_autonomi(&state, manifest_address).await?;
-    Ok(Json(manifest_to_video_out(&state, &manifest, Some(manifest_address), true)))
+    Ok(Json(manifest_to_video_out(
+        &state,
+        &manifest,
+        Some(manifest_address),
+        true,
+    )))
 }
 
 async fn admin_get_video(
@@ -803,6 +1120,7 @@ async fn video_status(
     State(state): State<AppState>,
     Path(video_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let video_uuid = Uuid::parse_str(&video_id).ok();
     let row = sqlx::query(
         r#"
         SELECT status, manifest_address, catalog_address, error_message,
@@ -810,15 +1128,19 @@ async fn video_status(
         FROM videos WHERE id=$1
         "#,
     )
-    .bind(&video_id)
+    .bind(video_uuid)
     .fetch_optional(&state.pool)
     .await
     .map_err(db_error)?;
 
     if let Some(row) = row {
-        let show_manifest_address = row.try_get::<bool, _>("show_manifest_address").unwrap_or(false);
+        let show_manifest_address = row
+            .try_get::<bool, _>("show_manifest_address")
+            .unwrap_or(false);
         let manifest_address = if show_manifest_address {
-            row.try_get::<Option<String>, _>("manifest_address").ok().flatten()
+            row.try_get::<Option<String>, _>("manifest_address")
+                .ok()
+                .flatten()
         } else {
             None
         };
@@ -832,8 +1154,8 @@ async fn video_status(
     }
 
     let loaded = load_video_manifest_by_id(&state, &video_id).await?;
-    let (manifest, manifest_address) = loaded
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+    let (manifest, manifest_address) =
+        loaded.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
     let show_manifest_address = manifest
         .get("show_manifest_address")
         .and_then(Value::as_bool)
@@ -853,6 +1175,7 @@ async fn update_video_visibility(
     Json(request): Json<VideoVisibilityUpdate>,
 ) -> Result<Json<VideoOut>, ApiError> {
     require_admin(&state, &headers)?;
+    let video_uuid = parse_video_uuid(&video_id)?;
 
     let row = sqlx::query(
         r#"
@@ -866,7 +1189,7 @@ async fn update_video_visibility(
     )
     .bind(request.show_original_filename)
     .bind(request.show_manifest_address)
-    .bind(&video_id)
+    .bind(video_uuid)
     .fetch_optional(&state.pool)
     .await
     .map_err(db_error)?;
@@ -875,31 +1198,897 @@ async fn update_video_visibility(
     let status: String = row.try_get("status").unwrap_or_default();
     let is_public: bool = row.try_get("is_public").unwrap_or(false);
     if status == STATUS_READY && is_public {
-        return Err(ApiError::not_implemented(
-            "catalog republish after visibility update",
-        ));
+        let manifest = build_ready_manifest_from_db(&state, &video_id).await?;
+        let (manifest_address, catalog_address) =
+            publish_video_to_catalog(&state, manifest).await?;
+        set_publication(
+            &state,
+            &video_id,
+            true,
+            Some(&manifest_address),
+            Some(&catalog_address),
+        )
+        .await?;
     }
 
     Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
 
-async fn upload_video_not_migrated() -> Result<Response, ApiError> {
-    Err(ApiError::not_implemented("multipart upload and FFmpeg transcoding"))
+async fn upload_video(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<Json<VideoOut>, ApiError> {
+    let username = require_admin(&state, &headers)?;
+    let accepted = accept_upload(&state, &headers, multipart, &username).await?;
+    schedule_processing_job(
+        state.clone(),
+        accepted.video_id,
+        accepted.source_path,
+        accepted.resolutions,
+        accepted.job_dir,
+        false,
+    );
+    Ok(Json(accepted.video))
 }
 
-async fn approve_video_not_migrated() -> Result<Response, ApiError> {
-    Err(ApiError::not_implemented("approved Autonomi segment upload"))
+async fn approve_video(
+    State(state): State<AppState>,
+    Path(video_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<VideoOut>, ApiError> {
+    require_admin(&state, &headers)?;
+    cleanup_expired_approvals(&state).await.map_err(db_error)?;
+    let video_uuid = parse_video_uuid(&video_id)?;
+
+    let mut expired_job_dir = None;
+    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let row = sqlx::query(
+        r#"
+        SELECT status, approval_expires_at, job_dir
+        FROM videos
+        WHERE id=$1
+        FOR UPDATE
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+
+    let status: String = row.try_get("status").unwrap_or_default();
+    if status != STATUS_AWAITING_APPROVAL {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("Video is {status}, not awaiting approval"),
+        ));
+    }
+
+    let job_dir: Option<String> = row.try_get("job_dir").ok().flatten();
+    let approval_expires_at: Option<DateTime<Utc>> =
+        row.try_get("approval_expires_at").ok().flatten();
+    if approval_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()) {
+        expired_job_dir = job_dir.clone();
+        sqlx::query(
+            r#"
+            UPDATE videos
+            SET status='expired',
+                error_message='Final quote approval window expired; local files were deleted.',
+                updated_at=NOW()
+            WHERE id=$1
+            "#,
+        )
+        .bind(video_uuid)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+    } else if job_dir
+        .as_deref()
+        .map(|path| !FsPath::new(path).exists())
+        .unwrap_or(true)
+    {
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "Transcoded files are no longer available",
+        ));
+    } else {
+        sqlx::query(
+            r#"
+            UPDATE videos
+            SET status='uploading', error_message=NULL, updated_at=NOW()
+            WHERE id=$1
+            "#,
+        )
+        .bind(video_uuid)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+    }
+    tx.commit().await.map_err(db_error)?;
+
+    if let Some(path) = expired_job_dir {
+        let _ = fs::remove_dir_all(path);
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "Final quote approval window has expired",
+        ));
+    }
+
+    schedule_upload_job(state.clone(), video_id.clone());
+    Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
 
-async fn update_publication_not_migrated(
+async fn update_video_publication(
+    State(state): State<AppState>,
+    Path(video_id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<VideoPublicationUpdate>,
-) -> Result<Response, ApiError> {
-    let _ = request.is_public;
-    Err(ApiError::not_implemented("catalog publication changes"))
+) -> Result<Json<VideoOut>, ApiError> {
+    require_admin(&state, &headers)?;
+    let video_uuid = parse_video_uuid(&video_id)?;
+    let row = sqlx::query("SELECT status FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+
+    if request.is_public {
+        let status: String = row.try_get("status").unwrap_or_default();
+        if status != STATUS_READY {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "Only ready videos can be published",
+            ));
+        }
+        let manifest = build_ready_manifest_from_db(&state, &video_id).await?;
+        let (manifest_address, catalog_address) =
+            publish_video_to_catalog(&state, manifest).await?;
+        set_publication(
+            &state,
+            &video_id,
+            true,
+            Some(&manifest_address),
+            Some(&catalog_address),
+        )
+        .await?;
+    } else {
+        let catalog_address = remove_video_from_catalog(&state, &video_id).await?;
+        set_publication(&state, &video_id, false, None, catalog_address.as_deref()).await?;
+    }
+
+    Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
 
-async fn delete_video_not_migrated() -> Result<Response, ApiError> {
-    Err(ApiError::not_implemented("video delete and catalog removal"))
+async fn delete_video(
+    State(state): State<AppState>,
+    Path(video_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    let video_uuid = parse_video_uuid(&video_id)?;
+    let catalog_address = remove_video_from_catalog(&state, &video_id).await?;
+    let job_dir_row = sqlx::query("SELECT job_dir FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?;
+    let result = sqlx::query("DELETE FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .execute(&state.pool)
+        .await
+        .map_err(db_error)?;
+
+    if result.rows_affected() == 0 && catalog_address.is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Video not found"));
+    }
+
+    if let Some(row) = job_dir_row {
+        if let Ok(Some(job_dir)) = row.try_get::<Option<String>, _>("job_dir") {
+            let _ = fs::remove_dir_all(job_dir);
+        }
+    }
+    let _ = fs::remove_dir_all(state.config.upload_temp_dir.join(&video_id));
+
+    Ok(Json(json!({
+        "deleted": video_id,
+        "catalog_address": catalog_address,
+    })))
+}
+
+async fn accept_upload(
+    state: &AppState,
+    headers: &HeaderMap,
+    mut multipart: Multipart,
+    username: &str,
+) -> Result<AcceptedUpload, ApiError> {
+    let multipart_overhead_allowance = 2 * 1024 * 1024_u64;
+    if let Some(content_length) = content_length(headers) {
+        if content_length > state.config.upload_max_file_bytes + multipart_overhead_allowance {
+            return Err(ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Upload exceeds max file size ({})",
+                    format_bytes(state.config.upload_max_file_bytes)
+                ),
+            ));
+        }
+    }
+
+    let _permit = state
+        .upload_save_semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many uploads are in progress; try again shortly",
+            )
+        })?;
+
+    let video_uuid = Uuid::new_v4();
+    let video_id = video_uuid.to_string();
+    let job_dir = state.config.upload_temp_dir.join(&video_id);
+    fs::create_dir_all(&job_dir).map_err(|err| {
+        ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            format!("Could not create upload directory: {err}"),
+        )
+    })?;
+    let guard = JobDirGuard::new(job_dir.clone());
+
+    if let Some(content_length) = content_length(headers) {
+        ensure_upload_disk_space(state, content_length)?;
+    } else {
+        ensure_upload_disk_space(state, 0)?;
+    }
+
+    let mut title: Option<String> = None;
+    let mut description = String::new();
+    let mut resolutions = String::from("720p");
+    let mut show_original_filename = false;
+    let mut show_manifest_address = false;
+    let mut original_filename: Option<String> = None;
+    let mut source_path: Option<PathBuf> = None;
+    let mut upload_metadata: Option<UploadMediaMetadata> = None;
+
+    while let Some(mut field) = multipart.next_field().await.map_err(|err| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid multipart upload: {err}"),
+        )
+    })? {
+        let Some(name) = field.name().map(str::to_string) else {
+            continue;
+        };
+
+        if name == "file" {
+            if source_path.is_some() {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Only one upload file is supported",
+                ));
+            }
+            let safe_filename = sanitize_upload_filename(field.file_name());
+            let src_path = job_dir.join(format!("original_{safe_filename}"));
+            let tmp_src_path = src_path.with_file_name(format!(
+                "{}.uploading",
+                src_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("upload")
+            ));
+            let mut output = tokio_fs::File::create(&tmp_src_path).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    format!("Could not store upload safely: {err}"),
+                )
+            })?;
+            let mut bytes_written = 0_u64;
+            while let Some(chunk) = field.chunk().await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("Could not read upload: {err}"),
+                )
+            })? {
+                let next_size = bytes_written + chunk.len() as u64;
+                if next_size > state.config.upload_max_file_bytes {
+                    let _ = tokio_fs::remove_file(&tmp_src_path).await;
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "Upload exceeds max file size ({})",
+                            format_bytes(state.config.upload_max_file_bytes)
+                        ),
+                    ));
+                }
+                ensure_upload_disk_space(state, chunk.len() as u64)?;
+                output.write_all(&chunk).await.map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        format!("Could not store upload safely: {err}"),
+                    )
+                })?;
+                bytes_written = next_size;
+            }
+            output.flush().await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    format!("Could not store upload safely: {err}"),
+                )
+            })?;
+            drop(output);
+            if bytes_written == 0 {
+                let _ = tokio_fs::remove_file(&tmp_src_path).await;
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Uploaded file is empty",
+                ));
+            }
+
+            let metadata = probe_upload_media(state, &tmp_src_path).await?;
+            tokio_fs::rename(&tmp_src_path, &src_path)
+                .await
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::INSUFFICIENT_STORAGE,
+                        format!("Could not store upload safely: {err}"),
+                    )
+                })?;
+            info!(
+                "Accepted upload {} filename={} bytes={} duration={:.2}s dimensions={}x{}",
+                video_id,
+                safe_filename,
+                bytes_written,
+                metadata.duration_seconds,
+                metadata.dimensions.0,
+                metadata.dimensions.1
+            );
+            original_filename = Some(safe_filename);
+            source_path = Some(src_path);
+            upload_metadata = Some(metadata);
+        } else {
+            let text = field.text().await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid form field {name}: {err}"),
+                )
+            })?;
+            match name.as_str() {
+                "title" => title = Some(text.trim().to_string()),
+                "description" => description = text.trim().to_string(),
+                "resolutions" => resolutions = text,
+                "show_original_filename" => show_original_filename = parse_form_bool(&text),
+                "show_manifest_address" => show_manifest_address = parse_form_bool(&text),
+                _ => {}
+            }
+        }
+    }
+
+    let title = title
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "title is required"))?;
+    let original_filename = original_filename
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "file is required"))?;
+    let source_path =
+        source_path.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "file is required"))?;
+    let selected = parse_resolutions(&resolutions);
+    if selected.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "No valid resolutions. Choose from: ['8k', '4k', '360p', '480p', '720p', '1080p']",
+        ));
+    }
+    if let Some(metadata) = upload_metadata {
+        enforce_upload_media_limits(
+            state,
+            metadata.duration_seconds,
+            metadata.dimensions.0,
+            metadata.dimensions.1,
+        )?;
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO videos (
+            id, title, original_filename, description, status, job_dir,
+            job_source_path, requested_resolutions,
+            show_original_filename, show_manifest_address, user_id
+        )
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10)
+        "#,
+    )
+    .bind(video_uuid)
+    .bind(&title)
+    .bind(&original_filename)
+    .bind(if description.is_empty() {
+        None
+    } else {
+        Some(description.as_str())
+    })
+    .bind(job_dir.to_string_lossy().as_ref())
+    .bind(source_path.to_string_lossy().as_ref())
+    .bind(json!(selected))
+    .bind(show_original_filename)
+    .bind(show_manifest_address)
+    .bind(username)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let video = get_db_video(state, &video_id, false).await?;
+    guard.disarm();
+    Ok(AcceptedUpload {
+        video_id,
+        source_path,
+        resolutions: selected,
+        job_dir,
+        video,
+    })
+}
+
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn parse_form_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn parse_resolutions(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|resolution| resolution_preset(resolution).is_some())
+        .map(str::to_string)
+        .collect()
+}
+
+fn sanitize_upload_filename(filename: Option<&str>) -> String {
+    let basename = filename
+        .and_then(|name| FsPath::new(name).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("upload");
+    let path = FsPath::new(basename);
+    let raw_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload");
+    let raw_suffix = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let mut safe_stem: String = raw_stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(&['.', '_', '-'][..])
+        .to_string();
+    if safe_stem.is_empty() {
+        safe_stem = "upload".to_string();
+    }
+    let mut safe_suffix: String = raw_suffix
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(15)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if !safe_suffix.is_empty() {
+        safe_suffix.insert(0, '.');
+    }
+    let max_stem_length = 128_usize.saturating_sub(safe_suffix.len()).max(1);
+    if safe_stem.len() > max_stem_length {
+        safe_stem.truncate(max_stem_length);
+    }
+    format!("{safe_stem}{safe_suffix}")
+}
+
+fn ensure_upload_disk_space(state: &AppState, additional_bytes: u64) -> Result<(), ApiError> {
+    let free_bytes = fs2::available_space(&state.config.upload_temp_dir).map_err(|err| {
+        ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            format!("Could not inspect upload disk space: {err}"),
+        )
+    })?;
+    let required_free = state
+        .config
+        .upload_min_free_bytes
+        .saturating_add(additional_bytes);
+    if free_bytes < required_free {
+        return Err(ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            format!(
+                "Not enough upload disk space (free={}, required={})",
+                format_bytes(free_bytes),
+                format_bytes(required_free)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn format_bytes(byte_count: u64) -> String {
+    let mut value = byte_count as f64;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"] {
+        if value < 1024.0 || unit == "TiB" {
+            if unit == "B" {
+                return format!("{byte_count} B");
+            }
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    format!("{byte_count} B")
+}
+
+async fn run_command_output(
+    mut command: Command,
+    timeout_seconds: Option<f64>,
+) -> Result<CommandOutput, ApiError> {
+    let child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not start media tool: {err}"),
+            )
+        })?;
+
+    let wait = child.wait_with_output();
+    let output = if let Some(seconds) = timeout_seconds {
+        tokio::time::timeout(duration_from_secs_f64(seconds), wait)
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Could not validate uploaded media before timeout",
+                )
+            })?
+    } else {
+        wait.await
+    }
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Media tool failed to run: {err}"),
+        )
+    })?;
+
+    Ok(CommandOutput {
+        status_code: output.status.code(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
+}
+
+async fn probe_upload_media(
+    state: &AppState,
+    src: &FsPath,
+) -> Result<UploadMediaMetadata, ApiError> {
+    let mut command = Command::new("ffprobe");
+    command
+        .arg("-v")
+        .arg("error")
+        .arg("-show_streams")
+        .arg("-show_format")
+        .arg("-of")
+        .arg("json")
+        .arg(src);
+    let output =
+        run_command_output(command, Some(state.config.upload_ffprobe_timeout_seconds)).await?;
+    if output.status_code != Some(0) {
+        let detail = stderr_tail(&output.stderr, 500);
+        let message = if detail.is_empty() {
+            "Uploaded file is not a readable video".to_string()
+        } else {
+            format!("Uploaded file is not a readable video: {detail}")
+        };
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, message));
+    }
+
+    let data: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Uploaded file probe returned invalid metadata",
+        )
+    })?;
+    let stream = data
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("video"))
+        })
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Uploaded file does not contain a video stream",
+            )
+        })?;
+
+    let width = stream.get("width").and_then(Value::as_i64).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Uploaded video stream has no usable dimensions",
+        )
+    })? as i32;
+    let height = stream
+        .get("height")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Uploaded video stream has no usable dimensions",
+            )
+        })? as i32;
+    if width <= 0 || height <= 0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Uploaded video stream has invalid dimensions",
+        ));
+    }
+    let dimensions =
+        if stream_rotation_degrees(stream) == 90 || stream_rotation_degrees(stream) == 270 {
+            (height, width)
+        } else {
+            (width, height)
+        };
+    let duration_seconds = parse_probe_duration(&data, stream).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Uploaded video has no usable duration",
+        )
+    })?;
+    enforce_upload_media_limits(state, duration_seconds, dimensions.0, dimensions.1)?;
+    Ok(UploadMediaMetadata {
+        duration_seconds,
+        dimensions,
+    })
+}
+
+async fn probe_duration(src: &FsPath) -> Result<Option<f64>, ApiError> {
+    let mut command = Command::new("ffprobe");
+    command
+        .arg("-v")
+        .arg("quiet")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(src);
+    let output = run_command_output(command, None).await?;
+    if output.status_code != Some(0) {
+        return Ok(None);
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    Ok(raw
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0))
+}
+
+async fn probe_video_dimensions(src: &FsPath) -> Result<Option<(i32, i32)>, ApiError> {
+    let mut command = Command::new("ffprobe");
+    command
+        .arg("-v")
+        .arg("quiet")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_streams")
+        .arg("-of")
+        .arg("json")
+        .arg(src);
+    let output = run_command_output(command, None).await?;
+    if output.status_code != Some(0) {
+        return Ok(None);
+    }
+    let Ok(data) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return Ok(None);
+    };
+    let Some(stream) = data
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|streams| streams.first())
+    else {
+        return Ok(None);
+    };
+    let Some(width) = stream
+        .get("width")
+        .and_then(Value::as_i64)
+        .map(|value| value as i32)
+    else {
+        return Ok(None);
+    };
+    let Some(height) = stream
+        .get("height")
+        .and_then(Value::as_i64)
+        .map(|value| value as i32)
+    else {
+        return Ok(None);
+    };
+    if stream_rotation_degrees(stream) == 90 || stream_rotation_degrees(stream) == 270 {
+        Ok(Some((height, width)))
+    } else {
+        Ok(Some((width, height)))
+    }
+}
+
+async fn run_ffmpeg(
+    state: &AppState,
+    src: &FsPath,
+    seg_dir: &FsPath,
+    width: i32,
+    height: i32,
+    video_kbps: i32,
+    audio_kbps: i32,
+) -> Result<(), ApiError> {
+    let segment_pattern = seg_dir.join("seg_%05d.ts");
+    let segment_time = format!("{}", F64Format(state.config.hls_segment_duration));
+    let mut command = Command::new("ffmpeg");
+    command
+        .arg("-hide_banner")
+        .arg("-nostats")
+        .arg("-loglevel")
+        .arg("warning")
+        .arg("-y")
+        .arg("-filter_threads")
+        .arg(state.config.ffmpeg_filter_threads.to_string())
+        .arg("-i")
+        .arg(src)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("0:a?")
+        .arg("-sn")
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-threads")
+        .arg(state.config.ffmpeg_threads.to_string())
+        .arg("-preset")
+        .arg("veryfast")
+        .arg("-profile:v")
+        .arg("high")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-vf")
+        .arg(format!(
+            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        ))
+        .arg("-b:v")
+        .arg(format!("{video_kbps}k"))
+        .arg("-maxrate")
+        .arg(format!("{}k", video_kbps * 3 / 2))
+        .arg("-bufsize")
+        .arg(format!("{}k", video_kbps * 2))
+        .arg("-force_key_frames")
+        .arg(format!("expr:gte(t,n_forced*{segment_time})"))
+        .arg("-sc_threshold")
+        .arg("0")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg(format!("{audio_kbps}k"))
+        .arg("-ar")
+        .arg("44100")
+        .arg("-f")
+        .arg("segment")
+        .arg("-segment_time")
+        .arg(segment_time)
+        .arg("-segment_time_delta")
+        .arg("0.05")
+        .arg("-segment_format")
+        .arg("mpegts")
+        .arg("-reset_timestamps")
+        .arg("1")
+        .arg(segment_pattern);
+    let output = run_command_output(command, None).await?;
+    if output.status_code != Some(0) {
+        let mut detail = stderr_tail(&output.stderr, 2000);
+        if output.status_code == Some(137) {
+            detail = format!(
+                "FFmpeg was killed, which usually means the container ran out of memory while transcoding. FFMPEG_THREADS={}, FFMPEG_FILTER_THREADS={}. {detail}",
+                state.config.ffmpeg_threads, state.config.ffmpeg_filter_threads
+            );
+        }
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "FFmpeg failed with exit code {:?}: {detail}",
+                output.status_code
+            ),
+        ));
+    }
+    Ok(())
+}
+
+struct F64Format(f64);
+
+impl std::fmt::Display for F64Format {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = if (self.0.fract()).abs() < f64::EPSILON {
+            format!("{}", self.0 as i64)
+        } else {
+            let mut text = format!("{:.6}", self.0);
+            while text.contains('.') && text.ends_with('0') {
+                text.pop();
+            }
+            text
+        };
+        formatter.write_str(&text)
+    }
+}
+
+fn stderr_tail(stderr: &[u8], limit: usize) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let start = text.len().saturating_sub(limit);
+    text[start..].trim().to_string()
+}
+
+fn stream_rotation_degrees(stream: &Value) -> i32 {
+    let rotation = stream
+        .get("tags")
+        .and_then(|tags| tags.get("rotate"))
+        .and_then(value_to_i32)
+        .or_else(|| {
+            stream
+                .get("side_data_list")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find_map(|item| item.get("rotation").and_then(value_to_i32))
+                })
+        })
+        .unwrap_or(0);
+    rotation.rem_euclid(360)
+}
+
+fn value_to_i32(value: &Value) -> Option<i32> {
+    value
+        .as_i64()
+        .map(|value| value as i32)
+        .or_else(|| value.as_f64().map(|value| value as i32))
+        .or_else(|| {
+            value
+                .as_str()?
+                .parse::<f64>()
+                .ok()
+                .map(|value| value as i32)
+        })
+}
+
+fn parse_probe_duration(data: &Value, stream: &Value) -> Option<f64> {
+    [stream, data.get("format").unwrap_or(&Value::Null)]
+        .into_iter()
+        .filter_map(|source| {
+            source
+                .get("duration")
+                .and_then(|value| {
+                    value
+                        .as_f64()
+                        .or_else(|| value.as_str()?.parse::<f64>().ok())
+                })
+                .filter(|value| value.is_finite() && *value > 0.0)
+        })
+        .next()
 }
 
 fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
@@ -982,8 +2171,12 @@ async fn load_json_from_autonomi(state: &AppState, address: &str) -> Result<Valu
         .data_get_public(address)
         .await
         .map_err(|err| ApiError::new(StatusCode::BAD_GATEWAY, err.to_string()))?;
-    serde_json::from_slice(&data)
-        .map_err(|err| ApiError::new(StatusCode::BAD_GATEWAY, format!("invalid JSON from Autonomi: {err}")))
+    serde_json::from_slice(&data).map_err(|err| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("invalid JSON from Autonomi: {err}"),
+        )
+    })
 }
 
 async fn load_video_manifest_by_id(
@@ -1013,6 +2206,7 @@ async fn get_db_video(
     video_id: &str,
     include_segments: bool,
 ) -> Result<VideoOut, ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
     let row = sqlx::query(
         r#"
         SELECT id, title, original_filename, description, status, created_at,
@@ -1022,7 +2216,7 @@ async fn get_db_video(
         FROM videos WHERE id=$1
         "#,
     )
-    .bind(video_id)
+    .bind(video_uuid)
     .fetch_optional(&state.pool)
     .await
     .map_err(db_error)?
@@ -1100,7 +2294,7 @@ async fn db_video_to_out(
         original_filename: row.try_get("original_filename").ok().flatten(),
         description: row.try_get("description").ok().flatten(),
         status: row.try_get("status").unwrap_or_default(),
-        created_at: created_at.to_string(),
+        created_at: created_at.to_rfc3339(),
         manifest_address: row.try_get("manifest_address").ok().flatten(),
         catalog_address,
         is_public: row.try_get("is_public").unwrap_or(false),
@@ -1108,8 +2302,8 @@ async fn db_video_to_out(
         show_manifest_address: row.try_get("show_manifest_address").unwrap_or(false),
         error_message: row.try_get("error_message").ok().flatten(),
         final_quote: row.try_get("final_quote").ok().flatten(),
-        final_quote_created_at: final_quote_created_at.map(|value| value.to_string()),
-        approval_expires_at: approval_expires_at.map(|value| value.to_string()),
+        final_quote_created_at: final_quote_created_at.map(|value| value.to_rfc3339()),
+        approval_expires_at: approval_expires_at.map(|value| value.to_rfc3339()),
         variants,
     })
 }
@@ -1153,7 +2347,11 @@ fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<&str>) -> V
             .unwrap_or(&Vec::new())
             .iter()
             .map(|variant| VariantOut {
-                id: format!("{}:{}", string_field(entry, "id"), string_field(variant, "resolution")),
+                id: format!(
+                    "{}:{}",
+                    string_field(entry, "id"),
+                    string_field(variant, "resolution")
+                ),
                 resolution: string_field(variant, "resolution"),
                 width: int_field(variant, "width"),
                 height: int_field(variant, "height"),
@@ -1239,13 +2437,1211 @@ fn manifest_to_video_out(
                         .map(|segment| SegmentOut {
                             segment_index: int_field(segment, "segment_index"),
                             autonomi_address: opt_string_field(segment, "autonomi_address"),
-                            duration: segment.get("duration").and_then(Value::as_f64).unwrap_or(0.0),
+                            duration: segment
+                                .get("duration")
+                                .and_then(Value::as_f64)
+                                .unwrap_or(0.0),
                         })
                         .collect()
                 },
             })
             .collect(),
     }
+}
+
+fn schedule_processing_job(
+    state: AppState,
+    video_id: String,
+    source_path: PathBuf,
+    resolutions: Vec<String>,
+    job_dir: PathBuf,
+    reset_existing: bool,
+) {
+    tokio::spawn(async move {
+        if let Err(err) = process_video_inner(
+            &state,
+            &video_id,
+            &source_path,
+            &resolutions,
+            &job_dir,
+            reset_existing,
+        )
+        .await
+        {
+            error!("Processing failed for {}: {:?}", video_id, err);
+            let _ = set_status(&state, &video_id, STATUS_ERROR, Some(&err.detail)).await;
+            let _ = fs::remove_dir_all(job_dir);
+        }
+    });
+}
+
+fn schedule_upload_job(state: AppState, video_id: String) {
+    tokio::spawn(async move {
+        if let Err(err) = upload_approved_video_inner(&state, &video_id).await {
+            error!("Approved upload failed for {}: {:?}", video_id, err);
+            let _ = set_status(&state, &video_id, STATUS_ERROR, Some(&err.detail)).await;
+            if let Ok(Some(job_dir)) = fetch_job_dir(&state, &video_id).await {
+                let _ = fs::remove_dir_all(job_dir);
+            }
+        }
+    });
+}
+
+async fn process_video_inner(
+    state: &AppState,
+    video_id: &str,
+    source_path: &FsPath,
+    resolutions: &[String],
+    job_dir: &FsPath,
+    reset_existing: bool,
+) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    if reset_existing {
+        sqlx::query("DELETE FROM video_variants WHERE video_id=$1")
+            .bind(video_uuid)
+            .execute(&state.pool)
+            .await
+            .map_err(db_error)?;
+        for resolution in resolutions {
+            let _ = fs::remove_dir_all(job_dir.join(resolution));
+        }
+    }
+
+    set_status(state, video_id, STATUS_PROCESSING, None).await?;
+    let exists = sqlx::query("SELECT id FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?
+        .is_some();
+    if !exists {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Video row {video_id} disappeared before processing"),
+        ));
+    }
+
+    let total_duration = probe_duration(source_path).await?.unwrap_or(0.0);
+    let source_dimensions = probe_video_dimensions(source_path).await?;
+
+    for resolution in resolutions {
+        let Some((preset_width, preset_height, video_kbps, audio_kbps)) =
+            resolution_preset(resolution)
+        else {
+            continue;
+        };
+        let (width, height) =
+            target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+        let seg_dir = job_dir.join(resolution);
+        fs::create_dir_all(&seg_dir).map_err(|err| {
+            ApiError::new(
+                StatusCode::INSUFFICIENT_STORAGE,
+                format!("Could not create segment directory: {err}"),
+            )
+        })?;
+
+        info!("Transcoding {} -> {}", video_id, resolution);
+        run_ffmpeg(
+            state,
+            source_path,
+            &seg_dir,
+            width,
+            height,
+            video_kbps,
+            audio_kbps,
+        )
+        .await?;
+
+        let ts_files = collect_segment_files(&seg_dir)?;
+        if ts_files.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("FFmpeg produced no segments for {resolution}"),
+            ));
+        }
+
+        let variant_row = sqlx::query(
+            r#"
+            INSERT INTO video_variants
+                (video_id, resolution, width, height, video_bitrate, audio_bitrate,
+                 segment_duration, total_duration, segment_count)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            RETURNING id
+            "#,
+        )
+        .bind(video_uuid)
+        .bind(resolution)
+        .bind(width)
+        .bind(height)
+        .bind(video_kbps * 1000)
+        .bind(audio_kbps * 1000)
+        .bind(state.config.hls_segment_duration)
+        .bind(total_duration)
+        .bind(ts_files.len() as i32)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(db_error)?;
+        let variant_id: Uuid = variant_row.try_get("id").map_err(db_error)?;
+
+        for (idx, ts_path) in ts_files.iter().enumerate() {
+            let duration = probe_duration(ts_path)
+                .await?
+                .unwrap_or(state.config.hls_segment_duration);
+            let byte_size = fs::metadata(ts_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            sqlx::query(
+                r#"
+                INSERT INTO video_segments
+                    (variant_id, segment_index, duration, byte_size, local_path)
+                VALUES ($1,$2,$3,$4,$5)
+                ON CONFLICT (variant_id, segment_index) DO UPDATE
+                  SET duration=EXCLUDED.duration,
+                      byte_size=EXCLUDED.byte_size,
+                      local_path=EXCLUDED.local_path
+                "#,
+            )
+            .bind(variant_id)
+            .bind(idx as i32)
+            .bind(duration)
+            .bind(byte_size as i64)
+            .bind(ts_path.to_string_lossy().as_ref())
+            .execute(&state.pool)
+            .await
+            .map_err(db_error)?;
+        }
+    }
+
+    let mut final_quote = build_final_upload_quote(state, video_id).await?;
+    let expires_at = Utc::now() + Duration::seconds(state.config.final_quote_approval_ttl_seconds);
+    final_quote["approval_expires_at"] = json!(expires_at.to_rfc3339());
+    final_quote["quote_created_at"] = json!(Utc::now().to_rfc3339());
+    set_awaiting_approval(state, video_id, final_quote, expires_at).await?;
+    info!(
+        "Video {} is awaiting approval expires_at={}",
+        video_id,
+        expires_at.to_rfc3339()
+    );
+    Ok(())
+}
+
+fn collect_segment_files(seg_dir: &FsPath) -> Result<Vec<PathBuf>, ApiError> {
+    let mut files = fs::read_dir(seg_dir)
+        .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("ts"))
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|stem| stem.starts_with("seg_"))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|path| segment_index_from_path(path).unwrap_or(i32::MAX));
+    Ok(files)
+}
+
+fn segment_index_from_path(path: &FsPath) -> Option<i32> {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .and_then(|stem| stem.strip_prefix("seg_"))
+        .and_then(|value| value.parse::<i32>().ok())
+}
+
+async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Value, ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    #[derive(Default)]
+    struct FinalVariantQuote {
+        resolution: String,
+        width: i32,
+        height: i32,
+        segment_count: i64,
+        estimated_bytes: i64,
+        actual_bytes: i64,
+        chunk_count: i64,
+        storage_cost_atto: i64,
+        estimated_gas_cost_wei: i64,
+        payment_mode: String,
+    }
+
+    let rows = sqlx::query(
+        r#"
+        SELECT v.id AS variant_id, v.resolution, v.width, v.height, v.total_duration,
+               s.segment_index, s.local_path, s.byte_size
+        FROM video_variants v
+        JOIN video_segments s ON s.variant_id = v.id
+        WHERE v.video_id=$1
+        ORDER BY v.height DESC, s.segment_index
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    if rows.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No transcoded segments were found for final quote",
+        ));
+    }
+
+    let mut variants = Vec::<FinalVariantQuote>::new();
+    let mut variant_indexes = HashMap::<String, usize>::new();
+    let mut quote_cache = HashMap::<i64, QuoteValue>::new();
+    let mut total_storage_cost = 0_i64;
+    let mut total_gas_cost = 0_i64;
+    let mut total_bytes = 0_i64;
+    let mut total_chunks = 0_i64;
+    let mut max_duration = 0.0_f64;
+
+    for row in &rows {
+        let local_path: Option<String> = row.try_get("local_path").ok().flatten();
+        let path = local_path.as_deref().map(PathBuf::from).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transcoded segment is missing from disk",
+            )
+        })?;
+        if !path.exists() {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Transcoded segment is missing from disk: {}",
+                    path.display()
+                ),
+            ));
+        }
+        let data = tokio_fs::read(&path).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not read transcoded segment: {err}"),
+            )
+        })?;
+        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Could not get final Autonomi price quote: {err}"),
+            )
+        })?;
+
+        let storage_cost = parse_cost_i64(estimate.cost.as_deref());
+        let gas_cost = parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref());
+        let chunk_count = estimate.chunk_count.unwrap_or(0);
+        let byte_size = data.len() as i64;
+        let variant_id: Uuid = row.try_get("variant_id").map_err(db_error)?;
+        let variant_key = variant_id.to_string();
+        let index = *variant_indexes.entry(variant_key).or_insert_with(|| {
+            variants.push(FinalVariantQuote {
+                resolution: row.try_get("resolution").unwrap_or_default(),
+                width: row.try_get("width").unwrap_or_default(),
+                height: row.try_get("height").unwrap_or_default(),
+                payment_mode: estimate
+                    .payment_mode
+                    .clone()
+                    .unwrap_or_else(|| state.config.antd_payment_mode.clone()),
+                ..FinalVariantQuote::default()
+            });
+            variants.len() - 1
+        });
+        let variant = &mut variants[index];
+        variant.segment_count += 1;
+        variant.estimated_bytes += byte_size;
+        variant.actual_bytes += byte_size;
+        variant.chunk_count += chunk_count;
+        variant.storage_cost_atto += storage_cost;
+        variant.estimated_gas_cost_wei += gas_cost;
+
+        total_storage_cost += storage_cost;
+        total_gas_cost += gas_cost;
+        total_bytes += byte_size;
+        total_chunks += chunk_count;
+        if let Ok(Some(duration)) = row.try_get::<Option<f64>, _>("total_duration") {
+            max_duration = max_duration.max(duration);
+        }
+    }
+
+    let manifest_bytes = 4096 + (variants.len() as i64 * 1024) + (rows.len() as i64 * 220);
+    let catalog_bytes = 2048 + (variants.len() as i64 * 512);
+    let metadata_quote =
+        quote_data_size(state, manifest_bytes + catalog_bytes, &mut quote_cache).await?;
+
+    total_storage_cost += metadata_quote.storage_cost_atto;
+    total_gas_cost += metadata_quote.estimated_gas_cost_wei;
+    total_bytes += manifest_bytes + catalog_bytes;
+    total_chunks += metadata_quote.chunk_count;
+
+    let variant_values = variants
+        .into_iter()
+        .map(|variant| {
+            json!({
+                "resolution": variant.resolution,
+                "width": variant.width,
+                "height": variant.height,
+                "segment_count": variant.segment_count,
+                "estimated_bytes": variant.estimated_bytes,
+                "actual_bytes": variant.actual_bytes,
+                "chunk_count": variant.chunk_count,
+                "storage_cost_atto": variant.storage_cost_atto.to_string(),
+                "estimated_gas_cost_wei": variant.estimated_gas_cost_wei.to_string(),
+                "payment_mode": variant.payment_mode,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "quote_type": "final",
+        "duration_seconds": max_duration,
+        "segment_duration": state.config.hls_segment_duration,
+        "payment_mode": state.config.antd_payment_mode.clone(),
+        "estimated_bytes": total_bytes,
+        "actual_media_bytes": total_bytes - (manifest_bytes + catalog_bytes),
+        "segment_count": rows.len(),
+        "chunk_count": total_chunks,
+        "storage_cost_atto": total_storage_cost.to_string(),
+        "estimated_gas_cost_wei": total_gas_cost.to_string(),
+        "metadata_bytes": manifest_bytes + catalog_bytes,
+        "sampled": metadata_quote.sampled,
+        "approval_ttl_seconds": state.config.final_quote_approval_ttl_seconds,
+        "variants": variant_values,
+    }))
+}
+
+async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    let video_row = sqlx::query(
+        r#"
+        SELECT title, original_filename, description, created_at, job_dir,
+               show_original_filename, show_manifest_address
+        FROM videos WHERE id=$1
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Video row {video_id} disappeared before upload"),
+        )
+    })?;
+
+    let job_dir: Option<String> = video_row.try_get("job_dir").ok().flatten();
+    let mut manifest = json!({
+        "schema_version": 1,
+        "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
+        "id": video_id,
+        "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
+        "original_filename": if video_row.try_get::<bool, _>("show_original_filename").unwrap_or(false) {
+            video_row.try_get::<Option<String>, _>("original_filename").ok().flatten()
+        } else {
+            None
+        },
+        "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
+        "status": STATUS_READY,
+        "created_at": video_row
+            .try_get::<DateTime<Utc>, _>("created_at")
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
+        "updated_at": Utc::now().to_rfc3339(),
+        "show_original_filename": video_row.try_get::<bool, _>("show_original_filename").unwrap_or(false),
+        "show_manifest_address": video_row.try_get::<bool, _>("show_manifest_address").unwrap_or(false),
+        "variants": [],
+    });
+
+    let variants = sqlx::query(
+        r#"
+        SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
+               segment_duration, total_duration
+        FROM video_variants
+        WHERE video_id=$1
+        ORDER BY height DESC
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let mut manifest_variants = Vec::new();
+    for variant in variants {
+        let variant_id: Uuid = variant.try_get("id").map_err(db_error)?;
+        let segment_rows = sqlx::query(
+            r#"
+            SELECT segment_index, local_path, duration, byte_size, autonomi_address
+            FROM video_segments
+            WHERE variant_id=$1
+            ORDER BY segment_index
+            "#,
+        )
+        .bind(variant_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_error)?;
+        if segment_rows.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "No segments found for {}",
+                    variant
+                        .try_get::<String, _>("resolution")
+                        .unwrap_or_default()
+                ),
+            ));
+        }
+
+        info!(
+            "Uploading {} approved segments for {}/{} with payment_mode={}",
+            segment_rows.len(),
+            video_id,
+            variant
+                .try_get::<String, _>("resolution")
+                .unwrap_or_default(),
+            state.config.antd_payment_mode
+        );
+        for segment in &segment_rows {
+            let existing_address: Option<String> =
+                segment.try_get("autonomi_address").ok().flatten();
+            if existing_address.is_some() {
+                continue;
+            }
+            let local_path: Option<String> = segment.try_get("local_path").ok().flatten();
+            let path = local_path.as_deref().map(PathBuf::from).ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Transcoded segment is missing from disk",
+                )
+            })?;
+            if !path.exists() {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "Transcoded segment is missing from disk: {}",
+                        path.display()
+                    ),
+                ));
+            }
+            let data = tokio_fs::read(&path).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not read transcoded segment: {err}"),
+                )
+            })?;
+            let result = put_public_verified(
+                state,
+                &data,
+                &format!(
+                    "{}/{}/segment-{:05}",
+                    video_id,
+                    variant
+                        .try_get::<String, _>("resolution")
+                        .unwrap_or_default(),
+                    segment
+                        .try_get::<i32, _>("segment_index")
+                        .unwrap_or_default()
+                ),
+            )
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE video_segments
+                SET autonomi_address=$1,
+                    autonomi_cost_atto=$2,
+                    autonomi_payment_mode=$3,
+                    byte_size=$4
+                WHERE variant_id=$5 AND segment_index=$6
+                "#,
+            )
+            .bind(&result.address)
+            .bind(result.cost.as_deref())
+            .bind(&state.config.antd_payment_mode)
+            .bind(data.len() as i64)
+            .bind(variant_id)
+            .bind(
+                segment
+                    .try_get::<i32, _>("segment_index")
+                    .unwrap_or_default(),
+            )
+            .execute(&state.pool)
+            .await
+            .map_err(db_error)?;
+        }
+
+        let uploaded_segments = sqlx::query(
+            r#"
+            SELECT segment_index, autonomi_address, duration, byte_size
+            FROM video_segments
+            WHERE variant_id=$1
+            ORDER BY segment_index
+            "#,
+        )
+        .bind(variant_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_error)?;
+
+        manifest_variants.push(json!({
+            "id": variant_id.to_string(),
+            "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
+            "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
+            "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
+            "video_bitrate": variant.try_get::<i32, _>("video_bitrate").unwrap_or_default(),
+            "audio_bitrate": variant.try_get::<i32, _>("audio_bitrate").unwrap_or_default(),
+            "segment_duration": variant.try_get::<f64, _>("segment_duration").unwrap_or_default(),
+            "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
+            "segment_count": uploaded_segments.len(),
+            "segments": uploaded_segments
+                .iter()
+                .map(|segment| {
+                    json!({
+                        "segment_index": segment.try_get::<i32, _>("segment_index").unwrap_or_default(),
+                        "autonomi_address": segment.try_get::<Option<String>, _>("autonomi_address").ok().flatten(),
+                        "duration": segment.try_get::<f64, _>("duration").unwrap_or_default(),
+                        "byte_size": segment.try_get::<Option<i64>, _>("byte_size").ok().flatten(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    manifest["updated_at"] = json!(Utc::now().to_rfc3339());
+    manifest["variants"] = json!(manifest_variants);
+    let manifest_address = store_json_public(state, &manifest).await?;
+    let catalog_address = read_catalog_address(&state.config);
+    set_ready(
+        state,
+        video_id,
+        &manifest_address,
+        catalog_address.as_deref(),
+    )
+    .await?;
+    if let Some(job_dir) = job_dir {
+        let _ = fs::remove_dir_all(job_dir);
+    }
+    info!(
+        "Video {} is ready manifest={} catalog={:?} public=false",
+        video_id, manifest_address, catalog_address
+    );
+    Ok(())
+}
+
+async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Result<Value, ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    let video_row = sqlx::query(
+        r#"
+        SELECT title, original_filename, description, created_at,
+               show_original_filename, show_manifest_address
+        FROM videos WHERE id=$1
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+
+    let variants = sqlx::query(
+        r#"
+        SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
+               segment_duration, total_duration
+        FROM video_variants
+        WHERE video_id=$1
+        ORDER BY height DESC
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let mut manifest_variants = Vec::new();
+    for variant in variants {
+        let variant_id: Uuid = variant.try_get("id").map_err(db_error)?;
+        let uploaded_segments = sqlx::query(
+            r#"
+            SELECT segment_index, autonomi_address, duration, byte_size
+            FROM video_segments
+            WHERE variant_id=$1
+            ORDER BY segment_index
+            "#,
+        )
+        .bind(variant_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_error)?;
+        if uploaded_segments.iter().any(|segment| {
+            segment
+                .try_get::<Option<String>, _>("autonomi_address")
+                .ok()
+                .flatten()
+                .is_none()
+        }) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "Video has not finished uploading all segment addresses",
+            ));
+        }
+        manifest_variants.push(json!({
+            "id": variant_id.to_string(),
+            "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
+            "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
+            "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
+            "video_bitrate": variant.try_get::<i32, _>("video_bitrate").unwrap_or_default(),
+            "audio_bitrate": variant.try_get::<i32, _>("audio_bitrate").unwrap_or_default(),
+            "segment_duration": variant.try_get::<f64, _>("segment_duration").unwrap_or_default(),
+            "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
+            "segment_count": uploaded_segments.len(),
+            "segments": uploaded_segments
+                .iter()
+                .map(|segment| {
+                    json!({
+                        "segment_index": segment.try_get::<i32, _>("segment_index").unwrap_or_default(),
+                        "autonomi_address": segment.try_get::<Option<String>, _>("autonomi_address").ok().flatten(),
+                        "duration": segment.try_get::<f64, _>("duration").unwrap_or_default(),
+                        "byte_size": segment.try_get::<Option<i64>, _>("byte_size").ok().flatten(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }));
+    }
+
+    let show_original_filename = video_row
+        .try_get::<bool, _>("show_original_filename")
+        .unwrap_or(false);
+    Ok(json!({
+        "schema_version": 1,
+        "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
+        "id": video_id,
+        "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
+        "original_filename": if show_original_filename {
+            video_row.try_get::<Option<String>, _>("original_filename").ok().flatten()
+        } else {
+            None
+        },
+        "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
+        "status": STATUS_READY,
+        "created_at": video_row
+            .try_get::<DateTime<Utc>, _>("created_at")
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
+        "updated_at": Utc::now().to_rfc3339(),
+        "show_original_filename": show_original_filename,
+        "show_manifest_address": video_row
+            .try_get::<bool, _>("show_manifest_address")
+            .unwrap_or(false),
+        "variants": manifest_variants,
+    }))
+}
+
+fn video_catalog_entry(manifest: &Value, manifest_address: &str) -> Value {
+    let show_original_filename = manifest
+        .get("show_original_filename")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    json!({
+        "id": string_field(manifest, "id"),
+        "title": string_field(manifest, "title"),
+        "original_filename": if show_original_filename {
+            opt_string_field(manifest, "original_filename")
+        } else {
+            None
+        },
+        "description": opt_string_field(manifest, "description"),
+        "status": STATUS_READY,
+        "created_at": string_field(manifest, "created_at"),
+        "updated_at": string_field(manifest, "updated_at"),
+        "manifest_address": manifest_address,
+        "show_original_filename": show_original_filename,
+        "show_manifest_address": manifest
+            .get("show_manifest_address")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "variants": manifest
+            .get("variants")
+            .and_then(Value::as_array)
+            .unwrap_or(&Vec::new())
+            .iter()
+            .map(|variant| {
+                json!({
+                    "resolution": string_field(variant, "resolution"),
+                    "width": int_field(variant, "width"),
+                    "height": int_field(variant, "height"),
+                    "segment_count": variant.get("segment_count").and_then(Value::as_i64).unwrap_or(0),
+                    "total_duration": variant.get("total_duration").cloned().unwrap_or(Value::Null),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn publish_video_to_catalog(
+    state: &AppState,
+    manifest: Value,
+) -> Result<(String, String), ApiError> {
+    let _guard = state.catalog_lock.lock().await;
+    validate_manifest_segments_retrievable(state, &manifest).await?;
+    let manifest_address = store_json_public(state, &manifest).await?;
+    let (mut catalog, _) = load_catalog(state).await?;
+    catalog["schema_version"] = json!(1);
+    catalog["content_type"] = json!(CATALOG_CONTENT_TYPE);
+    catalog["updated_at"] = json!(Utc::now().to_rfc3339());
+    let manifest_id = string_field(&manifest, "id");
+    let mut videos = catalog
+        .get("videos")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|video| video.get("id").and_then(Value::as_str) != Some(manifest_id.as_str()))
+        .collect::<Vec<_>>();
+    videos.insert(0, video_catalog_entry(&manifest, &manifest_address));
+    catalog["videos"] = json!(videos);
+    let catalog_address = store_json_public(state, &catalog).await?;
+    write_catalog_address(&state.config, &catalog_address)?;
+    Ok((manifest_address, catalog_address))
+}
+
+async fn validate_manifest_segments_retrievable(
+    state: &AppState,
+    manifest: &Value,
+) -> Result<(), ApiError> {
+    for variant in manifest
+        .get("variants")
+        .and_then(Value::as_array)
+        .unwrap_or(&Vec::new())
+    {
+        let resolution = string_field(variant, "resolution");
+        for segment in variant
+            .get("segments")
+            .and_then(Value::as_array)
+            .unwrap_or(&Vec::new())
+        {
+            let Some(address) = segment.get("autonomi_address").and_then(Value::as_str) else {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Video segment {}/{} has no Autonomi address",
+                        resolution,
+                        segment
+                            .get("segment_index")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)
+                    ),
+                ));
+            };
+            state.antd.data_get_public(address).await.map_err(|_| {
+                ApiError::new(
+                    StatusCode::CONFLICT,
+                    "Video segment data is no longer retrievable from Autonomi; delete and re-upload the source video before publishing.",
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+async fn remove_video_from_catalog(
+    state: &AppState,
+    video_id: &str,
+) -> Result<Option<String>, ApiError> {
+    let _guard = state.catalog_lock.lock().await;
+    let (mut catalog, current_address) = load_catalog(state).await?;
+    let original_videos = catalog
+        .get("videos")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let videos = original_videos
+        .iter()
+        .filter(|video| video.get("id").and_then(Value::as_str) != Some(video_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if videos.len() == original_videos.len() {
+        return Ok(current_address);
+    }
+    catalog["videos"] = json!(videos);
+    catalog["updated_at"] = json!(Utc::now().to_rfc3339());
+    let catalog_address = store_json_public(state, &catalog).await?;
+    write_catalog_address(&state.config, &catalog_address)?;
+    Ok(Some(catalog_address))
+}
+
+async fn store_json_public(state: &AppState, payload: &Value) -> Result<String, ApiError> {
+    let data = serde_json::to_vec(payload).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not encode JSON document: {err}"),
+        )
+    })?;
+    let result = put_public_verified(state, &data, "json document").await?;
+    Ok(result.address)
+}
+
+async fn put_public_verified(
+    state: &AppState,
+    data: &[u8],
+    label: &str,
+) -> Result<AntdDataPutResponse, ApiError> {
+    let mut last_error = None;
+    for attempt in 1..=state.config.antd_upload_retries {
+        info!(
+            "Uploading {} ({} bytes), attempt {}/{}",
+            label,
+            data.len(),
+            attempt,
+            state.config.antd_upload_retries
+        );
+        let result = state
+            .antd
+            .data_put_public(data, &state.config.antd_payment_mode)
+            .await;
+        match result {
+            Ok(result) => {
+                if state.config.antd_upload_verify {
+                    match state.antd.data_get_public(&result.address).await {
+                        Ok(retrieved) if retrieved == data => return Ok(result),
+                        Ok(retrieved) => {
+                            last_error = Some(format!(
+                                "Autonomi verification mismatch for {label}: stored {} bytes, retrieved {} bytes",
+                                data.len(),
+                                retrieved.len()
+                            ));
+                        }
+                        Err(err) => last_error = Some(err.to_string()),
+                    }
+                } else {
+                    return Ok(result);
+                }
+            }
+            Err(err) => last_error = Some(err.to_string()),
+        }
+
+        if attempt < state.config.antd_upload_retries {
+            let delay = 2_u64.pow((attempt - 1).min(3) as u32);
+            warn!(
+                "Autonomi upload verification failed for {} on attempt {}/{}: {}; retrying in {}s",
+                label,
+                attempt,
+                state.config.antd_upload_retries,
+                last_error.as_deref().unwrap_or("unknown error"),
+                delay
+            );
+            sleep(StdDuration::from_secs(delay)).await;
+        }
+    }
+
+    Err(ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!(
+            "Autonomi upload failed verification for {} after {} attempt(s): {}",
+            label,
+            state.config.antd_upload_retries,
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        ),
+    ))
+}
+
+fn write_catalog_address(config: &Config, address: &str) -> Result<(), ApiError> {
+    if let Some(parent) = config.catalog_state_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not create catalog state directory: {err}"),
+            )
+        })?;
+    }
+    let tmp_path = config.catalog_state_path.with_extension("tmp");
+    let payload = json!({
+        "catalog_address": address,
+        "updated_at": Utc::now().to_rfc3339(),
+        "note": "This is only a bookmark to the latest network-hosted catalog snapshot.",
+    });
+    fs::write(
+        &tmp_path,
+        serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not write catalog state: {err}"),
+        )
+    })?;
+    fs::rename(&tmp_path, &config.catalog_state_path).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not update catalog state: {err}"),
+        )
+    })
+}
+
+async fn set_status(
+    state: &AppState,
+    video_id: &str,
+    status: &str,
+    error_message: Option<&str>,
+) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET status=$1, error_message=$2, updated_at=NOW()
+        WHERE id=$3
+        "#,
+    )
+    .bind(status)
+    .bind(error_message)
+    .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn set_awaiting_approval(
+    state: &AppState,
+    video_id: &str,
+    final_quote: Value,
+    expires_at: DateTime<Utc>,
+) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET status='awaiting_approval',
+            final_quote=$1::jsonb,
+            final_quote_created_at=NOW(),
+            approval_expires_at=$2,
+            error_message=NULL,
+            updated_at=NOW()
+        WHERE id=$3
+        "#,
+    )
+    .bind(final_quote)
+    .bind(expires_at)
+    .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn set_ready(
+    state: &AppState,
+    video_id: &str,
+    manifest_address: &str,
+    catalog_address: Option<&str>,
+) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET status='ready',
+            manifest_address=$1,
+            catalog_address=$2,
+            is_public=FALSE,
+            error_message=NULL,
+            job_dir=NULL,
+            job_source_path=NULL,
+            approval_expires_at=NULL,
+            updated_at=NOW()
+        WHERE id=$3
+        "#,
+    )
+    .bind(manifest_address)
+    .bind(catalog_address)
+    .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn set_publication(
+    state: &AppState,
+    video_id: &str,
+    is_public: bool,
+    manifest_address: Option<&str>,
+    catalog_address: Option<&str>,
+) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET is_public=$1,
+            manifest_address=COALESCE($2, manifest_address),
+            catalog_address=COALESCE($3, catalog_address),
+            updated_at=NOW()
+        WHERE id=$4
+        "#,
+    )
+    .bind(is_public)
+    .bind(manifest_address)
+    .bind(catalog_address)
+    .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn fetch_job_dir(state: &AppState, video_id: &str) -> Result<Option<String>, ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    let row = sqlx::query("SELECT job_dir FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?;
+    Ok(row.and_then(|row| row.try_get::<Option<String>, _>("job_dir").ok().flatten()))
+}
+
+async fn cleanup_expired_approvals(state: &AppState) -> anyhow::Result<()> {
+    let rows = sqlx::query(
+        r#"
+        UPDATE videos
+        SET status='expired',
+            error_message='Final quote approval window expired; local files were deleted.',
+            updated_at=NOW()
+        WHERE status='awaiting_approval'
+          AND approval_expires_at IS NOT NULL
+          AND approval_expires_at <= NOW()
+        RETURNING id, job_dir
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    for row in rows {
+        if let Ok(Some(job_dir)) = row.try_get::<Option<String>, _>("job_dir") {
+            let _ = fs::remove_dir_all(job_dir);
+        }
+        if let Ok(video_id) = row.try_get::<Uuid, _>("id") {
+            info!(
+                "Expired awaiting approval video {} and removed local files",
+                video_id
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn approval_cleanup_loop(state: AppState) {
+    loop {
+        sleep(StdDuration::from_secs(
+            state.config.approval_cleanup_interval_seconds,
+        ))
+        .await;
+        if let Err(err) = cleanup_expired_approvals(&state).await {
+            warn!("Approval cleanup failed: {}", err);
+        }
+    }
+}
+
+async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, status, job_dir, job_source_path, requested_resolutions
+        FROM videos
+        WHERE status IN ('pending', 'processing', 'uploading')
+        ORDER BY created_at
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut recovered_processing = 0;
+    let mut recovered_uploads = 0;
+    for row in rows {
+        let video_id: Uuid = row.try_get("id")?;
+        let video_id = video_id.to_string();
+        let status: String = row.try_get("status")?;
+        let job_dir = row
+            .try_get::<Option<String>, _>("job_dir")?
+            .map(PathBuf::from);
+
+        if matches!(status.as_str(), STATUS_PENDING | STATUS_PROCESSING) {
+            let resolutions = decode_requested_resolutions(
+                row.try_get::<Option<Value>, _>("requested_resolutions")?,
+            );
+            let source_path = recover_source_path(
+                job_dir.as_deref(),
+                row.try_get::<Option<String>, _>("job_source_path")?
+                    .as_deref(),
+            );
+            if job_dir.as_ref().is_none_or(|path| !path.exists())
+                || source_path.is_none()
+                || resolutions.is_empty()
+            {
+                let _ = set_status(
+                    &state,
+                    &video_id,
+                    STATUS_ERROR,
+                    Some(
+                        "Interrupted processing job could not be recovered because its source file or requested resolutions were missing.",
+                    ),
+                )
+                .await;
+                warn!("Could not recover interrupted processing job {}", video_id);
+                continue;
+            }
+
+            schedule_processing_job(
+                state.clone(),
+                video_id,
+                source_path.unwrap(),
+                resolutions,
+                job_dir.unwrap(),
+                true,
+            );
+            recovered_processing += 1;
+        } else if status == STATUS_UPLOADING {
+            schedule_upload_job(state.clone(), video_id);
+            recovered_uploads += 1;
+        }
+    }
+
+    if recovered_processing > 0 || recovered_uploads > 0 {
+        info!(
+            "Recovered interrupted jobs: processing={} uploading={}",
+            recovered_processing, recovered_uploads
+        );
+    }
+    Ok(())
+}
+
+fn decode_requested_resolutions(value: Option<Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .filter(|item| resolution_preset(item).is_some())
+            .collect(),
+        Some(Value::String(value)) => parse_resolutions(&value),
+        _ => vec![],
+    }
+}
+
+fn recover_source_path(job_dir: Option<&FsPath>, job_source_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(source_path) = job_source_path
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+    {
+        return Some(source_path);
+    }
+
+    let job_dir = job_dir?;
+    let mut matches = fs::read_dir(job_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("original_"))
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.into_iter().next()
 }
 
 fn string_field(value: &Value, key: &str) -> String {
@@ -1262,6 +3658,10 @@ fn int_field(value: &Value, key: &str) -> i32 {
 
 fn db_error(err: impl std::fmt::Display) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+}
+
+fn parse_video_uuid(video_id: &str) -> Result<Uuid, ApiError> {
+    Uuid::parse_str(video_id).map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))
 }
 
 fn resolution_preset(resolution: &str) -> Option<(i32, i32, i32, i32)> {
@@ -1295,12 +3695,7 @@ fn target_dimensions_for_source(
     }
 }
 
-fn estimate_transcoded_bytes(
-    seconds: f64,
-    video_kbps: i32,
-    audio_kbps: i32,
-    overhead: f64,
-) -> i64 {
+fn estimate_transcoded_bytes(seconds: f64, video_kbps: i32, audio_kbps: i32, overhead: f64) -> i64 {
     if seconds <= 0.0 {
         return 0;
     }
@@ -1345,11 +3740,12 @@ async fn quote_data_size(
     if cache.get(&sample_bytes).is_none() {
         let mut data = vec![0_u8; sample_bytes as usize];
         rand::thread_rng().fill_bytes(&mut data);
-        let estimate = state
-            .antd
-            .data_cost(&data)
-            .await
-            .map_err(|err| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, format!("Could not get Autonomi price quote: {err}")))?;
+        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Could not get Autonomi price quote: {err}"),
+            )
+        })?;
         cache.insert(
             sample_bytes,
             QuoteValue {
@@ -1379,7 +3775,9 @@ async fn quote_data_size(
 }
 
 fn parse_cost_i64(value: Option<&str>) -> i64 {
-    value.and_then(|value| value.parse::<i64>().ok()).unwrap_or(0)
+    value
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
 }
 
 async fn build_upload_quote(
@@ -1422,7 +3820,9 @@ async fn build_upload_quote(
     let selected: Vec<_> = request
         .resolutions
         .iter()
-        .filter_map(|resolution| resolution_preset(resolution).map(|preset| (resolution.clone(), preset)))
+        .filter_map(|resolution| {
+            resolution_preset(resolution).map(|preset| (resolution.clone(), preset))
+        })
         .collect();
     if selected.is_empty() {
         return Err(ApiError::new(
@@ -1451,7 +3851,10 @@ async fn build_upload_quote(
         }
         let segment_count = full_segments + if remainder > 0.0 { 1 } else { 0 };
         let full_segment_bytes = estimate_transcoded_bytes(
-            state.config.hls_segment_duration.min(request.duration_seconds),
+            state
+                .config
+                .hls_segment_duration
+                .min(request.duration_seconds),
             video_kbps,
             audio_kbps,
             state.config.upload_quote_transcoded_overhead,
@@ -1498,7 +3901,8 @@ async fn build_upload_quote(
 
     let manifest_bytes = 4096 + (variants.len() as i64 * 1024) + (total_segments * 220);
     let catalog_bytes = 2048 + (variants.len() as i64 * 512);
-    let metadata_quote = quote_data_size(state, manifest_bytes + catalog_bytes, &mut quote_cache).await?;
+    let metadata_quote =
+        quote_data_size(state, manifest_bytes + catalog_bytes, &mut quote_cache).await?;
     total_storage_cost += metadata_quote.storage_cost_atto;
     total_gas_cost += metadata_quote.estimated_gas_cost_wei;
     total_bytes += manifest_bytes + catalog_bytes;
@@ -1572,5 +3976,22 @@ mod tests {
         );
         assert!(normalize_cors_origin("*").is_err());
         assert!(normalize_cors_origin("http://localhost/app").is_err());
+    }
+
+    #[test]
+    fn sanitizes_upload_filename_like_admin_service() {
+        assert_eq!(
+            sanitize_upload_filename(Some("../My Video!!.MP4")),
+            "My_Video.mp4"
+        );
+        assert_eq!(sanitize_upload_filename(Some("...")), "upload");
+    }
+
+    #[test]
+    fn parses_only_supported_resolutions() {
+        assert_eq!(
+            parse_resolutions("720p, nope,1080p,4k"),
+            vec!["720p", "1080p", "4k"]
+        );
     }
 }

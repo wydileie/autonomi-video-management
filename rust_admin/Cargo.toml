@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+fs2 = "0.4"
 jsonwebtoken = "9"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

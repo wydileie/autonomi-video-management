@@ -98,8 +98,9 @@ window.__AUTONOMI_VIDEO_CONFIG__ = {
 
 ## Rust Admin Migration Status
 
-`rust_admin` is intentionally side-by-side while the migration is underway.
-Its first contract-compatible slice implements:
+`rust_admin` is intentionally side-by-side so the containerized and future
+native runtimes can choose either admin implementation. Its contract-compatible
+surface implements:
 
 | Area | Status |
 |---|---|
@@ -108,9 +109,9 @@ Its first contract-compatible slice implements:
 | `/videos/upload/quote` cost estimation | Implemented |
 | Public catalog/video reads from Autonomi | Implemented |
 | Admin list/detail/status reads from Postgres | Implemented |
-| Visibility metadata update for non-public videos | Implemented |
-| Multipart upload, FFmpeg transcode, final quote, approval upload | Pending; returns `501` |
-| Publication/catalog mutation and delete | Pending; returns `501` |
+| Visibility metadata update and public catalog republish | Implemented |
+| Multipart upload, FFmpeg transcode, final quote, approval upload | Implemented |
+| Publication/catalog mutation and delete | Implemented |
 
 ## Compatibility Rules
 

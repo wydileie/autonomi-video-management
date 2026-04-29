@@ -1,19 +1,18 @@
 # Rust Admin Service
 
-Experimental Rust implementation of the AutVid admin/control-plane API.
+Rust implementation of the AutVid admin/control-plane API.
 
 This service is a migration target for `python_admin`; it is not the default
-containerized admin service yet. The initial implementation keeps the same API
-and environment contracts for the low-risk paths that are useful during
-side-by-side testing:
+containerized admin service yet. It keeps the same API and environment
+contracts for side-by-side testing:
 
 - health check with Autonomi status
 - admin login and bearer-token validation
 - catalog/public video reads from Autonomi
 - admin video reads and status reads from Postgres
 - upload quote estimation using the existing Autonomi cost endpoint
-- explicit `501 Not Implemented` responses for upload, transcode, approval,
-  publication, and delete workflows that are still owned by `python_admin`
+- multipart upload, FFmpeg transcoding, final quote approval, Autonomi upload,
+  publication/catalog mutation, and delete workflows
 
 Run locally:
 

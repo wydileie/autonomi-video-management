@@ -55,7 +55,7 @@
       }
     },
     "rust_admin": {
-      "role": "Experimental Rust admin API migration target. Matches health, auth, quote, catalog, and read/status APIs; upload, approval, publication, and delete return 501 until migrated.",
+      "role": "Rust admin API implementation matching the Python admin contract, including upload, FFmpeg transcode, final quote approval, Autonomi upload, catalog publication, and delete.",
       "bind_url": "http://127.0.0.1:8000",
       "direct_debug_url": "http://127.0.0.1:8002",
       "health_url": "http://127.0.0.1:8000/health",
