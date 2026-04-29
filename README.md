@@ -136,6 +136,13 @@ plus one overlay:
 - `docker-compose.local.yml` runs a self-contained local Autonomi devnet for testing.
 - `docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
 
+Compose remains the supported deployment runtime. The repo also documents the
+service boundary expected by a future native packaged host so native work can
+reuse the same Python admin, Rust stream, `antd`, Postgres, endpoint, and
+storage-path contracts without changing current containers. See
+[`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
+[`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
+
 ### Local Testnet
 
 ```bash
@@ -373,7 +380,9 @@ autonomi-video-management/
 ├── postgres-init/
 │   └── init-dbs.sh             # Creates databases, users, and video schema
 ├── docs/
-│   └── DEPLOYMENT.md           # Production deployment guide
+│   ├── DEPLOYMENT.md           # Production deployment guide
+│   ├── RUNTIME_MODES.md        # Containerized and future native runtime boundaries
+│   └── runtime-contract.example.json # Example native host endpoint/path contract
 ├── docker-compose.yml          # Base app services
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports

@@ -7,6 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY index.html vite.config.mjs ./
+COPY public ./public
 COPY src ./src
 
 # Build-time env vars injected from docker-compose build args

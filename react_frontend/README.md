@@ -17,6 +17,19 @@ Set via Docker Compose `build.args` in `docker-compose.yml` — these are baked 
 | `REACT_APP_API_URL` | `/api` | Base URL for the Python admin API |
 | `REACT_APP_STREAM_URL` | `/stream` | Base URL for the Rust streaming service |
 
+## Runtime browser configuration
+
+The app also loads `/runtime-config.js` before the React bundle. Container builds ship a harmless default that leaves the existing `/api` and `/stream` behavior unchanged, while a native host or deployment wrapper can replace the file or define `window.__AUTONOMI_VIDEO_CONFIG__` first:
+
+```js
+window.__AUTONOMI_VIDEO_CONFIG__ = {
+  apiBaseUrl: "http://localhost:8000/api",
+  streamBaseUrl: "http://localhost:8081/stream",
+};
+```
+
+Runtime browser config wins over build-time env values. If neither is provided, the app keeps using `/api` and `/stream`.
+
 ## Local development
 
 ```bash
@@ -64,6 +77,8 @@ The production Dockerfile uses a multi-stage build: Node 24 Bookworm Slim builds
 ```
 index.html     # Vite HTML shell
 vite.config.mjs
+public/
+└── runtime-config.js # Optional runtime browser config hook
 src/
 ├── main.jsx
 └── App.jsx     # All components in one file: App, UploadPanel, Library, VideoPlayer

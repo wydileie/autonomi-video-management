@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "runtime_mode": "native-hosted-example",
+  "description": "Example host contract for running the existing backend services outside Docker while preserving the Compose API/storage boundaries.",
+  "public_http": {
+    "app_origin": "http://127.0.0.1:3000",
+    "admin_api_base": "http://127.0.0.1:3000/api",
+    "stream_api_base": "http://127.0.0.1:3000/stream",
+    "route_contract": [
+      {
+        "public_path": "/api/*",
+        "target": "python_admin",
+        "target_base_url": "http://127.0.0.1:8000",
+        "strip_prefix": "/api"
+      },
+      {
+        "public_path": "/stream/*",
+        "target": "rust_stream",
+        "target_base_url": "http://127.0.0.1:8081",
+        "strip_prefix": null
+      }
+    ]
+  },
+  "services": {
+    "python_admin": {
+      "role": "Upload, FFmpeg transcoding, admin auth, job state, Autonomi writes, catalog publishing.",
+      "bind_url": "http://127.0.0.1:8000",
+      "health_url": "http://127.0.0.1:8000/health",
+      "required_environment": {
+        "APP_ENV": "production",
+        "ADMIN_DB_HOST": "127.0.0.1",
+        "ADMIN_DB_PORT": "5432",
+        "ADMIN_DB_NAME": "admindb",
+        "ADMIN_DB_USER": "admin",
+        "ADMIN_DB_PASS": "<database-password>",
+        "ADMIN_USERNAME": "<admin-username>",
+        "ADMIN_PASSWORD": "<admin-password>",
+        "ADMIN_AUTH_SECRET": "<long-random-token-signing-secret>",
+        "ADMIN_AUTH_TTL_HOURS": "12",
+        "ANTD_URL": "http://127.0.0.1:8082",
+        "ANTD_PAYMENT_MODE": "auto",
+        "ANTD_UPLOAD_VERIFY": "true",
+        "ANTD_UPLOAD_RETRIES": "3",
+        "ANTD_UPLOAD_TIMEOUT_SECONDS": "120",
+        "ANTD_APPROVE_ON_STARTUP": "true",
+        "UPLOAD_TEMP_DIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
+        "TMPDIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
+        "TMP": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
+        "TEMP": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
+        "CATALOG_STATE_PATH": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
+        "CATALOG_ADDRESS": "",
+        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:3000"
+      }
+    },
+    "rust_stream": {
+      "role": "HLS playlist generation and Autonomi segment proxy for playback.",
+      "bind_url": "http://127.0.0.1:8081",
+      "health_url": "http://127.0.0.1:8081/health",
+      "required_environment": {
+        "ANTD_URL": "http://127.0.0.1:8082",
+        "CATALOG_STATE_PATH": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
+        "CATALOG_ADDRESS": "",
+        "STREAM_CATALOG_CACHE_TTL_SECONDS": "10",
+        "STREAM_MANIFEST_CACHE_TTL_SECONDS": "300",
+        "STREAM_SEGMENT_CACHE_TTL_SECONDS": "60",
+        "STREAM_SEGMENT_CACHE_MAX_BYTES": "67108864",
+        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:3000",
+        "RUST_LOG": "info"
+      }
+    },
+    "antd": {
+      "role": "Autonomi gateway daemon for storage, retrieval, wallet, and payment operations.",
+      "rest_url": "http://127.0.0.1:8082",
+      "grpc_url": "http://127.0.0.1:50051",
+      "health_url": "http://127.0.0.1:8082/health"
+    },
+    "postgres": {
+      "role": "Processing/job status cache and recovery log for the Python admin service.",
+      "dsn_example": "postgresql://admin:<database-password>@127.0.0.1:5432/admindb"
+    }
+  },
+  "storage_paths": {
+    "video_processing": {
+      "path": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
+      "durability": "persistent",
+      "writable_by": ["python_admin"],
+      "purpose": "Original uploads and transcoded HLS segments while jobs are pending, processing, awaiting approval, or resuming."
+    },
+    "catalog_state": {
+      "path": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
+      "durability": "persistent",
+      "writable_by": ["python_admin"],
+      "readable_by": ["rust_stream"],
+      "purpose": "Latest Autonomi catalog address bookmark."
+    }
+  },
+  "health_checks": [
+    "http://127.0.0.1:8082/health",
+    "http://127.0.0.1:8000/health",
+    "http://127.0.0.1:8081/health"
+  ],
+  "compose_equivalent": {
+    "processing_mount": "${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing",
+    "catalog_mount": "catalog_state:/catalog",
+    "public_routes": {
+      "/api/*": "python_admin:8000 with /api stripped",
+      "/stream/*": "rust_stream:8081 with path preserved"
+    }
+  }
+}

@@ -3,9 +3,10 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
 import Hls from "hls.js";
 import "./App.css";
+import { API_BASE_URL, STREAM_BASE_URL } from "./runtimeConfig";
 
-const API = import.meta.env.REACT_APP_API_URL || import.meta.env.VITE_API_URL || "/api";
-const STREAM = import.meta.env.REACT_APP_STREAM_URL || import.meta.env.VITE_STREAM_URL || "/stream";
+const API = API_BASE_URL;
+const STREAM = STREAM_BASE_URL;
 const AUTH_STORAGE_KEY = "autvid_admin_token";
 
 const RESOLUTION_OPTIONS = [

@@ -1,0 +1,1 @@
+window.__AUTONOMI_VIDEO_CONFIG__ = window.__AUTONOMI_VIDEO_CONFIG__ || {};
