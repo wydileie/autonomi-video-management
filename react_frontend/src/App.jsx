@@ -9,6 +9,7 @@ const API = API_BASE_URL;
 const STREAM = STREAM_BASE_URL;
 const AUTH_STORAGE_KEY = "autvid_admin_token";
 const PLAYER_CONTROLS_IDLE_MS = 2200;
+const RESUME_DURATION_TOLERANCE_SECONDS = 0.25;
 
 const RESOLUTION_OPTIONS = [
   { value: "8k", label: "8K", width: 7680, height: 4320, bitrate: "~45 Mbps", note: "maximum archive" },
@@ -128,6 +129,7 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
   const controlsIdleTimerRef = useRef(null);
+  const playbackStateRef = useRef({ currentTime: 0, shouldResume: false });
   const [qualityOpen, setQualityOpen] = useState(false);
   const [controlsActive, setControlsActive] = useState(true);
   const [playbackError, setPlaybackError] = useState("");
@@ -167,36 +169,75 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
     scheduleControlsIdleHide();
   }, [scheduleControlsIdleHide]);
 
+  const capturePlaybackState = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    playbackStateRef.current = {
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      shouldResume: !video.paused && !video.ended,
+    };
+  }, []);
+
+  const handleResolutionChange = useCallback((nextResolution) => {
+    capturePlaybackState();
+    onResolutionChange(nextResolution);
+  }, [capturePlaybackState, onResolutionChange]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
 
     setPlaybackError("");
-    const resumeAt = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    const shouldResume = !video.paused && !video.ended;
-    const restorePlayback = () => {
+    const { currentTime: resumeAt, shouldResume } = playbackStateRef.current;
+    let resumedAfterRestore = false;
+    const resumePlayback = () => {
+      if (shouldResume && !resumedAfterRestore) {
+        resumedAfterRestore = true;
+        video.play().catch(() => {});
+      }
+    };
+    const restoreNativePlayback = () => {
       if (resumeAt > 0) {
+        const duration = video.duration;
+        if (
+          Number.isFinite(duration) &&
+          duration <= resumeAt + RESUME_DURATION_TOLERANCE_SECONDS
+        ) {
+          return;
+        }
+
         try {
           video.currentTime = resumeAt;
         } catch {
-          // Some browsers reject seeking until enough HLS metadata is loaded.
+          return;
         }
       }
-      if (shouldResume) video.play().catch(() => {});
+
+      resumePlayback();
+      video.removeEventListener("canplay", restoreNativePlayback);
+      video.removeEventListener("durationchange", restoreNativePlayback);
+      video.removeEventListener("loadeddata", restoreNativePlayback);
+      video.removeEventListener("loadedmetadata", restoreNativePlayback);
     };
 
     if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        startPosition: resumeAt > 0 ? resumeAt : -1,
+      });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, restorePlayback);
+      hls.on(Hls.Events.MANIFEST_PARSED, resumePlayback);
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data?.fatal) {
           setPlaybackError("Playback failed because the video segments could not be loaded.");
         }
       });
       return () => {
+        capturePlaybackState();
         hls.destroy();
         hlsRef.current = null;
       };
@@ -206,17 +247,24 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
       const onNativePlaybackError = () => {
         setPlaybackError("Playback failed because the video segments could not be loaded.");
       };
-      video.addEventListener("loadedmetadata", restorePlayback, { once: true });
+      video.addEventListener("canplay", restoreNativePlayback);
+      video.addEventListener("durationchange", restoreNativePlayback);
+      video.addEventListener("loadeddata", restoreNativePlayback);
+      video.addEventListener("loadedmetadata", restoreNativePlayback);
       video.addEventListener("error", onNativePlaybackError, { once: true });
       video.src = src;
       video.load();
       return () => {
-        video.removeEventListener("loadedmetadata", restorePlayback);
+        capturePlaybackState();
+        video.removeEventListener("canplay", restoreNativePlayback);
+        video.removeEventListener("durationchange", restoreNativePlayback);
+        video.removeEventListener("loadeddata", restoreNativePlayback);
+        video.removeEventListener("loadedmetadata", restoreNativePlayback);
         video.removeEventListener("error", onNativePlaybackError);
       };
     }
     return undefined;
-  }, [src]);
+  }, [capturePlaybackState, src]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -291,7 +339,7 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
                     role="menuitemradio"
                     aria-checked={variant.resolution === resolution}
                     className={variant.resolution === resolution ? "active" : ""}
-                    onClick={() => onResolutionChange(variant.resolution)}
+                    onClick={() => handleResolutionChange(variant.resolution)}
                   >
                     {label}
                   </button>

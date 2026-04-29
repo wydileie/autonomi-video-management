@@ -430,6 +430,153 @@ test("shows a playback error when HLS segment loading fails", async () => {
   expect(text()).toContain("Playback failed because the video segments could not be loaded.");
 });
 
+test("passes the current playback position to hls.js when changing resolution", async () => {
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstances = [];
+  Hls.mockImplementation(() => {
+    const hlsInstance = {
+      attachMedia: vi.fn((media) => {
+        hlsInstance.media = media;
+      }),
+      destroy: vi.fn(() => {
+        if (hlsInstance.media) hlsInstance.media.currentTime = 0;
+      }),
+      handlers: {},
+      loadSource: vi.fn(),
+      media: null,
+      on: vi.fn((eventName, handler) => {
+        hlsInstance.handlers[eventName] = handler;
+      }),
+    };
+    hlsInstances.push(hlsInstance);
+    return hlsInstance;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-resume",
+    original_filename: "",
+    status: "published",
+    title: "Resume quality stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-resume": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 4 },
+          { id: "variant-480", resolution: "480p", segment_count: 4 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Resume quality stream"));
+  await click(findButton("Resume quality stream"));
+
+  const video = container.querySelector("video");
+  Object.defineProperties(video, {
+    currentTime: { configurable: true, writable: true, value: 42 },
+    ended: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+    play: { configurable: true, value: vi.fn(() => Promise.resolve()) },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+
+  expect(hlsInstances).toHaveLength(2);
+  expect(hlsInstances[0].destroy).toHaveBeenCalled();
+  expect(Hls.mock.calls[1][0]).toMatchObject({ startPosition: 42 });
+  expect(hlsInstances[1].loadSource).toHaveBeenCalledWith("/stream/pub-resume/480p/playlist.m3u8");
+  expect(video.currentTime).toBe(0);
+
+  await act(async () => {
+    hlsInstances[1].handlers[Hls.Events.MANIFEST_PARSED]();
+  });
+
+  expect(video.currentTime).toBe(0);
+  expect(video.play).toHaveBeenCalled();
+});
+
+test("waits for native HLS duration before seeking after a resolution change", async () => {
+  Hls.isSupported.mockReturnValue(false);
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
+    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
+  ));
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
+    this.currentTime = 0;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-native-resume",
+    original_filename: "",
+    status: "published",
+    title: "Native resume stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-native-resume": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Native resume stream"));
+  await click(findButton("Native resume stream"));
+
+  const video = container.querySelector("video");
+  let currentTime = 7;
+  let duration = 1;
+  Object.defineProperties(video, {
+    currentTime: {
+      configurable: true,
+      get: () => currentTime,
+      set: (value) => {
+        currentTime = value;
+      },
+    },
+    duration: {
+      configurable: true,
+      get: () => duration,
+    },
+    ended: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+    play: { configurable: true, value: vi.fn(() => Promise.resolve()) },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+
+  expect(video.currentTime).toBe(0);
+
+  await act(async () => {
+    video.dispatchEvent(new Event("loadedmetadata"));
+  });
+
+  expect(video.currentTime).toBe(0);
+  expect(video.play).not.toHaveBeenCalled();
+
+  duration = 20;
+  await act(async () => {
+    video.dispatchEvent(new Event("durationchange"));
+  });
+
+  expect(video.currentTime).toBe(7);
+  expect(video.play).toHaveBeenCalled();
+});
+
 test("closes the playback resolution menu when the pointer leaves it", async () => {
   const publicVideo = {
     created_at: "2026-04-27T12:00:00Z",
