@@ -342,7 +342,7 @@ default is `1` second to keep Autonomi objects small and reliable on devnets.
 ```
 autonomi-video-management/
 ├── .devcontainer/
-│   ├── Dockerfile              # Dev image: Python 3.12, Rust, Node 18, antd, ant, ant-devnet
+│   ├── Dockerfile              # Dev image: Python 3.12, Rust, Node 24, antd, ant, ant-devnet
 │   ├── devcontainer.json       # VS Code dev container config + MCP servers
 │   ├── start_autonomi.sh       # postStartCommand: starts local devnet + antd
 │   ├── setup_claude.py         # Writes MCP server config to ~/.claude.json

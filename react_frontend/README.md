@@ -48,7 +48,7 @@ npm run build
 # Output: build/
 ```
 
-The production Dockerfile uses a multi-stage build: Node 18 Alpine builds the static assets with Vite, then copies them into an `nginx:1.27-alpine` image with a simple SPA fallback config (all routes -> `index.html`).
+The production Dockerfile uses a multi-stage build: Node 24 Bookworm Slim builds the static assets with Vite, then copies them into an `nginx:1.27-alpine` image with a simple SPA fallback config (all routes -> `index.html`).
 
 ## Dependencies
 
