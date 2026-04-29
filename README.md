@@ -242,9 +242,12 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `PROD_AUTONOMI_PEERS` | Production/custom | Comma-separated bootstrap multiaddrs |
 | `ANT_DEVNET_PRESET` | Local only | Local devnet size: `minimal`, `small`, or `default` |
 | `ANTD_PAYMENT_MODE` | No | Upload payment strategy: `auto`, `merkle`, or `single`. Default: `auto` |
+| `ANTD_METADATA_PAYMENT_MODE` | No | Rust admin payment strategy for small manifest/catalog JSON writes. Default: `merkle` |
 | `ANTD_UPLOAD_VERIFY` | No | Read each uploaded segment back before publishing the manifest. Default: `true` |
 | `ANTD_UPLOAD_RETRIES` | No | Number of upload/verify attempts per segment. Default: `3` |
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
+| `ANTD_QUOTE_CONCURRENCY` | No | Rust admin concurrent final-quote cost checks. Default: `8` |
+| `ANTD_UPLOAD_CONCURRENCY` | No | Rust admin concurrent segment upload/verify tasks. Default: `4` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `UPLOAD_MAX_FILE_BYTES` | No | Max accepted source upload bytes. Default: `21474836480` (20 GiB) |
 | `UPLOAD_MAX_DURATION_SECONDS` | No | Max accepted source duration from server-side `ffprobe`. Default: `14400` |

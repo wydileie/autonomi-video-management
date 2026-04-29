@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
-    time::Duration as StdDuration,
+    time::{Duration as StdDuration, Instant},
 };
 
 use axum::{
@@ -28,6 +28,7 @@ use tokio::{
     net::TcpListener,
     process::Command,
     sync::{Mutex, Semaphore},
+    task::JoinSet,
     time::sleep,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -59,6 +60,7 @@ struct Config {
     db_dsn: String,
     antd_url: String,
     antd_payment_mode: String,
+    antd_metadata_payment_mode: String,
     admin_username: String,
     admin_password: String,
     admin_auth_secret: String,
@@ -85,6 +87,8 @@ struct Config {
     antd_upload_verify: bool,
     antd_upload_retries: usize,
     antd_upload_timeout_seconds: f64,
+    antd_quote_concurrency: usize,
+    antd_upload_concurrency: usize,
     antd_approve_on_startup: bool,
 }
 
@@ -216,6 +220,19 @@ struct VideoOut {
     final_quote_created_at: Option<String>,
     approval_expires_at: Option<String>,
     variants: Vec<VariantOut>,
+}
+
+struct CatalogEntryInput {
+    video_id: String,
+    title: String,
+    original_filename: Option<String>,
+    description: Option<String>,
+    created_at: String,
+    updated_at: String,
+    manifest_address: String,
+    show_original_filename: bool,
+    show_manifest_address: bool,
+    variants: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -430,6 +447,14 @@ impl Config {
         if !matches!(antd_payment_mode.as_str(), "auto" | "merkle" | "single") {
             anyhow::bail!("ANTD_PAYMENT_MODE must be one of auto, merkle, single");
         }
+        let antd_metadata_payment_mode =
+            env::var("ANTD_METADATA_PAYMENT_MODE").unwrap_or_else(|_| "merkle".into());
+        if !matches!(
+            antd_metadata_payment_mode.as_str(),
+            "auto" | "merkle" | "single"
+        ) {
+            anyhow::bail!("ANTD_METADATA_PAYMENT_MODE must be one of auto, merkle, single");
+        }
 
         let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 1.0)?;
         if hls_segment_duration <= 0.0 {
@@ -502,11 +527,20 @@ impl Config {
         if antd_upload_timeout_seconds <= 0.0 {
             anyhow::bail!("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero");
         }
+        let antd_quote_concurrency = parse_usize_env("ANTD_QUOTE_CONCURRENCY", 8)?;
+        if antd_quote_concurrency < 1 {
+            anyhow::bail!("ANTD_QUOTE_CONCURRENCY must be at least 1");
+        }
+        let antd_upload_concurrency = parse_usize_env("ANTD_UPLOAD_CONCURRENCY", 4)?;
+        if antd_upload_concurrency < 1 {
+            anyhow::bail!("ANTD_UPLOAD_CONCURRENCY must be at least 1");
+        }
 
         Ok(Self {
             db_dsn,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
             antd_payment_mode,
+            antd_metadata_payment_mode,
             admin_username,
             admin_password,
             admin_auth_secret,
@@ -541,6 +575,8 @@ impl Config {
             antd_upload_verify: parse_bool_env("ANTD_UPLOAD_VERIFY", true),
             antd_upload_retries,
             antd_upload_timeout_seconds,
+            antd_quote_concurrency,
+            antd_upload_concurrency,
             antd_approve_on_startup: parse_bool_env("ANTD_APPROVE_ON_STARTUP", true),
         })
     }
@@ -1087,7 +1123,7 @@ async fn get_video(
     Path(video_id): Path<String>,
 ) -> Result<Json<VideoOut>, ApiError> {
     let (catalog, _) = load_catalog(&state).await?;
-    let manifest_address = catalog
+    let entry = catalog
         .get("videos")
         .and_then(Value::as_array)
         .and_then(|videos| {
@@ -1095,16 +1131,16 @@ async fn get_video(
                 .iter()
                 .find(|entry| entry.get("id").and_then(Value::as_str) == Some(video_id.as_str()))
         })
-        .and_then(|entry| entry.get("manifest_address").and_then(Value::as_str))
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+    let manifest_address = entry
+        .get("manifest_address")
+        .and_then(Value::as_str)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
 
     let manifest = load_json_from_autonomi(&state, manifest_address).await?;
-    Ok(Json(manifest_to_video_out(
-        &state,
-        &manifest,
-        Some(manifest_address),
-        true,
-    )))
+    let mut video = manifest_to_video_out(&state, &manifest, Some(manifest_address), true);
+    apply_catalog_visibility(&mut video, entry, &manifest, manifest_address);
+    Ok(Json(video))
 }
 
 async fn admin_get_video(
@@ -1198,9 +1234,8 @@ async fn update_video_visibility(
     let status: String = row.try_get("status").unwrap_or_default();
     let is_public: bool = row.try_get("is_public").unwrap_or(false);
     if status == STATUS_READY && is_public {
-        let manifest = build_ready_manifest_from_db(&state, &video_id).await?;
         let (manifest_address, catalog_address) =
-            publish_video_to_catalog(&state, manifest).await?;
+            publish_existing_video_to_catalog(&state, &video_id).await?;
         set_publication(
             &state,
             &video_id,
@@ -1342,9 +1377,8 @@ async fn update_video_publication(
                 "Only ready videos can be published",
             ));
         }
-        let manifest = build_ready_manifest_from_db(&state, &video_id).await?;
         let (manifest_address, catalog_address) =
-            publish_video_to_catalog(&state, manifest).await?;
+            publish_existing_video_to_catalog(&state, &video_id).await?;
         set_publication(
             &state,
             &video_id,
@@ -2449,6 +2483,36 @@ fn manifest_to_video_out(
     }
 }
 
+fn apply_catalog_visibility(
+    video: &mut VideoOut,
+    entry: &Value,
+    manifest: &Value,
+    manifest_address: &str,
+) {
+    let show_original_filename = entry
+        .get("show_original_filename")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let show_manifest_address = entry
+        .get("show_manifest_address")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    video.show_original_filename = show_original_filename;
+    video.show_manifest_address = show_manifest_address;
+    video.original_filename = if show_original_filename {
+        opt_string_field(entry, "original_filename")
+            .or_else(|| opt_string_field(manifest, "original_filename"))
+    } else {
+        None
+    };
+    video.manifest_address = if show_manifest_address {
+        Some(manifest_address.to_string())
+    } else {
+        None
+    };
+}
+
 fn schedule_processing_job(
     state: AppState,
     video_id: String,
@@ -2662,6 +2726,28 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         estimated_gas_cost_wei: i64,
         payment_mode: String,
     }
+    struct FinalSegmentQuoteInput {
+        order: usize,
+        variant_id: Uuid,
+        resolution: String,
+        width: i32,
+        height: i32,
+        total_duration: Option<f64>,
+        local_path: PathBuf,
+    }
+    struct FinalSegmentQuoteResult {
+        order: usize,
+        variant_id: Uuid,
+        resolution: String,
+        width: i32,
+        height: i32,
+        total_duration: Option<f64>,
+        byte_size: i64,
+        storage_cost: i64,
+        gas_cost: i64,
+        chunk_count: i64,
+        payment_mode: String,
+    }
 
     let rows = sqlx::query(
         r#"
@@ -2685,16 +2771,8 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         ));
     }
 
-    let mut variants = Vec::<FinalVariantQuote>::new();
-    let mut variant_indexes = HashMap::<String, usize>::new();
-    let mut quote_cache = HashMap::<i64, QuoteValue>::new();
-    let mut total_storage_cost = 0_i64;
-    let mut total_gas_cost = 0_i64;
-    let mut total_bytes = 0_i64;
-    let mut total_chunks = 0_i64;
-    let mut max_duration = 0.0_f64;
-
-    for row in &rows {
+    let mut inputs = Vec::with_capacity(rows.len());
+    for (order, row) in rows.iter().enumerate() {
         let local_path: Option<String> = row.try_get("local_path").ok().flatten();
         let path = local_path.as_deref().map(PathBuf::from).ok_or_else(|| {
             ApiError::new(
@@ -2711,51 +2789,114 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
                 ),
             ));
         }
-        let data = tokio_fs::read(&path).await.map_err(|err| {
+        inputs.push(FinalSegmentQuoteInput {
+            order,
+            variant_id: row.try_get("variant_id").map_err(db_error)?,
+            resolution: row.try_get("resolution").unwrap_or_default(),
+            width: row.try_get("width").unwrap_or_default(),
+            height: row.try_get("height").unwrap_or_default(),
+            total_duration: row
+                .try_get::<Option<f64>, _>("total_duration")
+                .ok()
+                .flatten(),
+            local_path: path,
+        });
+    }
+
+    let quote_started = Instant::now();
+    let semaphore = Arc::new(Semaphore::new(state.config.antd_quote_concurrency));
+    let mut jobs = JoinSet::new();
+    for input in inputs {
+        let antd = state.antd.clone();
+        let semaphore = semaphore.clone();
+        let default_payment_mode = state.config.antd_payment_mode.clone();
+        jobs.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .map_err(|err| err.to_string())?;
+            let data = tokio_fs::read(&input.local_path)
+                .await
+                .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
+            let estimate = antd
+                .data_cost(&data)
+                .await
+                .map_err(|err| format!("Could not get final Autonomi price quote: {err}"))?;
+            Ok::<FinalSegmentQuoteResult, String>(FinalSegmentQuoteResult {
+                order: input.order,
+                variant_id: input.variant_id,
+                resolution: input.resolution,
+                width: input.width,
+                height: input.height,
+                total_duration: input.total_duration,
+                byte_size: data.len() as i64,
+                storage_cost: parse_cost_i64(estimate.cost.as_deref()),
+                gas_cost: parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref()),
+                chunk_count: estimate.chunk_count.unwrap_or(0),
+                payment_mode: estimate.payment_mode.unwrap_or(default_payment_mode),
+            })
+        });
+    }
+
+    let mut results = Vec::with_capacity(rows.len());
+    while let Some(joined) = jobs.join_next().await {
+        let result = joined.map_err(|err| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not read transcoded segment: {err}"),
+                format!("Final quote task failed: {err}"),
             )
         })?;
-        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
+        results.push(result.map_err(|err| {
             ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("Could not get final Autonomi price quote: {err}"),
             )
-        })?;
+        })?);
+    }
+    results.sort_by_key(|result| result.order);
+    info!(
+        "Final quote for {} checked {} segments in {:.2}s with concurrency={}",
+        video_id,
+        results.len(),
+        quote_started.elapsed().as_secs_f64(),
+        state.config.antd_quote_concurrency
+    );
 
-        let storage_cost = parse_cost_i64(estimate.cost.as_deref());
-        let gas_cost = parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref());
-        let chunk_count = estimate.chunk_count.unwrap_or(0);
-        let byte_size = data.len() as i64;
-        let variant_id: Uuid = row.try_get("variant_id").map_err(db_error)?;
+    let mut variants = Vec::<FinalVariantQuote>::new();
+    let mut variant_indexes = HashMap::<String, usize>::new();
+    let mut quote_cache = HashMap::<i64, QuoteValue>::new();
+    let mut total_storage_cost = 0_i64;
+    let mut total_gas_cost = 0_i64;
+    let mut total_bytes = 0_i64;
+    let mut total_chunks = 0_i64;
+    let mut max_duration = 0.0_f64;
+
+    for result in results {
+        let variant_id = result.variant_id;
         let variant_key = variant_id.to_string();
         let index = *variant_indexes.entry(variant_key).or_insert_with(|| {
             variants.push(FinalVariantQuote {
-                resolution: row.try_get("resolution").unwrap_or_default(),
-                width: row.try_get("width").unwrap_or_default(),
-                height: row.try_get("height").unwrap_or_default(),
-                payment_mode: estimate
-                    .payment_mode
-                    .clone()
-                    .unwrap_or_else(|| state.config.antd_payment_mode.clone()),
+                resolution: result.resolution.clone(),
+                width: result.width,
+                height: result.height,
+                payment_mode: result.payment_mode.clone(),
                 ..FinalVariantQuote::default()
             });
             variants.len() - 1
         });
         let variant = &mut variants[index];
         variant.segment_count += 1;
-        variant.estimated_bytes += byte_size;
-        variant.actual_bytes += byte_size;
-        variant.chunk_count += chunk_count;
-        variant.storage_cost_atto += storage_cost;
-        variant.estimated_gas_cost_wei += gas_cost;
+        variant.estimated_bytes += result.byte_size;
+        variant.actual_bytes += result.byte_size;
+        variant.chunk_count += result.chunk_count;
+        variant.storage_cost_atto += result.storage_cost;
+        variant.estimated_gas_cost_wei += result.gas_cost;
 
-        total_storage_cost += storage_cost;
-        total_gas_cost += gas_cost;
-        total_bytes += byte_size;
-        total_chunks += chunk_count;
-        if let Ok(Some(duration)) = row.try_get::<Option<f64>, _>("total_duration") {
+        total_storage_cost += result.storage_cost;
+        total_gas_cost += result.gas_cost;
+        total_bytes += result.byte_size;
+        total_chunks += result.chunk_count;
+        if let Some(duration) = result.total_duration {
             max_duration = max_duration.max(duration);
         }
     }
@@ -2863,9 +3004,24 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
     .await
     .map_err(db_error)?;
 
+    struct SegmentUploadInput {
+        segment_index: i32,
+        local_path: PathBuf,
+        label: String,
+    }
+    struct SegmentUploadResult {
+        segment_index: i32,
+        address: String,
+        cost: Option<String>,
+        byte_size: i64,
+    }
+
     let mut manifest_variants = Vec::new();
     for variant in variants {
         let variant_id: Uuid = variant.try_get("id").map_err(db_error)?;
+        let resolution = variant
+            .try_get::<String, _>("resolution")
+            .unwrap_or_default();
         let segment_rows = sqlx::query(
             r#"
             SELECT segment_index, local_path, duration, byte_size, autonomi_address
@@ -2891,14 +3047,14 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         }
 
         info!(
-            "Uploading {} approved segments for {}/{} with payment_mode={}",
+            "Uploading {} approved segments for {}/{} with payment_mode={} concurrency={}",
             segment_rows.len(),
             video_id,
-            variant
-                .try_get::<String, _>("resolution")
-                .unwrap_or_default(),
-            state.config.antd_payment_mode
+            resolution,
+            state.config.antd_payment_mode,
+            state.config.antd_upload_concurrency
         );
+        let mut upload_inputs = Vec::new();
         for segment in &segment_rows {
             let existing_address: Option<String> =
                 segment.try_get("autonomi_address").ok().flatten();
@@ -2921,27 +3077,79 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
                     ),
                 ));
             }
-            let data = tokio_fs::read(&path).await.map_err(|err| {
+            let segment_index = segment
+                .try_get::<i32, _>("segment_index")
+                .unwrap_or_default();
+            upload_inputs.push(SegmentUploadInput {
+                segment_index,
+                local_path: path,
+                label: format!("{}/{}/segment-{segment_index:05}", video_id, resolution),
+            });
+        }
+
+        let upload_started = Instant::now();
+        let semaphore = Arc::new(Semaphore::new(state.config.antd_upload_concurrency));
+        let mut jobs = JoinSet::new();
+        for input in upload_inputs {
+            let antd = state.antd.clone();
+            let semaphore = semaphore.clone();
+            let payment_mode = state.config.antd_payment_mode.clone();
+            let upload_verify = state.config.antd_upload_verify;
+            let upload_retries = state.config.antd_upload_retries;
+            jobs.spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|err| err.to_string())?;
+                let data = tokio_fs::read(&input.local_path)
+                    .await
+                    .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
+                let byte_size = data.len() as i64;
+                let result = put_public_verified_inner(
+                    antd,
+                    payment_mode,
+                    upload_verify,
+                    upload_retries,
+                    data,
+                    input.label,
+                )
+                .await?;
+                Ok::<SegmentUploadResult, String>(SegmentUploadResult {
+                    segment_index: input.segment_index,
+                    address: result.address,
+                    cost: result.cost,
+                    byte_size,
+                })
+            });
+        }
+
+        let mut uploaded_results = Vec::new();
+        while let Some(joined) = jobs.join_next().await {
+            let result = joined.map_err(|err| {
                 ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not read transcoded segment: {err}"),
+                    format!("Segment upload task failed: {err}"),
                 )
             })?;
-            let result = put_public_verified(
-                state,
-                &data,
-                &format!(
-                    "{}/{}/segment-{:05}",
-                    video_id,
-                    variant
-                        .try_get::<String, _>("resolution")
-                        .unwrap_or_default(),
-                    segment
-                        .try_get::<i32, _>("segment_index")
-                        .unwrap_or_default()
-                ),
-            )
-            .await?;
+            uploaded_results.push(result.map_err(|err| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Autonomi segment upload failed: {err}"),
+                )
+            })?);
+        }
+        uploaded_results.sort_by_key(|result| result.segment_index);
+        if !uploaded_results.is_empty() {
+            info!(
+                "Uploaded {} segments for {}/{} in {:.2}s",
+                uploaded_results.len(),
+                video_id,
+                resolution,
+                upload_started.elapsed().as_secs_f64()
+            );
+        }
+
+        for result in uploaded_results {
             sqlx::query(
                 r#"
                 UPDATE video_segments
@@ -2955,13 +3163,9 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
             .bind(&result.address)
             .bind(result.cost.as_deref())
             .bind(&state.config.antd_payment_mode)
-            .bind(data.len() as i64)
+            .bind(result.byte_size)
             .bind(variant_id)
-            .bind(
-                segment
-                    .try_get::<i32, _>("segment_index")
-                    .unwrap_or_default(),
-            )
+            .bind(result.segment_index)
             .execute(&state.pool)
             .await
             .map_err(db_error)?;
@@ -3133,111 +3337,137 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
     }))
 }
 
-fn video_catalog_entry(manifest: &Value, manifest_address: &str) -> Value {
-    let show_original_filename = manifest
-        .get("show_original_filename")
-        .and_then(Value::as_bool)
+async fn build_catalog_entry_from_db(
+    state: &AppState,
+    video_id: &str,
+    manifest_address: String,
+) -> Result<Value, ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    let video_row = sqlx::query(
+        r#"
+        SELECT title, original_filename, description, created_at,
+               show_original_filename, show_manifest_address
+        FROM videos WHERE id=$1
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+
+    let variant_rows = sqlx::query(
+        r#"
+        SELECT resolution, width, height, total_duration, segment_count
+        FROM video_variants
+        WHERE video_id=$1
+        ORDER BY height DESC
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let show_original_filename = video_row
+        .try_get::<bool, _>("show_original_filename")
         .unwrap_or(false);
-    json!({
-        "id": string_field(manifest, "id"),
-        "title": string_field(manifest, "title"),
-        "original_filename": if show_original_filename {
-            opt_string_field(manifest, "original_filename")
-        } else {
-            None
-        },
-        "description": opt_string_field(manifest, "description"),
-        "status": STATUS_READY,
-        "created_at": string_field(manifest, "created_at"),
-        "updated_at": string_field(manifest, "updated_at"),
-        "manifest_address": manifest_address,
-        "show_original_filename": show_original_filename,
-        "show_manifest_address": manifest
-            .get("show_manifest_address")
-            .and_then(Value::as_bool)
+    let input = CatalogEntryInput {
+        video_id: video_id.to_string(),
+        title: video_row.try_get("title").unwrap_or_default(),
+        original_filename: video_row.try_get("original_filename").ok().flatten(),
+        description: video_row.try_get("description").ok().flatten(),
+        created_at: video_row
+            .try_get::<DateTime<Utc>, _>("created_at")
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
+        updated_at: Utc::now().to_rfc3339(),
+        manifest_address,
+        show_original_filename,
+        show_manifest_address: video_row
+            .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
-        "variants": manifest
-            .get("variants")
-            .and_then(Value::as_array)
-            .unwrap_or(&Vec::new())
+        variants: variant_rows
             .iter()
             .map(|variant| {
                 json!({
-                    "resolution": string_field(variant, "resolution"),
-                    "width": int_field(variant, "width"),
-                    "height": int_field(variant, "height"),
-                    "segment_count": variant.get("segment_count").and_then(Value::as_i64).unwrap_or(0),
-                    "total_duration": variant.get("total_duration").cloned().unwrap_or(Value::Null),
+                    "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
+                    "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
+                    "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
+                    "segment_count": variant.try_get::<Option<i32>, _>("segment_count").ok().flatten().unwrap_or(0),
+                    "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
                 })
             })
-            .collect::<Vec<_>>(),
+            .collect(),
+    };
+    Ok(video_catalog_entry_from_input(input))
+}
+
+fn video_catalog_entry_from_input(input: CatalogEntryInput) -> Value {
+    json!({
+        "id": input.video_id,
+        "title": input.title,
+        "original_filename": if input.show_original_filename {
+            input.original_filename
+        } else {
+            None
+        },
+        "description": input.description,
+        "status": STATUS_READY,
+        "created_at": input.created_at,
+        "updated_at": input.updated_at,
+        "manifest_address": input.manifest_address,
+        "show_original_filename": input.show_original_filename,
+        "show_manifest_address": input.show_manifest_address,
+        "variants": input.variants,
     })
 }
 
-async fn publish_video_to_catalog(
+async fn publish_existing_video_to_catalog(
     state: &AppState,
-    manifest: Value,
+    video_id: &str,
 ) -> Result<(String, String), ApiError> {
+    let existing_manifest_address = sqlx::query("SELECT manifest_address FROM videos WHERE id=$1")
+        .bind(parse_video_uuid(video_id)?)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?
+        .try_get::<Option<String>, _>("manifest_address")
+        .ok()
+        .flatten();
+
+    let manifest_address = if let Some(address) = existing_manifest_address {
+        address
+    } else {
+        let manifest = build_ready_manifest_from_db(state, video_id).await?;
+        store_json_public(state, &manifest).await?
+    };
+    let entry = build_catalog_entry_from_db(state, video_id, manifest_address.clone()).await?;
+    let catalog_address = publish_catalog_entry(state, entry).await?;
+    Ok((manifest_address, catalog_address))
+}
+
+async fn publish_catalog_entry(state: &AppState, entry: Value) -> Result<String, ApiError> {
     let _guard = state.catalog_lock.lock().await;
-    validate_manifest_segments_retrievable(state, &manifest).await?;
-    let manifest_address = store_json_public(state, &manifest).await?;
     let (mut catalog, _) = load_catalog(state).await?;
     catalog["schema_version"] = json!(1);
     catalog["content_type"] = json!(CATALOG_CONTENT_TYPE);
     catalog["updated_at"] = json!(Utc::now().to_rfc3339());
-    let manifest_id = string_field(&manifest, "id");
+    let entry_id = string_field(&entry, "id");
     let mut videos = catalog
         .get("videos")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|video| video.get("id").and_then(Value::as_str) != Some(manifest_id.as_str()))
+        .filter(|video| video.get("id").and_then(Value::as_str) != Some(entry_id.as_str()))
         .collect::<Vec<_>>();
-    videos.insert(0, video_catalog_entry(&manifest, &manifest_address));
+    videos.insert(0, entry);
     catalog["videos"] = json!(videos);
     let catalog_address = store_json_public(state, &catalog).await?;
     write_catalog_address(&state.config, &catalog_address)?;
-    Ok((manifest_address, catalog_address))
-}
-
-async fn validate_manifest_segments_retrievable(
-    state: &AppState,
-    manifest: &Value,
-) -> Result<(), ApiError> {
-    for variant in manifest
-        .get("variants")
-        .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
-    {
-        let resolution = string_field(variant, "resolution");
-        for segment in variant
-            .get("segments")
-            .and_then(Value::as_array)
-            .unwrap_or(&Vec::new())
-        {
-            let Some(address) = segment.get("autonomi_address").and_then(Value::as_str) else {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    format!(
-                        "Video segment {}/{} has no Autonomi address",
-                        resolution,
-                        segment
-                            .get("segment_index")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0)
-                    ),
-                ));
-            };
-            state.antd.data_get_public(address).await.map_err(|_| {
-                ApiError::new(
-                    StatusCode::CONFLICT,
-                    "Video segment data is no longer retrievable from Autonomi; delete and re-upload the source video before publishing.",
-                )
-            })?;
-        }
-    }
-    Ok(())
+    Ok(catalog_address)
 }
 
 async fn remove_video_from_catalog(
@@ -3273,33 +3503,57 @@ async fn store_json_public(state: &AppState, payload: &Value) -> Result<String, 
             format!("Could not encode JSON document: {err}"),
         )
     })?;
-    let result = put_public_verified(state, &data, "json document").await?;
+    let result = put_public_verified_with_mode(
+        state,
+        &data,
+        "json document",
+        &state.config.antd_metadata_payment_mode,
+    )
+    .await?;
     Ok(result.address)
 }
 
-async fn put_public_verified(
+async fn put_public_verified_with_mode(
     state: &AppState,
     data: &[u8],
     label: &str,
+    payment_mode: &str,
 ) -> Result<AntdDataPutResponse, ApiError> {
+    put_public_verified_inner(
+        state.antd.clone(),
+        payment_mode.to_string(),
+        state.config.antd_upload_verify,
+        state.config.antd_upload_retries,
+        data.to_vec(),
+        label.to_string(),
+    )
+    .await
+    .map_err(|err| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, err))
+}
+
+async fn put_public_verified_inner(
+    antd: AntdRestClient,
+    payment_mode: String,
+    upload_verify: bool,
+    upload_retries: usize,
+    data: Vec<u8>,
+    label: String,
+) -> Result<AntdDataPutResponse, String> {
     let mut last_error = None;
-    for attempt in 1..=state.config.antd_upload_retries {
+    for attempt in 1..=upload_retries {
         info!(
             "Uploading {} ({} bytes), attempt {}/{}",
             label,
             data.len(),
             attempt,
-            state.config.antd_upload_retries
+            upload_retries
         );
-        let result = state
-            .antd
-            .data_put_public(data, &state.config.antd_payment_mode)
-            .await;
+        let result = antd.data_put_public(&data, &payment_mode).await;
         match result {
             Ok(result) => {
-                if state.config.antd_upload_verify {
-                    match state.antd.data_get_public(&result.address).await {
-                        Ok(retrieved) if retrieved == data => return Ok(result),
+                if upload_verify {
+                    match antd.data_get_public(&result.address).await {
+                        Ok(retrieved) if retrieved == data.as_slice() => return Ok(result),
                         Ok(retrieved) => {
                             last_error = Some(format!(
                                 "Autonomi verification mismatch for {label}: stored {} bytes, retrieved {} bytes",
@@ -3316,13 +3570,13 @@ async fn put_public_verified(
             Err(err) => last_error = Some(err.to_string()),
         }
 
-        if attempt < state.config.antd_upload_retries {
+        if attempt < upload_retries {
             let delay = 2_u64.pow((attempt - 1).min(3) as u32);
             warn!(
                 "Autonomi upload verification failed for {} on attempt {}/{}: {}; retrying in {}s",
                 label,
                 attempt,
-                state.config.antd_upload_retries,
+                upload_retries,
                 last_error.as_deref().unwrap_or("unknown error"),
                 delay
             );
@@ -3330,14 +3584,11 @@ async fn put_public_verified(
         }
     }
 
-    Err(ApiError::new(
-        StatusCode::SERVICE_UNAVAILABLE,
-        format!(
-            "Autonomi upload failed verification for {} after {} attempt(s): {}",
-            label,
-            state.config.antd_upload_retries,
-            last_error.unwrap_or_else(|| "unknown error".to_string())
-        ),
+    Err(format!(
+        "Autonomi upload failed verification for {} after {} attempt(s): {}",
+        label,
+        upload_retries,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
     ))
 }
 
