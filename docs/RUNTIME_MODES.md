@@ -20,6 +20,7 @@ network mode:
 | `docker-compose.local.yml` | Self-contained local Autonomi devnet and `antd` for testing |
 | `docker-compose.prod.yml` | Production/default-network `antd` daemon configuration |
 | `docker-compose.debug-ports.yml` | Optional direct host ports for admin and stream debugging |
+| `docker-compose.rust-admin.yml` | Optional migration overlay that routes `/api/*` to `rust_admin` |
 
 The public HTTP surface is Nginx on `${APP_HTTP_PORT:-80}`:
 
@@ -29,11 +30,16 @@ The public HTTP surface is Nginx on `${APP_HTTP_PORT:-80}`:
 | `/api/*` | `python_admin:8000`, with `/api` stripped before proxying |
 | `/stream/*` | `rust_stream:8081`, path preserved |
 
+When `docker-compose.rust-admin.yml` is included, Nginx is built with
+`nginx/Dockerfile.rust-admin`, uses `nginx/rust-admin-conf/default.conf`, and
+routes `/api/*` to `rust_admin:8000` instead. The stable Compose path is
+unchanged when that overlay is omitted.
+
 Important Compose-provided runtime glue:
 
 | Concern | Compose value |
 |---|---|
-| Admin API bind | Python container runs `uvicorn src.admin_service:app --host 0.0.0.0 --port 8000` |
+| Admin API bind | Python container runs `uvicorn src.admin_service:app --host 0.0.0.0 --port 8000`; optional `rust_admin` listens on `0.0.0.0:8000` in its own container |
 | Stream API bind | Rust service listens on `0.0.0.0:8081` |
 | Autonomi gateway | `ANTD_URL=http://antd:8082` for both backend services |
 | Postgres | `ADMIN_DB_HOST=db`, `ADMIN_DB_PORT=5432`, app DB/user/pass from env |
@@ -44,16 +50,17 @@ Important Compose-provided runtime glue:
 ## Future Mode: Native Packaged Host
 
 A native host should act as a launcher and router around the same service roles.
-It can run the Python admin service, Rust streaming service, `antd`, Postgres,
-and frontend assets as child processes, bundled sidecars, or user-supplied
-external services. The host should not require changes to the Compose runtime.
+It can run the Python admin service or the Rust admin migration service, Rust
+streaming service, `antd`, Postgres, and frontend assets as child processes,
+bundled sidecars, or user-supplied external services. The host should not
+require changes to the Compose runtime.
 
 Native host responsibilities:
 
 1. Provide an `antd` REST endpoint compatible with the current `/health`,
    `/v1/data/public`, `/v1/data/cost`, and wallet endpoints used by
-   `python_admin` and `rust_stream`.
-2. Provide a PostgreSQL database reachable by the Python admin service. The
+   the admin implementation and `rust_stream`.
+2. Provide a PostgreSQL database reachable by the admin implementation. The
    admin service owns schema creation on startup.
 3. Create durable, writable processing storage and set `UPLOAD_TEMP_DIR`,
    `TMPDIR`, `TMP`, and `TEMP` to that location.
@@ -74,7 +81,7 @@ Recommended native defaults:
 | Public app origin | `http://127.0.0.1:<host-selected-port>` |
 | Public admin base | Same origin, `/api` |
 | Public stream base | Same origin, `/stream` |
-| Admin service URL | `http://127.0.0.1:8000` |
+| Admin service URL | `http://127.0.0.1:8000` for either `python_admin` or `rust_admin` |
 | Stream service URL | `http://127.0.0.1:8081` |
 | `antd` REST URL | `http://127.0.0.1:8082` |
 | Processing path | Per-user app data directory, `processing/` |
@@ -89,13 +96,29 @@ window.__AUTONOMI_VIDEO_CONFIG__ = {
 };
 ```
 
+## Rust Admin Migration Status
+
+`rust_admin` is intentionally side-by-side while the migration is underway.
+Its first contract-compatible slice implements:
+
+| Area | Status |
+|---|---|
+| Health and Autonomi readiness | Implemented |
+| Admin login and `/auth/me` bearer validation | Implemented |
+| `/videos/upload/quote` cost estimation | Implemented |
+| Public catalog/video reads from Autonomi | Implemented |
+| Admin list/detail/status reads from Postgres | Implemented |
+| Visibility metadata update for non-public videos | Implemented |
+| Multipart upload, FFmpeg transcode, final quote, approval upload | Pending; returns `501` |
+| Publication/catalog mutation and delete | Pending; returns `501` |
+
 ## Compatibility Rules
 
 - Keep Compose behavior unchanged unless a change is explicitly about the
   containerized runtime.
-- Treat `python_admin` and `rust_stream` as separate service roles. Native
-  packaging may launch them together, but their API and environment boundaries
-  should remain clear.
+- Treat the admin implementation and `rust_stream` as separate service roles.
+  Native packaging may launch them together, but their API and environment
+  boundaries should remain clear.
 - Keep `/api` and `/stream` stable as the default browser-facing paths.
 - Keep `ANTD_URL`, database env vars, `UPLOAD_TEMP_DIR`, `CATALOG_STATE_PATH`,
   `CATALOG_ADDRESS`, and stream cache env vars stable. Add new env vars instead
@@ -104,7 +127,7 @@ window.__AUTONOMI_VIDEO_CONFIG__ = {
   status cache; `CATALOG_STATE_PATH` is the latest catalog bookmark; Autonomi is
   the durable playback source of truth.
 - Do not make the frontend depend on Docker-only hostnames such as
-  `python_admin`, `rust_stream`, `antd`, or `db`.
+  `python_admin`, `rust_admin`, `rust_stream`, `antd`, or `db`.
 
 ## Health Checks
 

@@ -48,6 +48,7 @@ Browser
 |---|---|---|---|
 | `antd` | Rust | 8082 (REST), 50051 (gRPC) | Autonomi network gateway daemon |
 | `python_admin` | Python / FastAPI | 8000 | Video upload, FFmpeg transcoding, metadata API |
+| `rust_admin` | Rust / Axum | 8000 (8002 debug) | Experimental admin API migration target |
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
 | `react_frontend` | React | 80 | Upload UI, video library, HLS player |
 | `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
@@ -109,6 +110,7 @@ make test-python
 
 # Run the Rust streaming service tests
 make test-rust
+make test-rust-admin
 
 # Install, build, and test the React frontend
 make install-react
@@ -123,8 +125,9 @@ make ci
 ```
 
 The Python target runs `python -m unittest discover` under `python_admin/tests`.
-The Rust targets run `cargo test` and `cargo clippy` in `rust_stream`. The
-React target runs the Vite/Vitest test command once.
+The Rust stream and experimental Rust admin targets run `cargo test` and
+`cargo clippy` under `rust_stream` and `rust_admin`. The React target runs the
+Vite/Vitest test command once.
 
 ---
 
@@ -142,6 +145,11 @@ reuse the same Python admin, Rust stream, `antd`, Postgres, endpoint, and
 storage-path contracts without changing current containers. See
 [`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
 [`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
+
+`docker-compose.rust-admin.yml` is an optional migration overlay. When included,
+it starts `rust_admin` beside the stable services and swaps Nginx `/api/*`
+routing from `python_admin` to `rust_admin` for parity testing. Leave the overlay
+out to keep the current Python-backed runtime.
 
 ### Local Testnet
 
@@ -173,6 +181,23 @@ docker compose --env-file .env.local \
   -f docker-compose.debug-ports.yml \
   up --build
 ```
+
+To test the Rust admin migration target through the same browser-facing `/api`
+contract, include the Rust admin overlay:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.rust-admin.yml \
+  up --build
+```
+
+The overlay also publishes `rust_admin` directly at
+`http://localhost:${RUST_ADMIN_HTTP_PORT:-8002}`. It currently matches health,
+auth, quote, catalog, and read/status APIs; upload/transcode, approval,
+publication, and delete still intentionally return `501` until those workflows
+are migrated from `python_admin`.
 
 ### Production
 
@@ -363,6 +388,10 @@ autonomi-video-management/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── src/admin_service.py    # FastAPI: upload, transcode, Autonomi upload, metadata API
+├── rust_admin/
+│   ├── Dockerfile
+│   ├── Cargo.toml
+│   └── src/main.rs             # Axum: experimental admin API migration target
 ├── rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
@@ -385,6 +414,7 @@ autonomi-video-management/
 │   └── runtime-contract.example.json # Example native host endpoint/path contract
 ├── docker-compose.yml          # Base app services
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
+├── docker-compose.rust-admin.yml # Optional overlay routing /api to rust_admin
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
 ├── .env.local.example
