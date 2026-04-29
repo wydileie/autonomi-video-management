@@ -56,6 +56,7 @@ services:
       ANTD_URL: "http://antd:8082"
       ANTD_APPROVE_ON_STARTUP: "false"
       HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
+      UPLOAD_MIN_FREE_BYTES: "${UPLOAD_MIN_FREE_BYTES:-536870912}"
 
   rust_stream:
     depends_on:

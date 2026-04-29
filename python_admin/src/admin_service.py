@@ -1199,6 +1199,7 @@ def _video_catalog_entry(manifest: dict, manifest_address: str) -> dict:
 
 async def _publish_video_to_catalog(client: AsyncAntdClient, manifest: dict) -> tuple[str, str]:
     async with catalog_lock:
+        await _validate_manifest_segments_retrievable(client, manifest)
         manifest_address = await _store_json_public(client, manifest)
         catalog, _ = await _load_catalog(client)
         catalog["schema_version"] = 1
@@ -1212,6 +1213,27 @@ async def _publish_video_to_catalog(client: AsyncAntdClient, manifest: dict) -> 
         catalog_address = await _store_json_public(client, catalog)
         _write_catalog_address(catalog_address)
         return manifest_address, catalog_address
+
+
+async def _validate_manifest_segments_retrievable(client: AsyncAntdClient, manifest: dict):
+    """Refuse to publish catalog entries that point at missing segment data."""
+    for variant in manifest.get("variants", []):
+        resolution = variant.get("resolution", "unknown")
+        for segment in variant.get("segments", []):
+            address = segment.get("autonomi_address")
+            if not address:
+                raise HTTPException(
+                    409,
+                    f"Video segment {resolution}/{segment.get('segment_index')} has no Autonomi address",
+                )
+            try:
+                await client.data_get_public(address)
+            except Exception as exc:
+                raise HTTPException(
+                    409,
+                    "Video segment data is no longer retrievable from Autonomi; "
+                    "delete and re-upload the source video before publishing.",
+                ) from exc
 
 
 async def _remove_video_from_catalog(video_id: str) -> str | None:

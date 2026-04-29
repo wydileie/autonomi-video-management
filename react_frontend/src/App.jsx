@@ -118,21 +118,47 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString();
 }
 
-function VideoPlayer({ videoId, resolution }) {
+function variantDisplayLabel(resolution) {
+  return resolutionByValue(resolution)?.label || resolution;
+}
+
+function VideoPlayer({ videoId, variants, resolution, onResolutionChange }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
   const src = `${STREAM}/${videoId}/${resolution}/playlist.m3u8`;
+  const selectedLabel = variantDisplayLabel(resolution);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
+
+    setPlaybackError("");
+    const resumeAt = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const shouldResume = !video.paused && !video.ended;
+    const restorePlayback = () => {
+      if (resumeAt > 0) {
+        try {
+          video.currentTime = resumeAt;
+        } catch {
+          // Some browsers reject seeking until enough HLS metadata is loaded.
+        }
+      }
+      if (shouldResume) video.play().catch(() => {});
+    };
 
     if (Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
       hlsRef.current = hls;
       hls.loadSource(src);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+      hls.on(Hls.Events.MANIFEST_PARSED, restorePlayback);
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data?.fatal) {
+          setPlaybackError("Playback failed because the video segments could not be loaded.");
+        }
+      });
       return () => {
         hls.destroy();
         hlsRef.current = null;
@@ -140,15 +166,68 @@ function VideoPlayer({ videoId, resolution }) {
     }
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      const onNativePlaybackError = () => {
+        setPlaybackError("Playback failed because the video segments could not be loaded.");
+      };
+      video.addEventListener("loadedmetadata", restorePlayback, { once: true });
+      video.addEventListener("error", onNativePlaybackError, { once: true });
       video.src = src;
-      video.play().catch(() => {});
+      video.load();
+      return () => {
+        video.removeEventListener("loadedmetadata", restorePlayback);
+        video.removeEventListener("error", onNativePlaybackError);
+      };
     }
     return undefined;
   }, [src]);
 
+  useEffect(() => {
+    setQualityOpen(false);
+  }, [resolution]);
+
   return (
     <div className="player-shell">
       <video ref={videoRef} className="player" controls playsInline />
+      {playbackError && <div className="player-error">{playbackError}</div>}
+      {variants.length > 0 && (
+        <div
+          className="player-quality"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) setQualityOpen(false);
+          }}
+        >
+          <button
+            type="button"
+            className={`quality-toggle${qualityOpen ? " active" : ""}`}
+            aria-label="Quality"
+            aria-expanded={qualityOpen}
+            aria-haspopup="menu"
+            onClick={() => setQualityOpen((open) => !open)}
+          >
+            <span className="gear-icon" aria-hidden="true" />
+            <span>{selectedLabel}</span>
+          </button>
+          {qualityOpen && (
+            <div className="quality-menu" role="menu" aria-label="Video quality">
+              {variants.map((variant) => {
+                const label = variantDisplayLabel(variant.resolution);
+                return (
+                  <button
+                    key={variant.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={variant.resolution === resolution}
+                    className={variant.resolution === resolution ? "active" : ""}
+                    onClick={() => onResolutionChange(variant.resolution)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -763,22 +842,23 @@ function Library({ admin = false, token = "" }) {
                   <p className="muted">No variants available.</p>
                 ) : (
                   <>
-                    <div className="variant-actions">
-                      {detail.variants.map((variant) => (
-                        <button
-                          key={variant.id}
-                          type="button"
-                          className={playing?.videoId === video.id && playing?.resolution === variant.resolution ? "active" : ""}
-                          onClick={() => setPlaying({ videoId: video.id, resolution: variant.resolution })}
-                        >
-                          {resolutionByValue(variant.resolution)?.label || variant.resolution}
-                          <span>{variant.segment_count ?? "?"} segments</span>
-                        </button>
-                      ))}
-                    </div>
-                    {playing?.videoId === video.id && (
-                      <VideoPlayer videoId={video.id} resolution={playing.resolution} />
-                    )}
+                    {(() => {
+                      const selectedVariant = detail.variants.find((variant) => (
+                        playing?.videoId === video.id && playing?.resolution === variant.resolution
+                      )) || detail.variants[0];
+
+                      return (
+                        <VideoPlayer
+                          videoId={video.id}
+                          variants={detail.variants}
+                          resolution={selectedVariant.resolution}
+                          onResolutionChange={(nextResolution) => setPlaying({
+                            videoId: video.id,
+                            resolution: nextResolution,
+                          })}
+                        />
+                      );
+                    })()}
                   </>
                 )}
                 {admin && (

@@ -2,6 +2,7 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { vi } from "vitest";
 import axios from "axios";
+import Hls from "hls.js";
 import App from "./App";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,7 +24,7 @@ vi.mock("hls.js", () => {
     loadSource: vi.fn(),
     on: vi.fn(),
   }));
-  Hls.Events = { MANIFEST_PARSED: "manifestParsed" };
+  Hls.Events = { ERROR: "hlsError", MANIFEST_PARSED: "manifestParsed" };
   Hls.isSupported = vi.fn(() => false);
   return { default: Hls };
 });
@@ -118,6 +119,13 @@ function setupGetRoutes({
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  Hls.isSupported.mockReturnValue(false);
+  Hls.mockImplementation(() => ({
+    attachMedia: vi.fn(),
+    destroy: vi.fn(),
+    loadSource: vi.fn(),
+    on: vi.fn(),
+  }));
   window.localStorage.clear();
   if (!URL.createObjectURL) {
     Object.defineProperty(URL, "createObjectURL", {
@@ -365,9 +373,51 @@ test("keeps public catalog metadata redacted when filename and manifest are hidd
   await click(findButton("Public stream"));
 
   expect(text()).toContain("720p");
+  expect(text()).not.toContain("4 segments");
   expect(text()).not.toContain("Manifest hidden or pending");
   expect(text()).not.toContain("Delete");
   expect(text()).not.toContain("Publish manifest address");
+});
+
+test("shows a playback error when HLS segment loading fails", async () => {
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstance = {
+    attachMedia: vi.fn(),
+    destroy: vi.fn(),
+    loadSource: vi.fn(),
+    on: vi.fn(),
+  };
+  Hls.mockImplementation(() => hlsInstance);
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-err",
+    original_filename: "",
+    status: "ready",
+    title: "Broken stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-err": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [{ id: "variant-1", resolution: "720p", segment_count: 4 }],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Broken stream"));
+  await click(findButton("Broken stream"));
+
+  const errorHandler = hlsInstance.on.mock.calls
+    .find(([eventName]) => eventName === Hls.Events.ERROR)[1];
+  await act(async () => {
+    errorHandler(Hls.Events.ERROR, { fatal: true });
+  });
+
+  expect(text()).toContain("Playback failed because the video segments could not be loaded.");
 });
 
 test("publishes and unpublishes ready videos from admin controls", async () => {

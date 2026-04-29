@@ -362,6 +362,16 @@ class AdminRobustnessTests(unittest.TestCase):
         self.assertEqual(body["catalog_address"], "corrupt-catalog")
         self.assertEqual(body["catalog"]["videos"], [])
 
+    def test_publish_validation_rejects_missing_segment_data(self):
+        self.store["segments"][0]["autonomi_address"] = "missing-segment"
+        manifest = asyncio.run(admin._build_ready_manifest_from_db(VIDEO_ID))
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(admin._validate_manifest_segments_retrievable(FakeAntdClient(), manifest))
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("no longer retrievable", caught.exception.detail)
+
     def test_approve_expired_quote_returns_410_and_deletes_local_files(self):
         row = self.store["videos"][VIDEO_ID]
         row["approval_expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)

@@ -76,6 +76,9 @@ services:
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_STREAM_URL: "http://rust_stream:8081"
       UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
+      TMPDIR: "/var/lib/autvid/processing"
+      TMP: "/var/lib/autvid/processing"
+      TEMP: "/var/lib/autvid/processing"
     depends_on:
       db:
         condition: service_healthy

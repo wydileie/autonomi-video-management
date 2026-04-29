@@ -256,6 +256,7 @@ class AdminSmokeTests(unittest.TestCase):
         }
         FakeAntdClient.storage = {}
         FakeAntdClient.puts = 0
+        FakeAntdClient.storage["segment-addr"] = b"segment"
         admin.pool = FakePool(self.store)
         admin.AsyncAntdClient = FakeAntdClient
         admin.CATALOG_STATE_PATH = self.tmp / "catalog.json"
