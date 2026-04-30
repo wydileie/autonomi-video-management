@@ -1,5 +1,5 @@
 services:
-  python_admin:
+  rust_admin:
     ports:
       - "${ADMIN_HTTP_PORT:-8000}:8000"
 

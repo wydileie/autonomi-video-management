@@ -135,7 +135,7 @@ struct HealthResponse {
     payment_mode: String,
     final_quote_approval_ttl_seconds: i64,
     implementation: &'static str,
-    parity: &'static str,
+    role: &'static str,
 }
 
 #[derive(Serialize)]
@@ -1003,7 +1003,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
             implementation: "rust_admin",
-            parity: "python_admin_compatible",
+            role: "primary_admin",
         })
         .into_response(),
         Err(err) => Json(HealthResponse {
@@ -1016,7 +1016,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
             implementation: "rust_admin",
-            parity: "python_admin_compatible",
+            role: "primary_admin",
         })
         .into_response(),
     }

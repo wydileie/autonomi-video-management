@@ -41,10 +41,10 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # 3) Python Admin — video ingestion, FFmpeg transcoding, metadata API
-  python_admin:
-    build: ./python_admin
-    container_name: python_admin
+  # 3) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
+  rust_admin:
+    build: ./rust_admin
+    container_name: rust_admin
     environment:
       APP_ENV: "${APP_ENV:-development}"
       ADMIN_DB_HOST: db
@@ -58,9 +58,12 @@ services:
       ADMIN_AUTH_TTL_HOURS: "${ADMIN_AUTH_TTL_HOURS:-12}"
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_PAYMENT_MODE: "${ANTD_PAYMENT_MODE:-auto}"
+      ANTD_METADATA_PAYMENT_MODE: "${ANTD_METADATA_PAYMENT_MODE:-merkle}"
       ANTD_UPLOAD_VERIFY: "${ANTD_UPLOAD_VERIFY:-true}"
       ANTD_UPLOAD_RETRIES: "${ANTD_UPLOAD_RETRIES:-3}"
       ANTD_UPLOAD_TIMEOUT_SECONDS: "${ANTD_UPLOAD_TIMEOUT_SECONDS:-120}"
+      ANTD_QUOTE_CONCURRENCY: "${ANTD_QUOTE_CONCURRENCY:-8}"
+      ANTD_UPLOAD_CONCURRENCY: "${ANTD_UPLOAD_CONCURRENCY:-4}"
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
       UPLOAD_MAX_FILE_BYTES: "${UPLOAD_MAX_FILE_BYTES:-21474836480}"
       UPLOAD_MAX_DURATION_SECONDS: "${UPLOAD_MAX_DURATION_SECONDS:-14400}"
@@ -72,12 +75,15 @@ services:
       HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
       FFMPEG_THREADS: "${FFMPEG_THREADS:-2}"
       FFMPEG_FILTER_THREADS: "${FFMPEG_FILTER_THREADS:-1}"
+      UPLOAD_QUOTE_TRANSCODED_OVERHEAD: "${UPLOAD_QUOTE_TRANSCODED_OVERHEAD:-1.08}"
+      UPLOAD_QUOTE_MAX_SAMPLE_BYTES: "${UPLOAD_QUOTE_MAX_SAMPLE_BYTES:-16777216}"
       FINAL_QUOTE_APPROVAL_TTL_SECONDS: "${FINAL_QUOTE_APPROVAL_TTL_SECONDS:-14400}"
       APPROVAL_CLEANUP_INTERVAL_SECONDS: "${APPROVAL_CLEANUP_INTERVAL_SECONDS:-300}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
-      RUST_STREAM_URL: "http://rust_stream:8081"
+      RUST_ADMIN_PORT: "8000"
+      RUST_LOG: "info"
       UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
       TMPDIR: "/var/lib/autvid/processing"
       TMP: "/var/lib/autvid/processing"
@@ -95,13 +101,7 @@ services:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import json, sys, urllib.request; payload=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)); sys.exit(0 if payload.get('ok') else 1)",
-        ]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -160,7 +160,7 @@ services:
         REACT_APP_STREAM_URL: "/stream"
     container_name: react_app
     depends_on:
-      - python_admin
+      - rust_admin
       - rust_stream
     networks:
       - appnet
@@ -188,7 +188,7 @@ services:
       context: ./nginx
     container_name: nginx_proxy
     depends_on:
-      python_admin:
+      rust_admin:
         condition: service_healthy
       rust_stream:
         condition: service_healthy

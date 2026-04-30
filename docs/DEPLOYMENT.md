@@ -1,8 +1,8 @@
 # Deployment Guide
 
 This project is designed to deploy as containers. That is the easiest path
-across Linux, macOS, and Windows because the stack depends on Python, Rust,
-FFmpeg, Postgres, Nginx, and Autonomi tooling.
+across Linux, macOS, and Windows because the stack depends on Rust, FFmpeg,
+Postgres, Nginx, and Autonomi tooling.
 
 ## Local Testnet
 
@@ -20,7 +20,7 @@ docker compose --env-file .env.local \
 
 Set `VIDEO_PROCESSING_HOST_PATH` to a host path with enough free disk space for
 original uploads and transcoded segments. This directory is bind-mounted into
-`python_admin` and is required for interrupted transcode/upload jobs to resume
+`rust_admin` and is required for interrupted transcode/upload jobs to resume
 after a container restart.
 
 ```dotenv
@@ -155,7 +155,7 @@ Follow logs:
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  logs -f python_admin rust_stream antd
+  logs -f rust_admin rust_stream antd
 ```
 
 Stop without deleting data:

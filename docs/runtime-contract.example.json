@@ -6,12 +6,12 @@
     "app_origin": "http://127.0.0.1:3000",
     "admin_api_base": "http://127.0.0.1:3000/api",
     "stream_api_base": "http://127.0.0.1:3000/stream",
-    "admin_implementation": "python_admin",
-    "admin_implementation_options": ["python_admin", "rust_admin"],
+    "admin_implementation": "rust_admin",
+    "admin_implementation_options": ["rust_admin"],
     "route_contract": [
       {
         "public_path": "/api/*",
-        "target": "python_admin",
+        "target": "rust_admin",
         "target_base_url": "http://127.0.0.1:8000",
         "strip_prefix": "/api"
       },
@@ -24,8 +24,8 @@
     ]
   },
   "services": {
-    "python_admin": {
-      "role": "Upload, FFmpeg transcoding, admin auth, job state, Autonomi writes, catalog publishing.",
+    "rust_admin": {
+      "role": "Upload, FFmpeg transcoding, admin auth, job state, Autonomi writes, catalog publication, and delete.",
       "bind_url": "http://127.0.0.1:8000",
       "health_url": "http://127.0.0.1:8000/health",
       "required_environment": {
@@ -45,40 +45,11 @@
         "ANTD_UPLOAD_VERIFY": "true",
         "ANTD_UPLOAD_RETRIES": "3",
         "ANTD_UPLOAD_TIMEOUT_SECONDS": "120",
-        "ANTD_APPROVE_ON_STARTUP": "true",
-        "UPLOAD_TEMP_DIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
-        "TMPDIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
-        "TMP": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
-        "TEMP": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
-        "CATALOG_STATE_PATH": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
-        "CATALOG_ADDRESS": "",
-        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:3000"
-      }
-    },
-    "rust_admin": {
-      "role": "Rust admin API implementation matching the Python admin contract, including upload, FFmpeg transcode, final quote approval, Autonomi upload, catalog publication, and delete.",
-      "bind_url": "http://127.0.0.1:8000",
-      "direct_debug_url": "http://127.0.0.1:8002",
-      "health_url": "http://127.0.0.1:8000/health",
-      "required_environment": {
-        "APP_ENV": "production",
-        "ADMIN_DB_HOST": "127.0.0.1",
-        "ADMIN_DB_PORT": "5432",
-        "ADMIN_DB_NAME": "admindb",
-        "ADMIN_DB_USER": "admin",
-        "ADMIN_DB_PASS": "<database-password>",
-        "ADMIN_USERNAME": "<admin-username>",
-        "ADMIN_PASSWORD": "<admin-password>",
-        "ADMIN_AUTH_SECRET": "<long-random-token-signing-secret>",
-        "ADMIN_AUTH_TTL_HOURS": "12",
-        "ANTD_URL": "http://127.0.0.1:8082",
-        "ANTD_PAYMENT_MODE": "auto",
-        "ANTD_UPLOAD_VERIFY": "true",
-        "ANTD_UPLOAD_RETRIES": "3",
-        "ANTD_UPLOAD_TIMEOUT_SECONDS": "120",
         "ANTD_QUOTE_CONCURRENCY": "8",
         "ANTD_UPLOAD_CONCURRENCY": "4",
-        "ANTD_APPROVE_ON_STARTUP": "false",
+        "ANTD_APPROVE_ON_STARTUP": "true",
+        "UPLOAD_QUOTE_TRANSCODED_OVERHEAD": "1.08",
+        "UPLOAD_QUOTE_MAX_SAMPLE_BYTES": "16777216",
         "UPLOAD_TEMP_DIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
         "TMPDIR": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
         "TMP": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
@@ -111,7 +82,7 @@
       "health_url": "http://127.0.0.1:8082/health"
     },
     "postgres": {
-      "role": "Processing/job status cache and recovery log for the Python admin service.",
+      "role": "Processing/job status cache and recovery log for the Rust admin service.",
       "dsn_example": "postgresql://admin:<database-password>@127.0.0.1:5432/admindb"
     }
   },
@@ -119,13 +90,13 @@
     "video_processing": {
       "path": "/Users/example/Library/Application Support/Autonomi Video Management/processing",
       "durability": "persistent",
-      "writable_by": ["python_admin", "rust_admin"],
+      "writable_by": ["rust_admin"],
       "purpose": "Original uploads and transcoded HLS segments while jobs are pending, processing, awaiting approval, or resuming."
     },
     "catalog_state": {
       "path": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
       "durability": "persistent",
-      "writable_by": ["python_admin", "rust_admin"],
+      "writable_by": ["rust_admin"],
       "readable_by": ["rust_stream"],
       "purpose": "Latest Autonomi catalog address bookmark."
     }
@@ -139,8 +110,7 @@
     "processing_mount": "${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing",
     "catalog_mount": "catalog_state:/catalog",
     "public_routes": {
-      "/api/*": "python_admin:8000 with /api stripped",
-      "/api/* with docker-compose.rust-admin.yml": "rust_admin:8000 with /api stripped",
+      "/api/*": "rust_admin:8000 with /api stripped",
       "/stream/*": "rust_stream:8081 with path preserved"
     }
   }

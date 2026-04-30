@@ -2,9 +2,8 @@
 
 Rust implementation of the AutVid admin/control-plane API.
 
-This service is a migration target for `python_admin`; it is not the default
-containerized admin service yet. It keeps the same API and environment
-contracts for side-by-side testing:
+This service is the default containerized admin service. It owns upload,
+transcode, approval, Autonomi write, catalog, and admin metadata workflows:
 
 - health check with Autonomi status
 - admin login and bearer-token validation
@@ -22,16 +21,11 @@ cargo test
 cargo run
 ```
 
-Run as a side-by-side container:
+Run in the local stack:
 
 ```bash
 docker compose --env-file .env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
-  -f docker-compose.rust-admin.yml \
   up --build rust_admin
 ```
-
-Add `docker-compose.rust-admin.yml` to the full stack command when you want
-Nginx to route `/api/*` to `rust_admin` for parity testing. Leave the overlay
-out to keep the stable Python-backed runtime.

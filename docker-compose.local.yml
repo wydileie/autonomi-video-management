@@ -48,7 +48,7 @@ services:
       - ALL
     restart: unless-stopped
 
-  python_admin:
+  rust_admin:
     depends_on:
       antd:
         condition: service_healthy

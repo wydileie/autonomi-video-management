@@ -14,7 +14,7 @@ Set via Docker Compose `build.args` in `docker-compose.yml` — these are baked 
 
 | Variable | Default | Description |
 |---|---|---|
-| `REACT_APP_API_URL` | `/api` | Base URL for the Python admin API |
+| `REACT_APP_API_URL` | `/api` | Base URL for the Rust admin API |
 | `REACT_APP_STREAM_URL` | `/stream` | Base URL for the Rust streaming service |
 
 ## Runtime browser configuration

@@ -7,12 +7,12 @@ A self-hosted, decentralised video management platform. Upload videos, transcode
 ```
 Browser
   │
-  ├── Upload video ──► Python Admin (FastAPI)
+  ├── Upload video ──► Rust Admin (Axum)
   │                        │
   │                        ├─ FFmpeg → HLS .ts segments per resolution
   │                        │
-  │                        └─ antd-py SDK ──► antd daemon ──► Autonomi network
-  │                                               (stores each segment, returns address)
+  │                        └─ antd REST ──► antd daemon ──► Autonomi network
+  │                                            (stores each segment, returns address)
   │
   └── Play video ───► Rust Streaming (Axum)
                            │
@@ -24,10 +24,10 @@ Browser
 
 ### Upload flow
 1. User drops or selects a video file; the browser detects its source resolution and offers 8K / 4K / 1080P / 720p / 480P / 360P renditions without upscaling by default.
-2. The React frontend POSTs the file to the Python admin service.
-3. Python admin saves it to the configured processing bind mount, records the durable job inputs in Postgres, and queues a worker task.
+2. The React frontend POSTs the file to the Rust admin service.
+3. Rust admin saves it to the configured processing bind mount, records the durable job inputs in Postgres, and queues a worker task.
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
-5. Python admin sums the actual transcoded segment sizes and asks `antd` for a final quote using the real segment bytes.
+5. Rust admin sums the actual transcoded segment sizes and asks `antd` for a final quote using the real segment bytes.
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
 7. After approval, every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
 8. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
@@ -47,8 +47,7 @@ Browser
 | Service | Language | Port | Purpose |
 |---|---|---|---|
 | `antd` | Rust | 8082 (REST), 50051 (gRPC) | Autonomi network gateway daemon |
-| `python_admin` | Python / FastAPI | 8000 | Video upload, FFmpeg transcoding, metadata API |
-| `rust_admin` | Rust / Axum | 8000 (8002 debug) | Experimental admin API migration target |
+| `rust_admin` | Rust / Axum | 8000 | Video upload, FFmpeg transcoding, metadata API |
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
 | `react_frontend` | React | 80 | Upload UI, video library, HLS player |
 | `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
@@ -59,7 +58,7 @@ Browser
 | Path | Proxies to |
 |---|---|
 | `/` | React frontend |
-| `/api/*` | Python admin (path rewritten to `/*`) |
+| `/api/*` | Rust admin (path rewritten to `/*`) |
 | `/stream/*` | Rust streaming service |
 
 ---
@@ -104,11 +103,7 @@ The repository includes a root `Makefile` for local checks and a GitHub Actions
 workflow that runs the same service-level gates.
 
 ```bash
-# Install Python admin dependencies and run unittest discovery
-make install-python
-make test-python
-
-# Run the Rust streaming service tests
+# Run the Rust backend tests
 make test-rust
 make test-rust-admin
 
@@ -124,10 +119,10 @@ make test
 make ci
 ```
 
-The Python target runs `python -m unittest discover` under `python_admin/tests`.
-The Rust stream and experimental Rust admin targets run `cargo test` and
-`cargo clippy` under `rust_stream` and `rust_admin`. The React target runs the
-Vite/Vitest test command once.
+The Rust stream and Rust admin targets run `cargo test` and `cargo clippy`
+under `rust_stream` and `rust_admin`. The React target runs the Vite/Vitest test
+command once. The legacy `python_admin` tests are kept out of the default gates
+while that implementation is being decommissioned.
 
 ---
 
@@ -141,15 +136,10 @@ plus one overlay:
 
 Compose remains the supported deployment runtime. The repo also documents the
 service boundary expected by a future native packaged host so native work can
-reuse the same Python admin, Rust stream, `antd`, Postgres, endpoint, and
+reuse the same Rust admin, Rust stream, `antd`, Postgres, endpoint, and
 storage-path contracts without changing current containers. See
 [`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
 [`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
-
-`docker-compose.rust-admin.yml` is an optional migration overlay. When included,
-it starts `rust_admin` beside the stable services and swaps Nginx `/api/*`
-routing from `python_admin` to `rust_admin` for parity testing. Leave the overlay
-out to keep the current Python-backed runtime.
 
 ### Local Testnet
 
@@ -181,22 +171,6 @@ docker compose --env-file .env.local \
   -f docker-compose.debug-ports.yml \
   up --build
 ```
-
-To test the Rust admin migration target through the same browser-facing `/api`
-contract, include the Rust admin overlay:
-
-```bash
-docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.rust-admin.yml \
-  up --build
-```
-
-The overlay also publishes `rust_admin` directly at
-`http://localhost:${RUST_ADMIN_HTTP_PORT:-8002}`. It is intended to match the
-Python admin API contract, including upload/transcode, final quote approval,
-Autonomi segment upload, publication/catalog updates, and delete.
 
 ### Production
 
@@ -248,7 +222,9 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
 | `ANTD_QUOTE_CONCURRENCY` | No | Rust admin concurrent final-quote cost checks. Default: `8` |
 | `ANTD_UPLOAD_CONCURRENCY` | No | Rust admin concurrent segment upload/verify tasks. Default: `4` |
-| `ANTD_APPROVE_ON_STARTUP` | No | Whether `python_admin` runs the one-time wallet spend approval on startup. Default: `true` |
+| `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
+| `UPLOAD_QUOTE_TRANSCODED_OVERHEAD` | No | Multiplier applied to upload quote estimates for transcoded bytes. Default: `1.08` |
+| `UPLOAD_QUOTE_MAX_SAMPLE_BYTES` | No | Max sample size for upload quote cost checks. Default: `16777216` |
 | `UPLOAD_MAX_FILE_BYTES` | No | Max accepted source upload bytes. Default: `21474836480` (20 GiB) |
 | `UPLOAD_MAX_DURATION_SECONDS` | No | Max accepted source duration from server-side `ffprobe`. Default: `14400` |
 | `UPLOAD_MAX_SOURCE_PIXELS` | No | Max accepted source pixel count after rotation metadata. Default: `33177600` (8K) |
@@ -274,7 +250,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 
 ## Database schema
 
-Managed by the Python admin service (`_ensure_schema()` on startup) and seeded by [`postgres-init/init-dbs.sh`](postgres-init/init-dbs.sh). Postgres is no longer the source of truth for ready video playback; it is a processing/status cache and recovery log for interrupted local jobs.
+Managed by the Rust admin service on startup and seeded by [`postgres-init/init-dbs.sh`](postgres-init/init-dbs.sh). Postgres is no longer the source of truth for ready video playback; it is a processing/status cache and recovery log for interrupted local jobs.
 
 ```
 videos
@@ -310,7 +286,7 @@ catalog manifest
 
 ## API reference
 
-### Python Admin (`/api`)
+### Rust Admin (`/api`)
 
 | Method | Path | Description |
 |---|---|---|
@@ -386,14 +362,11 @@ autonomi-video-management/
 ├── autonomi_devnet/
 │   ├── Dockerfile              # Self-contained local ant-devnet + antd testnet
 │   └── start-local-devnet.sh
-├── python_admin/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── src/admin_service.py    # FastAPI: upload, transcode, Autonomi upload, metadata API
 ├── rust_admin/
 │   ├── Dockerfile
 │   ├── Cargo.toml
-│   └── src/main.rs             # Axum: experimental admin API migration target
+│   └── src/main.rs             # Axum: upload, transcode, Autonomi upload, metadata API
+├── python_admin/               # Legacy FastAPI admin retained for decommission/reference
 ├── rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
@@ -416,7 +389,6 @@ autonomi-video-management/
 │   └── runtime-contract.example.json # Example native host endpoint/path contract
 ├── docker-compose.yml          # Base app services
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
-├── docker-compose.rust-admin.yml # Optional overlay routing /api to rust_admin
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
 ├── .env.local.example
@@ -431,19 +403,15 @@ autonomi-video-management/
 This project uses the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) (v2.0) architecture:
 
 - **`antd`** is a local gateway daemon (Rust) that handles all network connectivity, EVM payments, and content addressing. Your application code never touches the Autonomi peer network directly.
-- **`antd-py`** (`pip install antd[rest]`) — Python SDK used by the admin service.
+- **Admin writes** — `rust_admin` talks to the `antd` REST API for quotes, uploads, wallet approval, and catalog/manifest writes.
 - **`antd-client`** (`cargo add antd-client`) — Rust SDK used by the streaming service.
 - **`antd-mcp`** — MCP server exposing Autonomi tools to Claude (runs automatically in the devcontainer).
 - **Payment modes** — uploads use `ANTD_PAYMENT_MODE=auto` by default, which lets `antd` pick merkle batch payments for larger uploads and single payments otherwise.
-- **Wallet approval** — `python_admin` calls `wallet_approve()` on startup when `ANTD_APPROVE_ON_STARTUP=true`, so storage writes fail fast if the configured wallet cannot pay.
-- **Segment verification** — `python_admin` reads uploaded segment data back before publishing a video as ready. This is slower, but prevents bad segment addresses from reaching the playback catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
+- **Wallet approval** — `rust_admin` calls wallet approval on startup when `ANTD_APPROVE_ON_STARTUP=true`, so storage writes fail fast if the configured wallet cannot pay.
+- **Segment verification** — `rust_admin` reads uploaded segment data back before publishing a video as ready. This is slower, but prevents bad segment addresses from reaching the playback catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
 
 Key operations used in this project:
 
-```python
-# Store a segment (Python)
-result = await client.data_put_public(segment_bytes, payment_mode="auto")
-```
 ```rust
 // Fetch a segment (Rust)
 let bytes = client.data_get_public(&address).await?;
