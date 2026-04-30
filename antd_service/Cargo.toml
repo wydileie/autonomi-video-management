@@ -1,0 +1,26 @@
+[package]
+name = "antd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+ant-core = { git = "https://github.com/WithAutonomi/ant-client", rev = "8d43c3b" }
+ant-node = "=0.11.0"
+axum = "0.8"
+base64 = "0.22"
+bytes = "1"
+evmlib = "=0.8.0"
+hex = "0.4"
+rmp-serde = "1"
+self_encryption = "=0.35.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+xor_name = "=5.0.0"
+zeroize = "1"

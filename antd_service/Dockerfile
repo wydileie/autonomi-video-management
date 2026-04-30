@@ -1,9 +1,5 @@
-# ── Stage 1: Build antd from source ──────────────────────────────────────────
+# ── Stage 1: Build the Autonomi 2.0 compatibility gateway ────────────────────
 FROM rust:1.95-slim-bookworm AS builder
-
-# Match the devcontainer's antd build so local and containerized runs use the
-# same saorsa-core wire protocol.
-ARG AUTONOMI_ANT_SDK_REF=2ed9b14bda42fbdc604a173cc1af27be0964908f
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -13,14 +9,12 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
+WORKDIR /app
 
-# Clone and build only the antd binary; ant-core is fetched via Cargo.
-RUN git clone https://github.com/WithAutonomi/ant-sdk.git . && \
-    git checkout "$AUTONOMI_ANT_SDK_REF" && \
-    cd antd && \
-    cargo build --release && \
-    cp target/release/antd /usr/local/bin/antd
+COPY Cargo.toml Cargo.lock* ./
+COPY src ./src
+
+RUN cargo build --release
 
 # ── Stage 2: Minimal runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -31,12 +25,11 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/bin/antd /usr/local/bin/antd
+COPY --from=builder /app/target/release/antd /usr/local/bin/antd
 
 RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin appuser
 USER appuser
 
-# REST on 8082, gRPC on 50051
-EXPOSE 8082 50051
+EXPOSE 8082
 
 ENTRYPOINT ["antd"]

@@ -81,6 +81,7 @@ ADMIN_PASSWORD=<long random admin password>
 ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
 PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
 PROD_ANTD_NETWORK=default
+PROD_EVM_NETWORK=arbitrum-one
 ANTD_PAYMENT_MODE=auto
 ANTD_APPROVE_ON_STARTUP=true
 VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
@@ -90,6 +91,52 @@ For public deployments, put TLS, auth, and domain routing in front of the stack
 with a host reverse proxy, cloud load balancer, Tailscale/Funnel, Caddy,
 Traefik, Nginx Proxy Manager, or similar. The app stack itself serves local HTTP
 on port `80`.
+
+### Live Network Checks
+
+The production Compose file starts an Autonomi 2.0 compatibility gateway on
+the `antd` service name. It preserves the REST endpoints used by this app, but
+connects directly to the Autonomi P2P network with `ant-core`/`ant-node`.
+
+The gateway can report healthy while still failing write quotes if the P2P
+client has not connected to enough storage peers yet:
+
+```text
+POST /v1/data/cost failed: 502 {"error":"Network error: Found 0 peers, need 7","code":"NETWORK_ERROR"}
+```
+
+`PROD_AUTONOMI_PEERS` is optional. Leave it blank to use the built-in
+Autonomi 2.0 bootstrap peers, or provide a comma/newline-separated list of
+plain `host:port` peers or full multiaddrs. The gateway also accepts
+`ANT_PEERS` for compatibility with Autonomi bootstrap tooling.
+
+Useful checks:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  logs --tail=200 antd
+
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec antd curl -fsS http://127.0.0.1:8082/health
+
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec antd curl -fsS -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"data":"aGV5"}' \
+    http://127.0.0.1:8082/v1/data/cost
+```
+
+If `/health` reports `peer_count: 0` or the cost probe returns
+`Found 0 peers, need 7`, the app is on the Autonomi 2.0 path but the host still
+cannot reach enough live peers. Try a known-good peer list in
+`PROD_AUTONOMI_PEERS`, or run the stack from a network that allows outbound
+UDP/QUIC to the current Autonomi 2.0 bootstrap peers.
 
 ## Operations
 

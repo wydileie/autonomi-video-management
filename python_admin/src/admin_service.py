@@ -55,6 +55,26 @@ ANTD_APPROVE_ON_STARTUP = os.environ.get("ANTD_APPROVE_ON_STARTUP", "true").lowe
     "false",
     "no",
 }
+AUTONOMI_NETWORK_ERROR_HINT = (
+    "The Autonomi gateway is running, but its live-network write path is not "
+    "connected to enough peers. Check the antd logs for bootstrap failures and "
+    "verify this Docker host can reach the current Autonomi 2.0 bootstrap "
+    "peers, or set PROD_AUTONOMI_PEERS to known-good Autonomi 2.0 peers."
+)
+AUTONOMI_NETWORK_ERROR_MARKERS = (
+    "NETWORK_ERROR",
+    "Found 0 peers",
+    "need 7",
+    "no peers connected",
+    "Failed to connect to any bootstrap",
+)
+
+
+def _format_antd_error(exc: AntdError) -> str:
+    message = str(exc)
+    if any(marker in message for marker in AUTONOMI_NETWORK_ERROR_MARKERS):
+        return f"{message}. {AUTONOMI_NETWORK_ERROR_HINT}"
+    return message
 
 
 def _parse_allowed_origins(raw_origins: str) -> list[str]:
@@ -463,7 +483,9 @@ async def _ensure_autonomi_ready():
             approved = await client.wallet_approve()
             log.info("Autonomi wallet spend approval ready=%s", approved)
     except AntdError as exc:
-        raise RuntimeError(f"Autonomi daemon is not ready at {ANTD_URL}: {exc}") from exc
+        raise RuntimeError(
+            f"Autonomi daemon is not ready at {ANTD_URL}: {_format_antd_error(exc)}"
+        ) from exc
     finally:
         await client.close()
 
@@ -1060,7 +1082,10 @@ async def _build_upload_quote(
             "variants": variants,
         }
     except AntdError as exc:
-        raise HTTPException(503, f"Could not get Autonomi price quote: {exc}") from exc
+        raise HTTPException(
+            503,
+            f"Could not get Autonomi price quote: {_format_antd_error(exc)}",
+        ) from exc
     finally:
         await client.close()
 
@@ -1166,7 +1191,9 @@ async def _build_final_upload_quote(video_id: str) -> dict:
             "variants": variants,
         }
     except AntdError as exc:
-        raise RuntimeError(f"Could not get final Autonomi price quote: {exc}") from exc
+        raise RuntimeError(
+            f"Could not get final Autonomi price quote: {_format_antd_error(exc)}"
+        ) from exc
     finally:
         await client.close()
 
@@ -1606,7 +1633,10 @@ async def health():
     try:
         status = await client.health()
     except AntdError as exc:
-        return {"ok": False, "autonomi": {"ok": False, "error": str(exc)}}
+        return {
+            "ok": False,
+            "autonomi": {"ok": False, "error": _format_antd_error(exc)},
+        }
     finally:
         await client.close()
 

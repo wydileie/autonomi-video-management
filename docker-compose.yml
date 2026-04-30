@@ -9,6 +9,9 @@ services:
     environment:
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      ADMIN_DB: "${ADMIN_DB}"
+      ADMIN_USER: "${ADMIN_USER}"
+      ADMIN_PASS: "${ADMIN_PASS}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:

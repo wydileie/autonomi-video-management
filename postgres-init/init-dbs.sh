@@ -12,6 +12,13 @@ GRANT ALL PRIVILEGES ON DATABASE $ADMIN_DB TO $ADMIN_USER;
 
 EOSQL
 
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$ADMIN_DB" <<-EOSQL
+
+ALTER SCHEMA public OWNER TO $ADMIN_USER;
+GRANT ALL ON SCHEMA public TO $ADMIN_USER;
+
+EOSQL
+
 # Connect to the admin DB and create the video schema
 psql -v ON_ERROR_STOP=1 --username "$ADMIN_USER" --dbname "$ADMIN_DB" <<-EOSQL
 
