@@ -157,6 +157,9 @@ dmypy.json
 # pytype static type analyzer
 .pytype/
 
+# Local bind-mounted application data
+.autvid/
+
 # Cython debug symbols
 cython_debug/
 
@@ -169,4 +172,21 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Frontend dependencies
+node_modules/
+**/node_modules/
+
 autonomi-video-management.code-workspace
+.env
+.env.local
+.env.production
+
+*.devcontainer
+.devcontainer/**
+.devcontainer/*
+
+testvids/
+testvids/**
+testvids/*
+ChatGPT Image Apr 29, 2026 at 02_45_59 PM.png

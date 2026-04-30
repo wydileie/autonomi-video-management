@@ -1,27 +1,220 @@
 {
-    "name" : "Dev Container for Python, Rust, and React",
-    "build": {
-      "dockerfile": "Dockerfile",
-      "context": "."
-    },
-  
-    "customizations": {
-      "vscode": {
-        "extensions": [
-            "zainchen.json",
-            "github.vscode-pull-request-github",
-            "ms-python.vscode-pylance",
-            "ms-python.python",
-            "ms-python.debugpy",
-            "rust-lang.rust-analyzer"
-        ],
-        "settings": {
-          "terminal.integrated.shell.linux": "/bin/bash"
+  "name": "Home Development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "customizations": {
+    "claude": {
+      "mcpServers": {
+        "fetch": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-fetch"
+          ]
+        },
+        "git-repo-research": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "awslabs.git-repo-research-mcp-server@latest"
+          ],
+          "env": {
+            "AWS_REGION": "us-east-2",
+            "FASTMCP_LOG_LEVEL": "ERROR"
+          }
+        },
+        "filesystem": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "${containerWorkspaceFolder}"
+          ]
+        },
+        "git": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-git",
+            "--repository",
+            "${containerWorkspaceFolder}"
+          ]
+        },
+        "github": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-github"
+          ],
+          "env": {
+            "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
+          }
+        },
+        "postgres": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-postgres",
+            "${env:DATABASE_URL}"
+          ]
+        },
+        "docker": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-docker"
+          ]
+        },
+        "memory": {
+          "command": "/usr/local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-memory"
+          ]
+        },
+        "sequential-thinking": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-sequential-thinking"
+          ]
+        },
+        "kubernetes": {
+          "command": "/home/vscode/.local/bin/uvx",
+          "args": [
+            "--native-tls",
+            "mcp-server-kubernetes"
+          ]
+        },
+        "brave-search": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-brave-search"
+          ],
+          "env": {
+            "BRAVE_API_KEY": "${env:BRAVE_API_KEY}"
+          }
+        },
+        "antd-autonomi": {
+          "command": "antd-mcp"
         }
       }
     },
-    "forwardPorts": [3000],
-    "postCreateCommand": "rustup update",
-    "remoteUser": "root"
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "github.vscode-pull-request-github",
+        "ms-toolsai.jupyter",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-python.debugpy",
+        "mechatroner.rainbow-csv",
+        "redhat.vscode-xml",
+        "redhat.vscode-yaml",
+        "ms-vscode.powershell",
+        "tamasfe.even-better-toml",
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "github.vscode-github-actions"
+      ]
+    },
+    "settings": {
+      "mcp": {
+        "servers": {
+          "fetch": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-fetch"]
+          },
+          "filesystem": {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${containerWorkspaceFolder}"]
+          },
+          "git": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-git", "--repository", "${containerWorkspaceFolder}"]
+          },
+          "github": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-github"],
+            "env": {
+              "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
+            }
+          },
+          "postgres": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-postgres", "${env:DATABASE_URL}"]
+          },
+          "docker": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-docker"]
+          },
+          "memory": {
+            "type": "stdio",
+            "command": "/usr/local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-memory"]
+          },
+          "sequential-thinking": {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+          },
+          "kubernetes": {
+            "type": "stdio",
+            "command": "/home/vscode/.local/bin/uvx",
+            "args": ["--native-tls", "mcp-server-kubernetes"]
+          },
+          "brave-search": {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+            "env": {
+              "BRAVE_API_KEY": "${env:BRAVE_API_KEY}"
+            }
+          },
+          "antd-autonomi": {
+            "type": "stdio",
+            "command": "antd-mcp"
+          }
+        }
+      },
+      "python.linting.enabled": true,
+      "python.linting.ruffEnabled": true,
+      "python.formatting.provider": "none",
+      "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "forwardPorts": [80, 3000, 5000, 5432, 8000, 8080, 8081, 8082, 50051],
+  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt 2>/dev/null || true && python3 .devcontainer/setup_claude.py",
+  "postStartCommand": "bash .devcontainer/post_start.sh",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    "source=${localEnv:HOME}/.devcontainer_bash_history,target=/home/vscode/.bash_history,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached"
+  ],
+  "remoteEnv": {
+    "HISTFILE": "/home/vscode/.bash_history",
+    "PROMPT_COMMAND": "history -a",
+    "BRAVE_API_KEY": "${localEnv:BRAVE_API_KEY}",
+    "ANTD_NETWORK": "local",
+    "AUTONOMI_WALLET_KEY": "${localEnv:AUTONOMI_WALLET_KEY}"
+  },
+  "remoteUser": "vscode"
 }
-  

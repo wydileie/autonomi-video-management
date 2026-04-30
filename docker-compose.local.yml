@@ -1,0 +1,70 @@
+services:
+  init_devnet_permissions:
+    image: alpine:3.20
+    container_name: autvid_init_devnet_permissions
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /data
+        chown -R 10001:10001 /data
+        chmod -R u+rwX,g+rwX,o+rX /data
+    volumes:
+      - autonomi_devnet_data:/data
+    security_opt:
+      - no-new-privileges:true
+
+  antd:
+    image: autonomi-video-management-antd-devnet
+    build:
+      context: ./autonomi_devnet
+    container_name: autonomi_local_devnet
+    depends_on:
+      init_devnet_permissions:
+        condition: service_completed_successfully
+    environment:
+      ANT_DEVNET_PRESET: "${ANT_DEVNET_PRESET:-default}"
+      ANT_DEVNET_RESET_ON_START: "${ANT_DEVNET_RESET_ON_START:-true}"
+      ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
+      ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
+      ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
+    ports:
+      - "${ANTD_REST_PORT:-8082}:8082"
+      - "${ANTD_GRPC_PORT:-50051}:50051"
+    networks:
+      - appnet
+    volumes:
+      - autonomi_devnet_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  rust_admin:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      ANTD_URL: "http://antd:8082"
+      ANTD_APPROVE_ON_STARTUP: "false"
+      HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
+      UPLOAD_MIN_FREE_BYTES: "${UPLOAD_MIN_FREE_BYTES:-536870912}"
+
+  rust_stream:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      ANTD_URL: "http://antd:8082"
+
+volumes:
+  autonomi_devnet_data:

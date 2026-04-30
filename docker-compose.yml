@@ -1,0 +1,223 @@
+services:
+
+  # 1) Postgres
+  db:
+    image: autonomi-video-management-postgres
+    build:
+      context: ./postgres-init
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      ADMIN_DB: "${ADMIN_DB}"
+      ADMIN_USER: "${ADMIN_USER}"
+      ADMIN_PASS: "${ADMIN_PASS}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2) One-shot permissions init for non-root app containers
+  init_permissions:
+    image: alpine:3.20
+    container_name: autvid_init_permissions
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /var/lib/autvid/processing /catalog
+        chown -R 1000:1000 /var/lib/autvid/processing /catalog
+        chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid/processing /catalog
+    volumes:
+      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
+      - catalog_state:/catalog
+    security_opt:
+      - no-new-privileges:true
+
+  # 3) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
+  rust_admin:
+    build: ./rust_admin
+    container_name: rust_admin
+    environment:
+      APP_ENV: "${APP_ENV:-development}"
+      ADMIN_DB_HOST: db
+      ADMIN_DB_PORT: "5432"
+      ADMIN_DB_NAME: "${ADMIN_DB}"
+      ADMIN_DB_USER: "${ADMIN_USER}"
+      ADMIN_DB_PASS: "${ADMIN_PASS}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin}"
+      ADMIN_AUTH_SECRET: "${ADMIN_AUTH_SECRET:-change-me}"
+      ADMIN_AUTH_TTL_HOURS: "${ADMIN_AUTH_TTL_HOURS:-12}"
+      ANTD_URL: "${ANTD_URL:-http://antd:8082}"
+      ANTD_PAYMENT_MODE: "${ANTD_PAYMENT_MODE:-auto}"
+      ANTD_METADATA_PAYMENT_MODE: "${ANTD_METADATA_PAYMENT_MODE:-merkle}"
+      ANTD_UPLOAD_VERIFY: "${ANTD_UPLOAD_VERIFY:-true}"
+      ANTD_UPLOAD_RETRIES: "${ANTD_UPLOAD_RETRIES:-3}"
+      ANTD_UPLOAD_TIMEOUT_SECONDS: "${ANTD_UPLOAD_TIMEOUT_SECONDS:-120}"
+      ANTD_QUOTE_CONCURRENCY: "${ANTD_QUOTE_CONCURRENCY:-8}"
+      ANTD_UPLOAD_CONCURRENCY: "${ANTD_UPLOAD_CONCURRENCY:-4}"
+      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+      UPLOAD_MAX_FILE_BYTES: "${UPLOAD_MAX_FILE_BYTES:-21474836480}"
+      UPLOAD_MAX_DURATION_SECONDS: "${UPLOAD_MAX_DURATION_SECONDS:-14400}"
+      UPLOAD_MAX_SOURCE_PIXELS: "${UPLOAD_MAX_SOURCE_PIXELS:-33177600}"
+      UPLOAD_MAX_SOURCE_LONG_EDGE: "${UPLOAD_MAX_SOURCE_LONG_EDGE:-7680}"
+      UPLOAD_MIN_FREE_BYTES: "${UPLOAD_MIN_FREE_BYTES:-5368709120}"
+      UPLOAD_MAX_CONCURRENT_SAVES: "${UPLOAD_MAX_CONCURRENT_SAVES:-2}"
+      UPLOAD_FFPROBE_TIMEOUT_SECONDS: "${UPLOAD_FFPROBE_TIMEOUT_SECONDS:-30}"
+      HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
+      FFMPEG_THREADS: "${FFMPEG_THREADS:-2}"
+      FFMPEG_FILTER_THREADS: "${FFMPEG_FILTER_THREADS:-1}"
+      UPLOAD_QUOTE_TRANSCODED_OVERHEAD: "${UPLOAD_QUOTE_TRANSCODED_OVERHEAD:-1.08}"
+      UPLOAD_QUOTE_MAX_SAMPLE_BYTES: "${UPLOAD_QUOTE_MAX_SAMPLE_BYTES:-16777216}"
+      FINAL_QUOTE_APPROVAL_TTL_SECONDS: "${FINAL_QUOTE_APPROVAL_TTL_SECONDS:-14400}"
+      APPROVAL_CLEANUP_INTERVAL_SECONDS: "${APPROVAL_CLEANUP_INTERVAL_SECONDS:-300}"
+      CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
+      CATALOG_STATE_PATH: "/catalog/catalog.json"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
+      RUST_ADMIN_PORT: "8000"
+      RUST_LOG: "info"
+      UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
+      TMPDIR: "/var/lib/autvid/processing"
+      TMP: "/var/lib/autvid/processing"
+      TEMP: "/var/lib/autvid/processing"
+    depends_on:
+      db:
+        condition: service_healthy
+      init_permissions:
+        condition: service_completed_successfully
+    networks:
+      - appnet
+    expose:
+      - "8000"
+    volumes:
+      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
+      - catalog_state:/catalog
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+
+  # 4) Rust streaming — HLS manifest generation + Autonomi segment proxy
+  rust_stream:
+    build: ./rust_stream
+    container_name: rust_stream
+    environment:
+      ANTD_URL: "${ANTD_URL:-http://antd:8082}"
+      CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
+      CATALOG_STATE_PATH: "/catalog/catalog.json"
+      STREAM_CATALOG_CACHE_TTL_SECONDS: "${STREAM_CATALOG_CACHE_TTL_SECONDS:-10}"
+      STREAM_MANIFEST_CACHE_TTL_SECONDS: "${STREAM_MANIFEST_CACHE_TTL_SECONDS:-300}"
+      STREAM_SEGMENT_CACHE_TTL_SECONDS: "${STREAM_SEGMENT_CACHE_TTL_SECONDS:-60}"
+      STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
+      RUST_LOG: "info"
+    depends_on:
+      init_permissions:
+        condition: service_completed_successfully
+    networks:
+      - appnet
+    expose:
+      - "8081"
+    volumes:
+      - catalog_state:/catalog:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+  # 5) React front end
+  react_frontend:
+    build:
+      context: ./react_frontend
+      args:
+        REACT_APP_API_URL: "/api"
+        REACT_APP_STREAM_URL: "/stream"
+    container_name: react_app
+    depends_on:
+      - rust_admin
+      - rust_stream
+    networks:
+      - appnet
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+      - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
+
+  # 6) Nginx Reverse Proxy
+  nginx:
+    image: autonomi-video-management-nginx
+    build:
+      context: ./nginx
+    container_name: nginx_proxy
+    depends_on:
+      rust_admin:
+        condition: service_healthy
+      rust_stream:
+        condition: service_healthy
+      react_frontend:
+        condition: service_healthy
+    ports:
+      - "${APP_HTTP_PORT:-80}:8080"
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    user: "101:101"
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+      - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
+
+volumes:
+  postgres_data:
+  catalog_state:
+
+networks:
+  appnet:
+    driver: bridge

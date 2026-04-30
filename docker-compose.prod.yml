@@ -1,0 +1,50 @@
+services:
+  antd:
+    image: autonomi-video-management-antd-service
+    build:
+      context: ./antd_service
+    container_name: antd_daemon
+    environment:
+      AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY}"
+      ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
+      PROD_AUTONOMI_PEERS: "${PROD_AUTONOMI_PEERS:-}"
+      ANT_PEERS: "${ANT_PEERS:-}"
+      ANTD_REST_ADDR: "0.0.0.0:8082"
+      ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
+      ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
+      ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
+      EVM_NETWORK: "${PROD_EVM_NETWORK:-arbitrum-one}"
+      PROD_EVM_RPC_URL: "${PROD_EVM_RPC_URL:-}"
+      PROD_EVM_PAYMENT_TOKEN_ADDRESS: "${PROD_EVM_PAYMENT_TOKEN_ADDRESS:-}"
+      PROD_EVM_PAYMENT_VAULT_ADDRESS: "${PROD_EVM_PAYMENT_VAULT_ADDRESS:-}"
+    expose:
+      - "8082"
+    networks:
+      - appnet
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  rust_admin:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      APP_ENV: "production"
+      ANTD_URL: "http://antd:8082"
+      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+
+  rust_stream:
+    depends_on:
+      antd:
+        condition: service_healthy
+    environment:
+      ANTD_URL: "http://antd:8082"
