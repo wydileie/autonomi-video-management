@@ -7,6 +7,7 @@ import { API_BASE_URL, STREAM_BASE_URL } from "./runtimeConfig";
 
 const API = API_BASE_URL;
 const STREAM = STREAM_BASE_URL;
+const BRAND_IMAGE = "/autvid-brand.png";
 const AUTH_STORAGE_KEY = "autvid_admin_token";
 const PLAYER_CONTROLS_IDLE_MS = 2200;
 const RESUME_DURATION_TOLERANCE_SECONDS = 0.25;
@@ -734,22 +735,29 @@ function LoginPanel({ onLogin }) {
 
   return (
     <section className="login-card">
-      <div className="section-kicker">Admin</div>
-      <h1>Sign in to manage uploads.</h1>
-      <form onSubmit={submit} className="login-form">
-        <label>
-          <span>Username</span>
-          <input value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading} />
-        </label>
-        <label>
-          <span>Password</span>
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={loading} />
-        </label>
-        {error && <div className="error-box">{error}</div>}
-        <button className="primary-action" type="submit" disabled={loading}>
-          {loading ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
+      <div className="login-grid">
+        <div>
+          <div className="section-kicker">Admin</div>
+          <h1>Sign in to manage uploads.</h1>
+          <form onSubmit={submit} className="login-form">
+            <label>
+              <span>Username</span>
+              <input value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading} />
+            </label>
+            <label>
+              <span>Password</span>
+              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={loading} />
+            </label>
+            {error && <div className="error-box">{error}</div>}
+            <button className="primary-action" type="submit" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        </div>
+        <div className="login-brand-panel" aria-hidden="true">
+          <img src={BRAND_IMAGE} alt="" />
+        </div>
+      </div>
     </section>
   );
 }
@@ -888,14 +896,29 @@ function Library({ admin = false, token = "" }) {
     }
   };
 
-  if (loading) return <div className="empty-state">Loading the catalog...</div>;
+  if (loading) {
+    return (
+      <div className="empty-state">
+        <span className="empty-icon" aria-hidden="true" />
+        <strong>Loading the catalog...</strong>
+      </div>
+    );
+  }
   if (loadError && !videos.length) {
-    return <div className="empty-state error-state">{loadError}</div>;
+    return (
+      <div className="empty-state error-state">
+        <span className="empty-icon" aria-hidden="true" />
+        <strong>{loadError}</strong>
+      </div>
+    );
   }
   if (!videos.length) {
     return (
       <div className="empty-state">
-        {admin ? "No videos yet. Upload one to build your first stream." : "No videos are available yet."}
+        <span className="empty-icon" aria-hidden="true" />
+        <strong>
+          {admin ? "No videos yet. Upload one to build your first stream." : "No videos are available yet."}
+        </strong>
       </div>
     );
   }
@@ -918,9 +941,14 @@ function Library({ admin = false, token = "" }) {
         {videos.map((video) => (
           <article className="video-row" key={video.id}>
             <button type="button" className="video-summary" onClick={() => openDetail(video.id)}>
-              <div>
-                <strong>{video.title}</strong>
-                <span>{video.original_filename || video.description || "Published stream"}</span>
+              <div className="video-title">
+                <span className="video-thumb" aria-hidden="true">
+                  <span />
+                </span>
+                <div>
+                  <strong>{video.title}</strong>
+                  <span>{video.original_filename || video.description || "Published stream"}</span>
+                </div>
               </div>
               <div className="row-meta">
                 {admin && (
@@ -1073,27 +1101,29 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">AV</span>
-          <div>
-            <strong>AutVid</strong>
-            <span>Network-native streaming</span>
+          <img className="brand-image" src={BRAND_IMAGE} alt="AutVid: Autonomi Video Vault" />
+          <div className="brand-summary">
+            <p>Smooth, adaptive video streaming powered by Autonomi.</p>
           </div>
         </div>
-        <nav>
-          <button className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button>
-          {auth ? (
-            <>
-              <button className={tab === "manage" ? "active" : ""} onClick={() => setTab("manage")}>Manage</button>
-              <button className={tab === "upload" ? "active" : ""} onClick={() => setTab("upload")}>Upload</button>
-              <button onClick={logout}>Logout</button>
-            </>
-          ) : (
-            <button className={tab === "login" ? "active" : ""} onClick={() => setTab("login")}>Login</button>
-          )}
-        </nav>
+        <div className="topbar-actions">
+          {auth && <span className="user-pill">{auth.username || "Admin"}</span>}
+          <nav aria-label="Primary">
+            <button type="button" className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button>
+            {auth ? (
+              <>
+                <button type="button" className={tab === "manage" ? "active" : ""} onClick={() => setTab("manage")}>Manage</button>
+                <button type="button" className={tab === "upload" ? "active" : ""} onClick={() => setTab("upload")}>Upload</button>
+                <button type="button" onClick={logout}>Logout</button>
+              </>
+            ) : (
+              <button type="button" className={tab === "login" ? "active" : ""} onClick={() => setTab("login")}>Login</button>
+            )}
+          </nav>
+        </div>
       </header>
 
-      <main>
+      <main className="workspace-main">
         {tab === "upload" && auth && <UploadPanel token={auth.access_token} onUploaded={handleUploaded} />}
         {tab === "manage" && auth && <Library key={`admin-${refreshKey}`} admin token={auth.access_token} />}
         {tab === "login" && !auth && <LoginPanel onLogin={handleLogin} />}
