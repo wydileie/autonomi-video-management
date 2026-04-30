@@ -1,0 +1,11 @@
+# Public demo overlay for the local Autonomi devnet.
+#
+# Use this with docker-compose.local.yml when the stack is reachable from the
+# internet. The app remains available through the top-level Nginx service, while
+# the devnet antd REST/gRPC ports stay internal to the Compose network.
+services:
+  antd:
+    ports: !reset []
+    expose:
+      - "8082"
+      - "50051"
