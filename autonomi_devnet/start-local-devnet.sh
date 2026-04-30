@@ -7,6 +7,7 @@ DATA_DIR="${ANT_DEVNET_DATA_DIR:-/data/nodes}"
 PRESET="${ANT_DEVNET_PRESET:-default}"
 QUOTE_TIMEOUT_SECS="${ANTD_QUOTE_TIMEOUT_SECS:-60}"
 STORE_TIMEOUT_SECS="${ANTD_STORE_TIMEOUT_SECS:-120}"
+RESET_ON_START="${ANT_DEVNET_RESET_ON_START:-true}"
 
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 rm -f "$MANIFEST"
@@ -15,6 +16,11 @@ cleanup() {
   jobs -pr | xargs -r kill 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+if [[ "$RESET_ON_START" != "0" && "${RESET_ON_START,,}" != "false" && "${RESET_ON_START,,}" != "no" ]]; then
+  echo "[autonomi-devnet] resetting active node data dir ${DATA_DIR}"
+  rm -rf "${DATA_DIR:?}/"*
+fi
 
 echo "[autonomi-devnet] starting ant-devnet preset=${PRESET}"
 ant-devnet \

@@ -215,6 +215,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `PROD_ANTD_NETWORK` | Production | `default` unless you are targeting a custom network |
 | `PROD_AUTONOMI_PEERS` | Production/custom | Comma-separated bootstrap multiaddrs |
 | `ANT_DEVNET_PRESET` | Local only | Local devnet size: `minimal`, `small`, or `default` |
+| `ANT_DEVNET_RESET_ON_START` | Local only | Reset active local devnet node data on container start to avoid stale testnet peers. Default: `true` |
 | `ANTD_PAYMENT_MODE` | No | Upload payment strategy: `auto`, `merkle`, or `single`. Default: `auto` |
 | `ANTD_METADATA_PAYMENT_MODE` | No | Rust admin payment strategy for small manifest/catalog JSON writes. Default: `merkle` |
 | `ANTD_UPLOAD_VERIFY` | No | Read each uploaded segment back before publishing the manifest. Default: `true` |
@@ -343,7 +344,8 @@ height swapped. For example, a vertical `4k` rendition is encoded as
 2,160 × 3,840 rather than padded into a 3,840 × 2,160 landscape frame.
 
 HLS segment duration is configurable with `HLS_SEGMENT_DURATION`; the local
-default is `1` second to keep Autonomi objects small and reliable on devnets.
+example uses `0.75` seconds to keep 4K Autonomi objects small and reliable on
+devnets.
 
 ---
 

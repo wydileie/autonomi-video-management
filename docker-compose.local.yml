@@ -26,6 +26,7 @@ services:
         condition: service_completed_successfully
     environment:
       ANT_DEVNET_PRESET: "${ANT_DEVNET_PRESET:-default}"
+      ANT_DEVNET_RESET_ON_START: "${ANT_DEVNET_RESET_ON_START:-true}"
       ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
       ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
       ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"

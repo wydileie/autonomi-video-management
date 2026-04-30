@@ -821,9 +821,9 @@ input:focus-visible {
   background: transparent;
   border: 0;
   color: var(--charcoal);
-  display: flex;
+  display: grid;
   gap: 16px;
-  justify-content: space-between;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-height: 96px;
   padding: 16px 18px 16px 22px;
   text-align: left;
@@ -834,6 +834,10 @@ input:focus-visible {
   align-items: center;
   display: flex;
   gap: 14px;
+  min-width: 0;
+}
+
+.video-title > div {
   min-width: 0;
 }
 
@@ -864,13 +868,14 @@ input:focus-visible {
   border-bottom: 10px solid transparent;
   border-left: 16px solid var(--surface);
   border-top: 10px solid transparent;
+  display: block;
   left: 33px;
   position: absolute;
   top: 14px;
 }
 
 .video-summary strong,
-.video-summary span {
+.video-title > div > span {
   display: block;
 }
 
@@ -878,14 +883,22 @@ input:focus-visible {
   color: var(--charcoal-strong);
   font-size: 18px;
   font-weight: 900;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
-.video-summary span {
+.video-title > div > span,
+.row-meta > span:not(.status) {
   color: var(--muted);
   font-size: 13px;
+}
+
+.video-title > div > span {
   margin-top: 4px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+
+.row-meta > span:not(.status) {
+  display: block;
 }
 
 .row-meta {
