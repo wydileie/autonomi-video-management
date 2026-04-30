@@ -57,6 +57,49 @@ docker compose --env-file .env.local \
   up --build
 ```
 
+## Public Local-Devnet Demo
+
+Use this mode when you want an internet-accessible demo without spending real
+Autonomi storage tokens. It runs the same self-contained local devnet as the
+local test mode, but keeps the devnet `antd` REST/gRPC ports internal to the
+Compose network and exposes only the app's Nginx reverse proxy.
+
+```bash
+cp .env.local-public.example .env.local-public
+# Edit .env.local-public before starting.
+
+docker compose --env-file .env.local-public \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.local-public.yml \
+  up --build -d
+```
+
+Required public-demo values:
+
+```dotenv
+APP_ENV=production
+ADMIN_USERNAME=autvid-demo-admin
+ADMIN_PASSWORD=<long random admin password>
+ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
+DOMAIN=demo.example.com
+APP_HTTP_PORT=80
+CORS_ALLOWED_ORIGINS=https://demo.example.com,http://demo.example.com
+VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
+```
+
+Do not add `docker-compose.debug-ports.yml` for a public demo unless you
+intentionally want direct admin/stream debug ports published. Keep cloud or host
+firewall rules limited to SSH plus HTTP/HTTPS. Docker-published ports can bypass
+some host firewall frontends, so prefer removing unwanted port publishes with
+the public-demo overlay rather than relying only on `ufw`.
+
+This mode is for demonstration only. The local devnet is not the public
+Autonomi network, and data in the local devnet volume is not permanent network
+storage. `ANT_DEVNET_RESET_ON_START=true` starts from a clean devnet each time;
+set it to `false` only if you intentionally want to try preserving local-devnet
+state across restarts for a short-lived demo.
+
 ## Production/Default Network
 
 Use this mode when you want `antd` to connect to the configured Autonomi

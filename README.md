@@ -132,6 +132,7 @@ The app is intended to run as a containerized stack. Use the base Compose file
 plus one overlay:
 
 - `docker-compose.local.yml` runs a self-contained local Autonomi devnet for testing.
+- `docker-compose.local-public.yml` keeps that local devnet internal while exposing only the app proxy for internet-accessible demos.
 - `docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
 
 Compose remains the supported deployment runtime. The repo also documents the
@@ -171,6 +172,27 @@ docker compose --env-file .env.local \
   -f docker-compose.debug-ports.yml \
   up --build
 ```
+
+### Internet-accessible Local Devnet Demo
+
+This mode is useful for a public demo that should not spend real Autonomi
+storage tokens. It uses production-strength app auth with the local devnet and
+publishes only the Nginx app proxy.
+
+```bash
+cp .env.local-public.example .env.local-public
+# Fill in the domain, admin credentials, auth secret, and processing path.
+
+docker compose --env-file .env.local-public \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.local-public.yml \
+  up --build -d
+```
+
+Do not add `docker-compose.debug-ports.yml` on an internet-facing demo unless
+you intentionally want debug ports exposed. The local devnet is not permanent
+public Autonomi storage; data lives in local Docker volumes.
 
 ### Production
 
