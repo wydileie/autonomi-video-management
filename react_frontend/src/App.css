@@ -1087,6 +1087,12 @@ input:focus-visible {
   margin-top: 16px;
 }
 
+.detail-addresses {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .detail-footer code {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;

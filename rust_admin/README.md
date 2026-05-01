@@ -10,8 +10,9 @@ transcode, approval, Autonomi write, catalog, and admin metadata workflows:
 - catalog/public video reads from Autonomi
 - admin video reads and status reads from Postgres
 - upload quote estimation using the existing Autonomi cost endpoint
-- multipart upload, FFmpeg transcoding, final quote approval, Autonomi upload,
-  publication/catalog mutation, and delete workflows
+- multipart upload, optional original source storage, FFmpeg transcoding, final
+  quote approval, Autonomi upload, publication/catalog mutation, auto-publish,
+  and delete workflows
 
 Run locally:
 

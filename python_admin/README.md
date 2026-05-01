@@ -37,7 +37,7 @@ FastAPI service responsible for video ingestion, FFmpeg transcoding, Autonomi ne
 | `file` | file | Video file (any format FFmpeg supports) |
 | `title` | string | Display title |
 | `description` | string | Optional description |
-| `resolutions` | string | Comma-separated: `8k`, `4k`, `1080p`, `720p`, `480p`, `360p` |
+| `resolutions` | string | Comma-separated: `8k`, `4k`, `1440p`, `1080p`, `720p`, `540p`, `480p`, `360p`, `240p`, `144p` |
 | `show_original_filename` | boolean | Publish the source filename to public web users |
 | `show_manifest_address` | boolean | Publish the backend Autonomi manifest address to public web users |
 
@@ -164,4 +164,4 @@ segments that already have Autonomi addresses. In Compose deployments,
 `VIDEO_PROCESSING_HOST_PATH` must point at persistent host storage with enough
 free space for original uploads plus all requested transcoded renditions.
 
-FFmpeg flags produce H.264/AAC MPEG-TS segments with correct aspect ratio padding to fit the target resolution box.
+FFmpeg flags produce H.264/AAC MPEG-TS segments with source aspect ratio preserved at each selected quality tier.

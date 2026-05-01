@@ -23,15 +23,15 @@ Browser
 ```
 
 ### Upload flow
-1. User drops or selects a video file; the browser detects its source resolution and offers 8K / 4K / 1080P / 720p / 480P / 360P renditions without upscaling by default.
+1. User drops or selects a video file; the browser detects its source resolution and offers standard adaptive renditions from 8K down to 144p without upscaling by default.
 2. The React frontend POSTs the file to the Rust admin service.
 3. Rust admin saves it to the configured processing bind mount, records the durable job inputs in Postgres, and queues a worker task.
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
-5. Rust admin sums the actual transcoded segment sizes and asks `antd` for a final quote using the real segment bytes.
+5. Rust admin sums the actual transcoded segment sizes, optionally includes the original source file, and asks `antd` for a final quote using the real bytes.
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
-7. After approval, every segment is uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
-8. A video manifest JSON containing resolution, segment order, durations, and Autonomi addresses is stored on Autonomi.
-9. The job status flips to `ready`. Admins can then publish or unpublish the video from the public library.
+7. After approval, every segment and the optional original source file are uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
+8. A video manifest JSON containing resolution, segment order, durations, optional original-file metadata, and Autonomi addresses is stored on Autonomi.
+9. The job status flips to `ready`. Admins can then publish or unpublish the video from the public library, or choose automatic publishing during upload.
 10. Publishing stores a catalog JSON containing the public video list and manifest addresses on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
 
 ### Playback flow
@@ -278,7 +278,9 @@ Managed by the Rust admin service on startup and seeded by [`postgres-init/init-
 ```
 videos
   id, title, original_filename, description, status, job_dir,
-  job_source_path, requested_resolutions, created_at, user_id
+  job_source_path, requested_resolutions, upload_original,
+  original_file_address, original_file_byte_size,
+  publish_when_ready, created_at, user_id
 
 video_variants          (one per resolution per video)
   id, video_id → videos, resolution, width, height,
@@ -316,8 +318,8 @@ catalog manifest
 | `GET` | `/health` | Health check |
 | `POST` | `/auth/login` | Sign in as the single admin user |
 | `GET` | `/auth/me` | Validate the current admin bearer token |
-| `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions |
-| `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`) |
+| `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions and optional original file |
+| `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`, optional `upload_original`, optional `publish_when_ready`) |
 | `GET` | `/videos` | Public list of published ready videos, with filename and manifest address redacted unless enabled |
 | `GET` | `/videos/{id}` | Public video detail for playback, without segment addresses |
 | `GET` | `/videos/{id}/status` | Public processing status with sensitive addresses redacted |
@@ -337,7 +339,9 @@ curl -X POST http://localhost/api/videos/upload \
   -F "title=My Video" \
   -F "resolutions=480p,720p" \
   -F "show_original_filename=false" \
-  -F "show_manifest_address=false"
+  -F "show_manifest_address=false" \
+  -F "upload_original=true" \
+  -F "publish_when_ready=false"
 ```
 
 ### Rust Streaming (`/stream`)
@@ -352,18 +356,26 @@ curl -X POST http://localhost/api/videos/upload \
 
 ## Resolution presets
 
-| Label | Landscape width × height | Video bitrate | Audio bitrate |
+| Label | 16:9 width × height | Video bitrate | Audio bitrate |
 |---|---|---|---|
 | `8k` | 7,680 × 4,320 | 45,000 kbps | 320 kbps |
 | `4k` | 3,840 × 2,160 | 16,000 kbps | 256 kbps |
-| `360p` | 640 × 360 | 500 kbps | 96 kbps |
-| `480p` | 854 × 480 | 1,000 kbps | 128 kbps |
-| `720p` | 1,280 × 720 | 2,500 kbps | 128 kbps |
+| `1440p` | 2,560 × 1,440 | 8,000 kbps | 192 kbps |
 | `1080p` | 1,920 × 1,080 | 5,000 kbps | 192 kbps |
+| `720p` | 1,280 × 720 | 2,500 kbps | 128 kbps |
+| `540p` | 960 × 540 | 1,600 kbps | 128 kbps |
+| `480p` | 854 × 480 | 1,000 kbps | 128 kbps |
+| `360p` | 640 × 360 | 500 kbps | 96 kbps |
+| `240p` | 426 × 240 | 300 kbps | 64 kbps |
+| `144p` | 256 × 144 | 150 kbps | 48 kbps |
 
-Portrait sources use the same long-edge target for each label with width and
-height swapped. For example, a vertical `4k` rendition is encoded as
-2,160 × 3,840 rather than padded into a 3,840 × 2,160 landscape frame.
+Each label targets that short-edge quality tier while preserving the source
+aspect ratio. For example, `1080p` becomes 1,920 × 1,080 for 16:9,
+1,080 × 1,920 for 9:16, 1,440 × 1,080 for 4:3, and 1,080 × 1,080 for
+square sources. Dimensions are rounded down to even numbers for H.264 and are
+capped at the source size to avoid accidental upscaling.
+Video bitrates are scaled from the 16:9 baseline by the actual output pixel
+count for non-16:9 sources.
 
 HLS segment duration is configurable with `HLS_SEGMENT_DURATION`; the local
 example uses `0.75` seconds to keep 4K Autonomi objects small and reliable on
@@ -432,7 +444,7 @@ This project uses the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) (v2.0) 
 - **`antd-mcp`** — MCP server exposing Autonomi tools to Claude (runs automatically in the devcontainer).
 - **Payment modes** — uploads use `ANTD_PAYMENT_MODE=auto` by default, which lets `antd` pick merkle batch payments for larger uploads and single payments otherwise.
 - **Wallet approval** — `rust_admin` calls wallet approval on startup when `ANTD_APPROVE_ON_STARTUP=true`, so storage writes fail fast if the configured wallet cannot pay.
-- **Segment verification** — `rust_admin` reads uploaded segment data back before publishing a video as ready. This is slower, but prevents bad segment addresses from reaching the playback catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
+- **Upload verification** — `rust_admin` reads uploaded segment data and optional original source data back before publishing a video as ready. This is slower, but prevents bad addresses from reaching the playback manifest/catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
 
 Key operations used in this project:
 
