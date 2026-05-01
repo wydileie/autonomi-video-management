@@ -244,13 +244,29 @@ _validate_admin_auth_config(
 )
 
 # Resolution presets: name -> (width, height, video_kbps, audio_kbps)
+SUPPORTED_RESOLUTIONS = [
+    "8k",
+    "4k",
+    "1440p",
+    "1080p",
+    "720p",
+    "540p",
+    "480p",
+    "360p",
+    "240p",
+    "144p",
+]
 RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
     "8k":    (7680, 4320, 45000, 320),
     "4k":    (3840, 2160, 16000, 256),
-    "360p":  (640,  360,   500, 96),
-    "480p":  (854,  480,  1000, 128),
-    "720p":  (1280, 720,  2500, 128),
+    "1440p": (2560, 1440, 8000, 192),
     "1080p": (1920, 1080, 5000, 192),
+    "720p":  (1280, 720,  2500, 128),
+    "540p":  (960,  540,  1600, 128),
+    "480p":  (854,  480,  1000, 128),
+    "360p":  (640,  360,   500, 96),
+    "240p":  (426,  240,   300, 64),
+    "144p":  (256,  144,   150, 48),
 }
 
 VideoDimensions = tuple[int, int]
@@ -952,18 +968,57 @@ def _target_dimensions_for_source(
     preset_height: int,
     source_dimensions: VideoDimensions | None,
 ) -> VideoDimensions:
-    """Orient a landscape preset to match the source display orientation."""
-    long_edge = max(preset_width, preset_height)
+    """Preserve source aspect ratio at the selected quality tier."""
     short_edge = min(preset_width, preset_height)
     if not source_dimensions:
         return preset_width, preset_height
 
     source_width, source_height = source_dimensions
     if source_height > source_width:
-        return short_edge, long_edge
+        return _fit_within_source(
+            short_edge,
+            _even_floor(short_edge * source_height / source_width),
+            source_width,
+            source_height,
+        )
     if source_width > source_height:
-        return long_edge, short_edge
-    return preset_width, preset_height
+        return _fit_within_source(
+            _even_floor(short_edge * source_width / source_height),
+            short_edge,
+            source_width,
+            source_height,
+        )
+    return _fit_within_source(short_edge, short_edge, source_width, source_height)
+
+
+def _even_floor(value: float) -> int:
+    floored = max(2, math.floor(value))
+    return max(2, floored - (floored % 2))
+
+
+def _fit_within_source(
+    width: int,
+    height: int,
+    source_width: int,
+    source_height: int,
+) -> VideoDimensions:
+    if width <= source_width and height <= source_height:
+        return width, height
+    scale = min(source_width / width, source_height / height, 1)
+    return _even_floor(width * scale), _even_floor(height * scale)
+
+
+def _target_video_bitrate_kbps(
+    base_video_kbps: int,
+    preset_width: int,
+    preset_height: int,
+    width: int,
+    height: int,
+) -> int:
+    base_pixels = preset_width * preset_height
+    if base_pixels <= 0:
+        return base_video_kbps
+    return max(64, round(base_video_kbps * ((width * height) / base_pixels)))
 
 
 def _request_source_dimensions(request: "UploadQuoteRequest") -> VideoDimensions | None:
@@ -994,7 +1049,7 @@ async def _build_upload_quote(
 
     selected = [resolution for resolution in resolutions if resolution in RESOLUTION_PRESETS]
     if not selected:
-        raise HTTPException(400, f"No valid resolutions. Choose from: {list(RESOLUTION_PRESETS)}")
+        raise HTTPException(400, f"No valid resolutions. Choose from: {SUPPORTED_RESOLUTIONS}")
 
     client = AsyncAntdClient(base_url=ANTD_URL, timeout=max(ANTD_UPLOAD_TIMEOUT_SECONDS, 60))
     quote_cache: dict[int, dict] = {}
@@ -1012,6 +1067,13 @@ async def _build_upload_quote(
                 preset_width,
                 preset_height,
                 source_dimensions,
+            )
+            video_kbps = _target_video_bitrate_kbps(
+                video_kbps,
+                preset_width,
+                preset_height,
+                width,
+                height,
             )
             full_segments = int(duration_seconds // HLS_SEGMENT_DURATION)
             remainder = duration_seconds - (full_segments * HLS_SEGMENT_DURATION)
@@ -1701,7 +1763,7 @@ async def upload_video(
     file: UploadFile = File(...),
     title: str = Form(...),
     description: str = Form(""),
-    resolutions: str = Form("720p"),  # comma-separated, e.g. "480p,720p,1080p,4k"
+    resolutions: str = Form("720p"),  # comma-separated, e.g. "360p,720p,1080p,1440p"
     show_original_filename: bool = Form(False),
     show_manifest_address: bool = Form(False),
     content_length: int | None = Header(None),
@@ -1709,7 +1771,7 @@ async def upload_video(
     """Accept a video file and queue it for transcoding + Autonomi upload."""
     selected = [r.strip() for r in resolutions.split(",") if r.strip() in RESOLUTION_PRESETS]
     if not selected:
-        raise HTTPException(400, f"No valid resolutions. Choose from: {list(RESOLUTION_PRESETS)}")
+        raise HTTPException(400, f"No valid resolutions. Choose from: {SUPPORTED_RESOLUTIONS}")
 
     multipart_overhead_allowance = 2 * 1024 * 1024
     if content_length and content_length > UPLOAD_MAX_FILE_BYTES + multipart_overhead_allowance:
@@ -2075,6 +2137,13 @@ async def _process_video(
                 preset_width,
                 preset_height,
                 source_dimensions,
+            )
+            vbitrate = _target_video_bitrate_kbps(
+                vbitrate,
+                preset_width,
+                preset_height,
+                width,
+                height,
             )
             seg_dir = job_dir / res
             seg_dir.mkdir(exist_ok=True)

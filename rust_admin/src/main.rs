@@ -48,6 +48,9 @@ const STATUS_ERROR: &str = "error";
 const DEFAULT_API_PORT: u16 = 8000;
 const CATALOG_CONTENT_TYPE: &str = "application/vnd.autonomi.video.catalog+json;v=1";
 const VIDEO_MANIFEST_CONTENT_TYPE: &str = "application/vnd.autonomi.video.manifest+json;v=1";
+const SUPPORTED_RESOLUTIONS: &[&str] = &[
+    "8k", "4k", "1440p", "1080p", "720p", "540p", "480p", "360p", "240p", "144p",
+];
 
 #[derive(Clone)]
 struct AppState {
@@ -188,6 +191,9 @@ struct UploadQuoteRequest {
     resolutions: Vec<String>,
     source_width: Option<i32>,
     source_height: Option<i32>,
+    #[serde(default)]
+    upload_original: bool,
+    source_size_bytes: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -221,6 +227,10 @@ struct VideoOut {
     is_public: bool,
     show_original_filename: bool,
     show_manifest_address: bool,
+    upload_original: bool,
+    original_file_address: Option<String>,
+    original_file_byte_size: Option<i64>,
+    publish_when_ready: bool,
     error_message: Option<String>,
     final_quote: Option<Value>,
     final_quote_created_at: Option<String>,
@@ -253,6 +263,15 @@ struct UploadQuoteVariantOut {
 }
 
 #[derive(Serialize)]
+struct UploadQuoteOriginalOut {
+    estimated_bytes: i64,
+    chunk_count: i64,
+    storage_cost_atto: String,
+    estimated_gas_cost_wei: String,
+    payment_mode: String,
+}
+
+#[derive(Serialize)]
 struct UploadQuoteOut {
     duration_seconds: f64,
     segment_duration: f64,
@@ -263,6 +282,7 @@ struct UploadQuoteOut {
     estimated_gas_cost_wei: String,
     metadata_bytes: i64,
     sampled: bool,
+    original_file: Option<UploadQuoteOriginalOut>,
     variants: Vec<UploadQuoteVariantOut>,
 }
 
@@ -916,6 +936,12 @@ async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
             is_public BOOLEAN NOT NULL DEFAULT FALSE,
             show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
             show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
+            upload_original BOOLEAN NOT NULL DEFAULT FALSE,
+            original_file_address TEXT,
+            original_file_byte_size BIGINT,
+            original_file_autonomi_cost_atto TEXT,
+            original_file_autonomi_payment_mode TEXT,
+            publish_when_ready BOOLEAN NOT NULL DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW(),
             user_id TEXT
@@ -933,7 +959,13 @@ async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
             ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ,
             ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE;
+            ADD COLUMN IF NOT EXISTS show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS upload_original BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS original_file_address TEXT,
+            ADD COLUMN IF NOT EXISTS original_file_byte_size BIGINT,
+            ADD COLUMN IF NOT EXISTS original_file_autonomi_cost_atto TEXT,
+            ADD COLUMN IF NOT EXISTS original_file_autonomi_payment_mode TEXT,
+            ADD COLUMN IF NOT EXISTS publish_when_ready BOOLEAN NOT NULL DEFAULT FALSE;
 
         CREATE TABLE IF NOT EXISTS video_variants (
             id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1112,7 +1144,9 @@ async fn admin_list_videos(
         SELECT id, title, original_filename, description, status, created_at,
                manifest_address, catalog_address, error_message, final_quote,
                final_quote_created_at, approval_expires_at,
-               is_public, show_original_filename, show_manifest_address
+               is_public, show_original_filename, show_manifest_address,
+               upload_original, original_file_address, original_file_byte_size,
+               publish_when_ready
         FROM videos
         ORDER BY created_at DESC
         "#,
@@ -1493,6 +1527,8 @@ async fn accept_upload(
     let mut description = String::new();
     let mut resolutions = String::from("720p");
     let mut show_manifest_address = false;
+    let mut upload_original = false;
+    let mut publish_when_ready = false;
     let mut original_filename: Option<String> = None;
     let mut source_path: Option<PathBuf> = None;
     let mut upload_metadata: Option<UploadMediaMetadata> = None;
@@ -1605,6 +1641,8 @@ async fn accept_upload(
                 "resolutions" => resolutions = text,
                 "show_original_filename" => {}
                 "show_manifest_address" => show_manifest_address = parse_form_bool(&text),
+                "upload_original" => upload_original = parse_form_bool(&text),
+                "publish_when_ready" => publish_when_ready = parse_form_bool(&text),
                 _ => {}
             }
         }
@@ -1621,7 +1659,7 @@ async fn accept_upload(
     if selected.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "No valid resolutions. Choose from: ['8k', '4k', '360p', '480p', '720p', '1080p']",
+            supported_resolutions_error(),
         ));
     }
     if let Some(metadata) = upload_metadata {
@@ -1638,9 +1676,10 @@ async fn accept_upload(
         INSERT INTO videos (
             id, title, original_filename, description, status, job_dir,
             job_source_path, requested_resolutions,
-            show_original_filename, show_manifest_address, user_id
+            show_original_filename, show_manifest_address,
+            upload_original, publish_when_ready, user_id
         )
-        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
         "#,
     )
     .bind(video_uuid)
@@ -1656,6 +1695,8 @@ async fn accept_upload(
     .bind(json!(selected))
     .bind(false)
     .bind(show_manifest_address)
+    .bind(upload_original)
+    .bind(publish_when_ready)
     .bind(username)
     .execute(&state.pool)
     .await
@@ -2281,7 +2322,9 @@ async fn get_db_video(
         SELECT id, title, original_filename, description, status, created_at,
                manifest_address, catalog_address, error_message, final_quote,
                final_quote_created_at, approval_expires_at,
-               is_public, show_original_filename, show_manifest_address
+               is_public, show_original_filename, show_manifest_address,
+               upload_original, original_file_address, original_file_byte_size,
+               publish_when_ready
         FROM videos WHERE id=$1
         "#,
     )
@@ -2369,6 +2412,10 @@ async fn db_video_to_out(
         is_public: row.try_get("is_public").unwrap_or(false),
         show_original_filename: row.try_get("show_original_filename").unwrap_or(false),
         show_manifest_address: row.try_get("show_manifest_address").unwrap_or(false),
+        upload_original: row.try_get("upload_original").unwrap_or(false),
+        original_file_address: row.try_get("original_file_address").ok().flatten(),
+        original_file_byte_size: row.try_get("original_file_byte_size").ok().flatten(),
+        publish_when_ready: row.try_get("publish_when_ready").unwrap_or(false),
         error_message: row.try_get("error_message").ok().flatten(),
         final_quote: row.try_get("final_quote").ok().flatten(),
         final_quote_created_at: final_quote_created_at.map(|value| value.to_rfc3339()),
@@ -2398,6 +2445,10 @@ fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<&str>) -> V
         is_public: true,
         show_original_filename: false,
         show_manifest_address,
+        upload_original: false,
+        original_file_address: None,
+        original_file_byte_size: None,
+        publish_when_ready: false,
         error_message: None,
         final_quote: None,
         final_quote_created_at: None,
@@ -2441,6 +2492,9 @@ fn manifest_to_video_out(
         .get("show_manifest_address")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let original_file = manifest
+        .get("original_file")
+        .filter(|value| value.is_object());
     let video_id = string_field(manifest, "id");
     VideoOut {
         id: video_id.clone(),
@@ -2472,6 +2526,23 @@ fn manifest_to_video_out(
             show_original_filename
         },
         show_manifest_address,
+        upload_original: original_file.is_some(),
+        original_file_address: if public {
+            None
+        } else {
+            original_file
+                .and_then(|value| value.get("autonomi_address"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        },
+        original_file_byte_size: if public {
+            None
+        } else {
+            original_file
+                .and_then(|value| value.get("byte_size"))
+                .and_then(Value::as_i64)
+        },
+        publish_when_ready: false,
         error_message: None,
         final_quote: None,
         final_quote_created_at: None,
@@ -2533,6 +2604,8 @@ fn apply_catalog_visibility(
     } else {
         None
     };
+    video.original_file_address = None;
+    video.original_file_byte_size = None;
 }
 
 fn schedule_processing_job(
@@ -2618,6 +2691,8 @@ async fn process_video_inner(
         };
         let (width, height) =
             target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+        let video_kbps =
+            target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
         let seg_dir = job_dir.join(resolution);
         fs::create_dir_all(&seg_dir).map_err(|err| {
             ApiError::new(
@@ -2771,6 +2846,25 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         payment_mode: String,
     }
 
+    let video_row = sqlx::query(
+        r#"
+        SELECT upload_original, job_source_path
+        FROM videos
+        WHERE id=$1
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
+    let upload_original = video_row.try_get("upload_original").unwrap_or(false);
+    let original_source_path: Option<PathBuf> = video_row
+        .try_get::<Option<String>, _>("job_source_path")
+        .ok()
+        .flatten()
+        .map(PathBuf::from);
+
     let rows = sqlx::query(
         r#"
         SELECT v.id AS variant_id, v.resolution, v.width, v.height, v.total_duration,
@@ -2892,6 +2986,7 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
     let mut total_bytes = 0_i64;
     let mut total_chunks = 0_i64;
     let mut max_duration = 0.0_f64;
+    let mut original_file_quote = None;
 
     for result in results {
         let variant_id = result.variant_id;
@@ -2921,6 +3016,54 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         if let Some(duration) = result.total_duration {
             max_duration = max_duration.max(duration);
         }
+    }
+    let actual_transcoded_bytes = total_bytes;
+
+    if upload_original {
+        let path = original_source_path.ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Original source file is missing from disk",
+            )
+        })?;
+        if !path.exists() {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Original source file is missing from disk: {}",
+                    path.display()
+                ),
+            ));
+        }
+        let data = tokio_fs::read(&path).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not read original source file: {err}"),
+            )
+        })?;
+        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Could not get final Autonomi price quote for original file: {err}"),
+            )
+        })?;
+        let storage_cost = parse_cost_i64(estimate.cost.as_deref());
+        let gas_cost = parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref());
+        let chunk_count = estimate.chunk_count.unwrap_or(0);
+        let payment_mode = estimate
+            .payment_mode
+            .unwrap_or_else(|| state.config.antd_payment_mode.clone());
+        total_storage_cost += storage_cost;
+        total_gas_cost += gas_cost;
+        total_bytes += data.len() as i64;
+        total_chunks += chunk_count;
+        original_file_quote = Some(json!({
+            "byte_size": data.len() as i64,
+            "chunk_count": chunk_count,
+            "storage_cost_atto": storage_cost.to_string(),
+            "estimated_gas_cost_wei": gas_cost.to_string(),
+            "payment_mode": payment_mode,
+        }));
     }
 
     let manifest_bytes = 4096 + (variants.len() as i64 * 1024) + (rows.len() as i64 * 220);
@@ -2958,11 +3101,13 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         "payment_mode": state.config.antd_payment_mode.clone(),
         "estimated_bytes": total_bytes,
         "actual_media_bytes": total_bytes - (manifest_bytes + catalog_bytes),
+        "actual_transcoded_bytes": actual_transcoded_bytes,
         "segment_count": rows.len(),
         "chunk_count": total_chunks,
         "storage_cost_atto": total_storage_cost.to_string(),
         "estimated_gas_cost_wei": total_gas_cost.to_string(),
         "metadata_bytes": manifest_bytes + catalog_bytes,
+        "original_file": original_file_quote,
         "sampled": metadata_quote.sampled,
         "approval_ttl_seconds": state.config.final_quote_approval_ttl_seconds,
         "variants": variant_values,
@@ -2974,7 +3119,10 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
     let video_row = sqlx::query(
         r#"
         SELECT title, original_filename, description, created_at, job_dir,
-               show_original_filename, show_manifest_address
+               job_source_path, show_original_filename, show_manifest_address,
+               upload_original, original_file_address, original_file_byte_size,
+               original_file_autonomi_cost_atto, original_file_autonomi_payment_mode,
+               publish_when_ready
         FROM videos WHERE id=$1
         "#,
     )
@@ -2990,6 +3138,13 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
     })?;
 
     let job_dir: Option<String> = video_row.try_get("job_dir").ok().flatten();
+    let upload_original = video_row.try_get("upload_original").unwrap_or(false);
+    let publish_when_ready = video_row.try_get("publish_when_ready").unwrap_or(false);
+    let original_file = if upload_original {
+        upload_original_file_if_needed(state, video_uuid, video_id, &video_row).await?
+    } else {
+        None
+    };
     let mut manifest = json!({
         "schema_version": 1,
         "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
@@ -3005,6 +3160,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         "updated_at": Utc::now().to_rfc3339(),
         "show_original_filename": false,
         "show_manifest_address": video_row.try_get::<bool, _>("show_manifest_address").unwrap_or(false),
+        "original_file": original_file.unwrap_or(Value::Null),
         "variants": [],
     });
 
@@ -3237,14 +3393,144 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         catalog_address.as_deref(),
     )
     .await?;
+    let mut is_public = false;
+    if publish_when_ready {
+        set_publication(
+            state,
+            video_id,
+            true,
+            Some(&manifest_address),
+            catalog_address.as_deref(),
+        )
+        .await?;
+        let epoch = refresh_local_catalog_from_db(state, "auto-publish").await?;
+        schedule_catalog_publish(state.clone(), epoch, format!("auto-publish:{video_id}"));
+        is_public = true;
+    }
     if let Some(job_dir) = job_dir {
         let _ = fs::remove_dir_all(job_dir);
     }
     info!(
-        "Video {} is ready manifest={} catalog={:?} public=false",
-        video_id, manifest_address, catalog_address
+        "Video {} is ready manifest={} catalog={:?} public={}",
+        video_id, manifest_address, catalog_address, is_public
     );
     Ok(())
+}
+
+async fn upload_original_file_if_needed(
+    state: &AppState,
+    video_uuid: Uuid,
+    video_id: &str,
+    video_row: &sqlx::postgres::PgRow,
+) -> Result<Option<Value>, ApiError> {
+    if let Some(address) = video_row
+        .try_get::<Option<String>, _>("original_file_address")
+        .ok()
+        .flatten()
+    {
+        return Ok(Some(json!({
+            "autonomi_address": address,
+            "byte_size": video_row
+                .try_get::<Option<i64>, _>("original_file_byte_size")
+                .ok()
+                .flatten(),
+            "autonomi_cost_atto": video_row
+                .try_get::<Option<String>, _>("original_file_autonomi_cost_atto")
+                .ok()
+                .flatten(),
+            "payment_mode": video_row
+                .try_get::<Option<String>, _>("original_file_autonomi_payment_mode")
+                .ok()
+                .flatten(),
+        })));
+    }
+
+    let source_path = video_row
+        .try_get::<Option<String>, _>("job_source_path")
+        .ok()
+        .flatten()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Original source file is missing from disk",
+            )
+        })?;
+    if !source_path.exists() {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "Original source file is missing from disk: {}",
+                source_path.display()
+            ),
+        ));
+    }
+
+    let data = tokio_fs::read(&source_path).await.map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not read original source file: {err}"),
+        )
+    })?;
+    let byte_size = data.len() as i64;
+    let filename = video_row
+        .try_get::<String, _>("original_filename")
+        .unwrap_or_else(|_| "source".to_string());
+    let result = put_public_verified_with_mode(
+        state,
+        &data,
+        &format!("{video_id}/original/{filename}"),
+        &state.config.antd_payment_mode,
+    )
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE videos
+        SET original_file_address=$1,
+            original_file_byte_size=$2,
+            original_file_autonomi_cost_atto=$3,
+            original_file_autonomi_payment_mode=$4,
+            updated_at=NOW()
+        WHERE id=$5
+        "#,
+    )
+    .bind(&result.address)
+    .bind(byte_size)
+    .bind(result.cost.as_deref())
+    .bind(&state.config.antd_payment_mode)
+    .bind(video_uuid)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    Ok(Some(json!({
+        "autonomi_address": result.address,
+        "byte_size": byte_size,
+        "autonomi_cost_atto": result.cost,
+        "payment_mode": state.config.antd_payment_mode.clone(),
+    })))
+}
+
+fn original_file_manifest_from_row(row: &sqlx::postgres::PgRow) -> Option<Value> {
+    let address = row
+        .try_get::<Option<String>, _>("original_file_address")
+        .ok()
+        .flatten()?;
+    Some(json!({
+        "autonomi_address": address,
+        "byte_size": row
+            .try_get::<Option<i64>, _>("original_file_byte_size")
+            .ok()
+            .flatten(),
+        "autonomi_cost_atto": row
+            .try_get::<Option<String>, _>("original_file_autonomi_cost_atto")
+            .ok()
+            .flatten(),
+        "payment_mode": row
+            .try_get::<Option<String>, _>("original_file_autonomi_payment_mode")
+            .ok()
+            .flatten(),
+    }))
 }
 
 async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Result<Value, ApiError> {
@@ -3252,7 +3538,9 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
     let video_row = sqlx::query(
         r#"
         SELECT title, original_filename, description, created_at,
-               show_original_filename, show_manifest_address
+               show_original_filename, show_manifest_address,
+               upload_original, original_file_address, original_file_byte_size,
+               original_file_autonomi_cost_atto, original_file_autonomi_payment_mode
         FROM videos WHERE id=$1
         "#,
     )
@@ -3344,6 +3632,7 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
         "show_manifest_address": video_row
             .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
+        "original_file": original_file_manifest_from_row(&video_row).unwrap_or(Value::Null),
         "variants": manifest_variants,
     }))
 }
@@ -3357,7 +3646,8 @@ async fn build_catalog_entry_from_db(
     let video_row = sqlx::query(
         r#"
         SELECT title, original_filename, description, created_at,
-               show_original_filename, show_manifest_address
+               show_original_filename, show_manifest_address,
+               upload_original, original_file_address, original_file_byte_size
         FROM videos WHERE id=$1
         "#,
     )
@@ -4033,12 +4323,44 @@ fn resolution_preset(resolution: &str) -> Option<(i32, i32, i32, i32)> {
     match resolution {
         "8k" => Some((7680, 4320, 45000, 320)),
         "4k" => Some((3840, 2160, 16000, 256)),
-        "360p" => Some((640, 360, 500, 96)),
-        "480p" => Some((854, 480, 1000, 128)),
-        "720p" => Some((1280, 720, 2500, 128)),
+        "1440p" => Some((2560, 1440, 8000, 192)),
         "1080p" => Some((1920, 1080, 5000, 192)),
+        "720p" => Some((1280, 720, 2500, 128)),
+        "540p" => Some((960, 540, 1600, 128)),
+        "480p" => Some((854, 480, 1000, 128)),
+        "360p" => Some((640, 360, 500, 96)),
+        "240p" => Some((426, 240, 300, 64)),
+        "144p" => Some((256, 144, 150, 48)),
         _ => None,
     }
+}
+
+fn supported_resolutions_error() -> String {
+    let values = SUPPORTED_RESOLUTIONS
+        .iter()
+        .map(|resolution| format!("'{resolution}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("No valid resolutions. Choose from: [{values}]")
+}
+
+fn even_floor(value: f64) -> i32 {
+    let floored = value.floor().max(2.0) as i32;
+    let even = floored - floored.rem_euclid(2);
+    even.max(2)
+}
+
+fn fit_within_source(width: i32, height: i32, source_width: i32, source_height: i32) -> (i32, i32) {
+    if width <= source_width && height <= source_height {
+        return (width, height);
+    }
+    let scale = (f64::from(source_width) / f64::from(width))
+        .min(f64::from(source_height) / f64::from(height))
+        .min(1.0);
+    (
+        even_floor(f64::from(width) * scale),
+        even_floor(f64::from(height) * scale),
+    )
 }
 
 fn target_dimensions_for_source(
@@ -4046,18 +4368,39 @@ fn target_dimensions_for_source(
     preset_height: i32,
     source_dimensions: Option<(i32, i32)>,
 ) -> (i32, i32) {
-    let long_edge = preset_width.max(preset_height);
     let short_edge = preset_width.min(preset_height);
     let Some((source_width, source_height)) = source_dimensions else {
         return (preset_width, preset_height);
     };
     if source_height > source_width {
-        (short_edge, long_edge)
+        let width = short_edge;
+        let height =
+            even_floor(f64::from(short_edge) * f64::from(source_height) / f64::from(source_width));
+        fit_within_source(width, height, source_width, source_height)
     } else if source_width > source_height {
-        (long_edge, short_edge)
+        let width =
+            even_floor(f64::from(short_edge) * f64::from(source_width) / f64::from(source_height));
+        let height = short_edge;
+        fit_within_source(width, height, source_width, source_height)
     } else {
-        (preset_width, preset_height)
+        fit_within_source(short_edge, short_edge, source_width, source_height)
     }
+}
+
+fn target_video_bitrate_kbps(
+    base_video_kbps: i32,
+    preset_width: i32,
+    preset_height: i32,
+    width: i32,
+    height: i32,
+) -> i32 {
+    let base_pixels = i64::from(preset_width) * i64::from(preset_height);
+    if base_pixels <= 0 {
+        return base_video_kbps;
+    }
+    let target_pixels = i64::from(width) * i64::from(height);
+    let scaled = (f64::from(base_video_kbps) * target_pixels as f64 / base_pixels as f64).round();
+    even_floor(scaled.max(64.0))
 }
 
 fn estimate_transcoded_bytes(seconds: f64, video_kbps: i32, audio_kbps: i32, overhead: f64) -> i64 {
@@ -4181,6 +4524,23 @@ async fn build_upload_quote(
             "Video duration exceeds upload limit",
         ));
     }
+    if request.upload_original {
+        match request.source_size_bytes {
+            Some(size) if size > 0 => {}
+            Some(_) => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "source_size_bytes must be greater than zero when upload_original is true",
+                ))
+            }
+            None => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "source_size_bytes must be provided when upload_original is true",
+                ))
+            }
+        }
+    }
 
     let selected: Vec<_> = request
         .resolutions
@@ -4192,7 +4552,7 @@ async fn build_upload_quote(
     if selected.is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            "No valid resolutions. Choose from: ['8k', '4k', '360p', '480p', '720p', '1080p']",
+            supported_resolutions_error(),
         ));
     }
 
@@ -4203,10 +4563,13 @@ async fn build_upload_quote(
     let mut total_bytes = 0_i64;
     let mut total_segments = 0_i64;
     let mut any_sampled = false;
+    let mut original_file = None;
 
     for (resolution, (preset_width, preset_height, video_kbps, audio_kbps)) in selected {
         let (width, height) =
             target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+        let video_kbps =
+            target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
         let full_segments =
             (request.duration_seconds / state.config.hls_segment_duration).floor() as i64;
         let mut remainder =
@@ -4264,6 +4627,22 @@ async fn build_upload_quote(
         total_segments += segment_count;
     }
 
+    if request.upload_original {
+        let source_size_bytes = request.source_size_bytes.unwrap_or_default();
+        let quote = quote_data_size(state, source_size_bytes, &mut quote_cache).await?;
+        total_storage_cost += quote.storage_cost_atto;
+        total_gas_cost += quote.estimated_gas_cost_wei;
+        total_bytes += source_size_bytes;
+        any_sampled = any_sampled || quote.sampled;
+        original_file = Some(UploadQuoteOriginalOut {
+            estimated_bytes: source_size_bytes,
+            chunk_count: quote.chunk_count,
+            storage_cost_atto: quote.storage_cost_atto.to_string(),
+            estimated_gas_cost_wei: quote.estimated_gas_cost_wei.to_string(),
+            payment_mode: quote.payment_mode,
+        });
+    }
+
     let manifest_bytes = 4096 + (variants.len() as i64 * 1024) + (total_segments * 220);
     let catalog_bytes = 2048 + (variants.len() as i64 * 512);
     let metadata_quote =
@@ -4283,6 +4662,7 @@ async fn build_upload_quote(
         estimated_gas_cost_wei: total_gas_cost.to_string(),
         metadata_bytes: manifest_bytes + catalog_bytes,
         sampled: any_sampled,
+        original_file,
         variants,
     })
 }
@@ -4326,6 +4706,18 @@ mod tests {
             target_dimensions_for_source(1920, 1080, Some((1920, 1080))),
             (1920, 1080)
         );
+        assert_eq!(
+            target_dimensions_for_source(1920, 1080, Some((1600, 1200))),
+            (1440, 1080)
+        );
+        assert_eq!(
+            target_dimensions_for_source(1920, 1080, Some((1080, 1080))),
+            (1080, 1080)
+        );
+        assert_eq!(
+            target_dimensions_for_source(2560, 1440, Some((3440, 1440))),
+            (3440, 1440)
+        );
     }
 
     #[test]
@@ -4355,8 +4747,8 @@ mod tests {
     #[test]
     fn parses_only_supported_resolutions() {
         assert_eq!(
-            parse_resolutions("720p, nope,1080p,4k"),
-            vec!["720p", "1080p", "4k"]
+            parse_resolutions("720p, nope,1440p,1080p,4k"),
+            vec!["720p", "1440p", "1080p", "4k"]
         );
     }
 }

@@ -4,7 +4,7 @@ Single-page React application for uploading videos, monitoring processing status
 
 ## Features
 
-- **Upload panel** — drag/drop or select a video file, inspect its source resolution in-browser, pick one or more tiers (8K / 4K / 1080P / 720p / 480P / 360P), and submit. Shows a real upload progress bar and then a "processing" indicator while FFmpeg + Autonomi upload runs server-side.
+- **Upload panel** — drag/drop or select a video file, inspect its source resolution in-browser, pick one or more standard adaptive tiers from 8K down to 144p, optionally store the original source file, optionally auto-publish when ready, and submit. Shows a real upload progress bar and then a "processing" indicator while FFmpeg + Autonomi upload runs server-side.
 - **Video library** — lists all videos with status badges (`pending`, `processing`, `ready`, `error`). Auto-polls every 5 seconds while any video is still processing.
 - **Inline player** — click a video row to expand it, choose a resolution, and play directly in the browser using [hls.js](https://github.com/video-dev/hls.js). The player streams from the Rust streaming service which proxies segments from the Autonomi network.
 
@@ -89,6 +89,6 @@ src/
 | Component | Description |
 |---|---|
 | `App` | Root: tab state (Library / Upload), nav bar |
-| `UploadPanel` | File input, title/description fields, resolution checkboxes, upload progress |
+| `UploadPanel` | File input, title/description fields, resolution and upload option checkboxes, upload progress |
 | `Library` | Video list table, status polling, row expand, resolution selector |
 | `VideoPlayer` | hls.js wrapper; attaches/detaches on mount/unmount |

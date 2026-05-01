@@ -15,10 +15,14 @@ const RESUME_DURATION_TOLERANCE_SECONDS = 0.25;
 const RESOLUTION_OPTIONS = [
   { value: "8k", label: "8K", width: 7680, height: 4320, bitrate: "~45 Mbps", note: "maximum archive" },
   { value: "4k", label: "4K", width: 3840, height: 2160, bitrate: "~16 Mbps", note: "ultra HD" },
+  { value: "1440p", label: "1440P", width: 2560, height: 1440, bitrate: "~8 Mbps", note: "quad HD" },
   { value: "1080p", label: "1080P", width: 1920, height: 1080, bitrate: "~5 Mbps", note: "full HD" },
   { value: "720p", label: "720p", width: 1280, height: 720, bitrate: "~2.5 Mbps", note: "HD" },
+  { value: "540p", label: "540p", width: 960, height: 540, bitrate: "~1.6 Mbps", note: "qHD" },
   { value: "480p", label: "480P", width: 854, height: 480, bitrate: "~1 Mbps", note: "mobile" },
   { value: "360p", label: "360P", width: 640, height: 360, bitrate: "~500 kbps", note: "low bandwidth" },
+  { value: "240p", label: "240p", width: 426, height: 240, bitrate: "~300 kbps", note: "very low bandwidth" },
+  { value: "144p", label: "144p", width: 256, height: 144, bitrate: "~150 kbps", note: "minimum preview" },
 ];
 
 function formatBytes(bytes) {
@@ -68,25 +72,53 @@ function orderedSelection(selected) {
 
 function classifyResolution(width, height) {
   if (!width || !height) return null;
-  const longEdge = Math.max(width, height);
   const shortEdge = Math.min(width, height);
   return RESOLUTION_OPTIONS.find((option) => (
-    longEdge >= option.width * 0.92 || shortEdge >= option.height * 0.92
+    shortEdge >= Math.min(option.width, option.height) * 0.92
   )) || RESOLUTION_OPTIONS[RESOLUTION_OPTIONS.length - 1];
 }
 
 function optionFitsSource(option, meta) {
   if (!meta?.width || !meta?.height) return true;
-  const longEdge = Math.max(meta.width, meta.height);
   const shortEdge = Math.min(meta.width, meta.height);
-  return longEdge >= option.width * 0.92 || shortEdge >= option.height * 0.92;
+  return shortEdge >= Math.min(option.width, option.height) * 0.92;
+}
+
+function evenFloor(value) {
+  const floored = Math.floor(value);
+  return Math.max(2, floored - (floored % 2));
+}
+
+function fitWithinSource(width, height, sourceWidth, sourceHeight) {
+  if (width <= sourceWidth && height <= sourceHeight) return { width, height };
+  const scale = Math.min(sourceWidth / width, sourceHeight / height, 1);
+  return {
+    width: evenFloor(width * scale),
+    height: evenFloor(height * scale),
+  };
 }
 
 function targetDimensionsForMeta(option, meta) {
-  const longEdge = Math.max(option.width, option.height);
   const shortEdge = Math.min(option.width, option.height);
-  if (meta?.height > meta?.width) return { width: shortEdge, height: longEdge };
-  if (meta?.width > meta?.height) return { width: longEdge, height: shortEdge };
+  if (meta?.height > meta?.width) {
+    return fitWithinSource(
+      shortEdge,
+      evenFloor((shortEdge * meta.height) / meta.width),
+      meta.width,
+      meta.height,
+    );
+  }
+  if (meta?.width > meta?.height) {
+    return fitWithinSource(
+      evenFloor((shortEdge * meta.width) / meta.height),
+      shortEdge,
+      meta.width,
+      meta.height,
+    );
+  }
+  if (meta?.width && meta?.height) {
+    return fitWithinSource(shortEdge, shortEdge, meta.width, meta.height);
+  }
   return { width: option.width, height: option.height };
 }
 
@@ -360,6 +392,8 @@ function UploadPanel({ token, onUploaded }) {
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [showManifestAddress, setShowManifestAddress] = useState(false);
+  const [uploadOriginal, setUploadOriginal] = useState(false);
+  const [publishWhenReady, setPublishWhenReady] = useState(false);
   const [selected, setSelected] = useState(["720p"]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -417,12 +451,17 @@ function UploadPanel({ token, onUploaded }) {
       const resolutions = orderedSelection(selected);
       setQuote({ loading: true, error: "", data: null });
       try {
-        const res = await axios.post(`${API}/videos/upload/quote`, {
+        const quoteRequest = {
           duration_seconds: meta.duration,
           resolutions,
           source_width: meta.width,
           source_height: meta.height,
-        }, {
+        };
+        if (uploadOriginal) {
+          quoteRequest.upload_original = true;
+          quoteRequest.source_size_bytes = file.size;
+        }
+        const res = await axios.post(`${API}/videos/upload/quote`, quoteRequest, {
           headers: authHeaders(token),
           signal: controller.signal,
         });
@@ -441,7 +480,7 @@ function UploadPanel({ token, onUploaded }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [file, meta?.duration, meta?.width, meta?.height, selected, token]);
+  }, [file, meta?.duration, meta?.width, meta?.height, selected, token, uploadOriginal]);
 
   const onDrop = (event) => {
     event.preventDefault();
@@ -487,6 +526,8 @@ function UploadPanel({ token, onUploaded }) {
     fd.append("resolutions", resolutionsToUpload.join(","));
     fd.append("show_original_filename", "false");
     fd.append("show_manifest_address", showManifestAddress ? "true" : "false");
+    fd.append("upload_original", uploadOriginal ? "true" : "false");
+    fd.append("publish_when_ready", publishWhenReady ? "true" : "false");
 
     try {
       const res = await axios.post(`${API}/videos/upload`, fd, {
@@ -501,6 +542,8 @@ function UploadPanel({ token, onUploaded }) {
       setTitle("");
       setDesc("");
       setShowManifestAddress(false);
+      setUploadOriginal(false);
+      setPublishWhenReady(false);
       setSelected(["720p"]);
       setMeta(null);
       setQuote({ loading: false, error: "", data: null });
@@ -604,6 +647,27 @@ function UploadPanel({ token, onUploaded }) {
             />
             <span>Publish manifest address</span>
           </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={uploadOriginal}
+              onChange={(event) => {
+                setUploadOriginal(event.target.checked);
+                setQuote({ loading: false, error: "", data: null });
+              }}
+              disabled={uploading}
+            />
+            <span>Upload original source file</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={publishWhenReady}
+              onChange={(event) => setPublishWhenReady(event.target.checked)}
+              disabled={uploading}
+            />
+            <span>Publish automatically when ready</span>
+          </label>
         </div>
 
         <div className="resolution-toolbar">
@@ -652,7 +716,7 @@ function UploadPanel({ token, onUploaded }) {
               )}
               <p>
                 {quote.data
-                  ? `${formatBytes(quote.data.estimated_bytes)} across ${quote.data.segment_count} HLS segments and metadata`
+                  ? `${formatBytes(quote.data.estimated_bytes)} across ${quote.data.segment_count} HLS segments${quote.data.original_file ? ", original file," : ""} and metadata`
                   : quote.error || "The estimate refreshes when renditions change."}
               </p>
             </div>
@@ -660,6 +724,7 @@ function UploadPanel({ token, onUploaded }) {
               <div className="quote-breakdown">
                 <span>{formatWei(quote.data.estimated_gas_cost_wei)}</span>
                 <span>{quote.data.payment_mode} payment mode</span>
+                {quote.data.original_file && <span>{formatBytes(quote.data.original_file.estimated_bytes)} original source</span>}
                 {quote.data.sampled && <span>large segment estimate sampled</span>}
               </div>
             )}
@@ -690,6 +755,8 @@ function FinalQuotePanel({ quote, expiresAt, onApprove, approving }) {
   if (!quote) {
     return <p className="muted">Preparing the final quote from transcoded segments...</p>;
   }
+  const originalBytes = quote.original_file?.byte_size || quote.original_file?.estimated_bytes || 0;
+  const transcodedBytes = quote.actual_transcoded_bytes || quote.actual_media_bytes || quote.estimated_bytes;
 
   return (
     <div className="quote-panel final-quote-panel">
@@ -697,13 +764,16 @@ function FinalQuotePanel({ quote, expiresAt, onApprove, approving }) {
         <span className="meta-label">Final Autonomi quote</span>
         <strong>{formatAttoTokens(quote.storage_cost_atto)}</strong>
         <p>
-          {formatBytes(quote.actual_media_bytes || quote.estimated_bytes)} of transcoded media
+          {originalBytes
+            ? `${formatBytes(transcodedBytes)} transcoded media plus ${formatBytes(originalBytes)} original source`
+            : `${formatBytes(transcodedBytes)} of transcoded media`}
           across {quote.segment_count} HLS segments. Approval expires {formatDateTime(expiresAt || quote.approval_expires_at)}.
         </p>
       </div>
       <div className="quote-breakdown">
         <span>{formatWei(quote.estimated_gas_cost_wei)}</span>
         <span>{formatBytes(quote.metadata_bytes)} metadata estimate</span>
+        {originalBytes > 0 && <span>{formatBytes(originalBytes)} original source</span>}
         <span>{quote.payment_mode} payment mode</span>
       </div>
       <button type="button" className="approve-action" onClick={onApprove} disabled={approving}>
@@ -1036,7 +1106,12 @@ function Library({ admin = false, token = "" }) {
                 )}
                 {(admin || detail.manifest_address) && (
                   <div className="detail-footer">
-                    <code>{detail.manifest_address || "Manifest hidden or pending"}</code>
+                    <div className="detail-addresses">
+                      <code>{detail.manifest_address || "Manifest hidden or pending"}</code>
+                      {admin && detail.original_file_address && (
+                        <code>Original source: {detail.original_file_address}</code>
+                      )}
+                    </div>
                     {admin && (
                       <button type="button" className="danger-action" onClick={(event) => deleteVideo(video.id, event)}>
                         Delete
