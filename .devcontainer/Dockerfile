@@ -6,11 +6,10 @@ ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/opt/venv/bin:${PATH}:/opt/mssql-tools18/bin:${CARGO_HOME}/bin"
 
-# Keep the Autonomi toolchain on a single saorsa-core protocol line.
-# ant-sdk/antd currently pins saorsa-core 0.23.1; these refs match that line.
-ARG AUTONOMI_ANT_SDK_REF=2ed9b14bda42fbdc604a173cc1af27be0964908f
-ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.1.6
-ARG AUTONOMI_ANT_NODE_REF=v0.10.1
+# Keep the Autonomi toolchain on a single ant-node/protocol line.
+ARG AUTONOMI_ANT_SDK_REF=v0.5.1
+ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.2.1
+ARG AUTONOMI_ANT_NODE_REF=v0.11.0
 
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
