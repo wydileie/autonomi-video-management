@@ -1,8 +1,8 @@
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
 FROM rust:1.95-slim-bookworm AS builder
 
-ARG AUTONOMI_ANT_SDK_REF=2ed9b14bda42fbdc604a173cc1af27be0964908f
-ARG AUTONOMI_ANT_NODE_REF=v0.10.1
+ARG AUTONOMI_ANT_SDK_REF=v0.5.1
+ARG AUTONOMI_ANT_NODE_REF=v0.11.0
 
 RUN apt-get update && apt-get install -y \
     build-essential \
