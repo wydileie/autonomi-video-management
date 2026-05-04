@@ -859,33 +859,10 @@ fn validate_admin_auth_config(
     Ok(())
 }
 
-fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
-    let origin = origin.trim().trim_end_matches('/');
-    if origin == "*" {
-        anyhow::bail!("CORS_ALLOWED_ORIGINS must list explicit origins, not '*'.");
-    }
-    let host = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .ok_or_else(|| anyhow::anyhow!("CORS origins must start with http:// or https://"))?;
-    if host.is_empty() || host.contains('/') || host.contains('?') || host.contains('#') {
-        anyhow::bail!("CORS origins must not include paths, queries, fragments, or wildcards");
-    }
-    Ok(origin.to_string())
-}
-
 fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
     let raw = env::var("CORS_ALLOWED_ORIGINS")
         .unwrap_or_else(|_| "http://localhost,http://127.0.0.1".into());
-    raw.split(',')
-        .map(str::trim)
-        .filter(|origin| !origin.is_empty())
-        .map(|origin| {
-            let origin = normalize_cors_origin(origin)?;
-            HeaderValue::from_str(&origin)
-                .map_err(|err| anyhow::anyhow!("invalid CORS origin '{}': {}", origin, err))
-        })
-        .collect()
+    autvid_common::parse_cors_allowed_origins(&raw)
 }
 
 fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
@@ -5646,11 +5623,11 @@ mod tests {
     #[test]
     fn normalizes_cors_origin_without_paths_or_wildcards() {
         assert_eq!(
-            normalize_cors_origin("http://localhost:5173/").unwrap(),
+            autvid_common::normalize_cors_origin("http://localhost:5173/").unwrap(),
             "http://localhost:5173"
         );
-        assert!(normalize_cors_origin("*").is_err());
-        assert!(normalize_cors_origin("http://localhost/app").is_err());
+        assert!(autvid_common::normalize_cors_origin("*").is_err());
+        assert!(autvid_common::normalize_cors_origin("http://localhost/app").is_err());
     }
 
     #[test]

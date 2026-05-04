@@ -2,7 +2,8 @@ services:
   antd:
     image: autonomi-video-management-antd-service
     build:
-      context: ./antd_service
+      context: .
+      dockerfile: antd_service/Dockerfile
     container_name: antd_daemon
     environment:
       AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY}"

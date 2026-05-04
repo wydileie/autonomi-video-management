@@ -11,10 +11,20 @@ WORKDIR /app
 
 # Cache dependencies before copying source
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main(){}" > src/main.rs && cargo build --release && rm -rf src
+COPY common/Cargo.toml common/Cargo.toml
+COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
+COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
+COPY antd_service/Cargo.toml antd_service/Cargo.toml
+RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src && \
+    echo "" > common/src/lib.rs && \
+    echo "fn main(){}" > rust_admin/src/main.rs && \
+    echo "fn main(){}" > rust_stream/src/main.rs && \
+    echo "fn main(){}" > antd_service/src/main.rs && \
+    cargo build --release -p rust_stream
 
-COPY src ./src
-RUN touch src/main.rs && cargo build --release
+COPY common/src common/src
+COPY rust_stream/src rust_stream/src
+RUN touch common/src/lib.rs rust_stream/src/main.rs && cargo build --release -p rust_stream
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim

@@ -1,0 +1,13 @@
+.autvid
+.git
+.tmp
+**/target
+**/node_modules
+react_frontend/dist
+coverage
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.local-public.example
+!.env.production.example
