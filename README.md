@@ -419,7 +419,7 @@ autonomi-video-management/
 ├── rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
-│   └── src/main.rs             # Axum: HLS manifest + Autonomi segment proxy
+│   └── src/                    # Axum stream API split into config, cache, HLS, routes, and antd client
 ├── react_frontend/
 │   ├── Dockerfile
 │   ├── index.html
