@@ -107,11 +107,7 @@
       "extensions": [
         "ms-azuretools.vscode-docker",
         "github.vscode-pull-request-github",
-        "ms-toolsai.jupyter",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
-        "ms-python.python",
-        "charliermarsh.ruff",
-        "ms-python.debugpy",
         "mechatroner.rainbow-csv",
         "redhat.vscode-xml",
         "redhat.vscode-yaml",
@@ -190,18 +186,11 @@
             "command": "antd-mcp"
           }
         }
-      },
-      "python.linting.enabled": true,
-      "python.linting.ruffEnabled": true,
-      "python.formatting.provider": "none",
-      "[python]": {
-        "editor.defaultFormatter": "charliermarsh.ruff",
-        "editor.formatOnSave": true
       }
     }
   },
   "forwardPorts": [80, 3000, 5000, 5432, 8000, 8080, 8081, 8082, 50051],
-  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt 2>/dev/null || true && python3 .devcontainer/setup_claude.py",
+  "postCreateCommand": "python3 .devcontainer/setup_claude.py",
   "postStartCommand": "bash .devcontainer/post_start.sh",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",

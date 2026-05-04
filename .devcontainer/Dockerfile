@@ -45,13 +45,13 @@ tcpdump \
 ffmpeg \
 && rm -rf /var/lib/apt/lists/*
 
-# Install Python development tools and Node.js 24 core tooling
+# Install Node.js 24 and the Python package runner used by MCP helpers.
 RUN mkdir -p /etc/apt/keyrings \
 && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
 && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
 && apt-get update \
 && apt-get install -y nodejs \
-&& pip install --no-cache-dir uv pre-commit ruff black \
+&& pip install --no-cache-dir uv \
 && ln -s /usr/bin/fdfind /usr/local/bin/fd \
 && ln -s /usr/bin/batcat /usr/local/bin/bat \
 && rm -rf /var/lib/apt/lists/*
