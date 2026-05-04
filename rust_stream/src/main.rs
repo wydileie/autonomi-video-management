@@ -31,7 +31,7 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use linked_hash_map::LinkedHashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -59,7 +59,11 @@ struct AppCache {
     catalogs: Mutex<HashMap<String, CachedValue<Catalog>>>,
     manifests: Mutex<HashMap<String, CachedValue<VideoManifest>>>,
     segments: Mutex<SegmentCache>,
+    segment_fetches: Mutex<HashMap<String, SegmentFetchReceiver>>,
 }
+
+type SegmentFetchResult = Option<Result<Vec<u8>, String>>;
+type SegmentFetchReceiver = watch::Receiver<SegmentFetchResult>;
 
 struct CachedValue<T> {
     value: T,
@@ -212,6 +216,7 @@ impl AppCache {
                 config.segment_max_bytes,
                 config.segment_ttl,
             )),
+            segment_fetches: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -795,23 +800,62 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
 }
 
 async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Vec<u8>, String> {
-    {
-        let mut segments = state.cache.segments.lock().await;
-        if let Some(data) = segments.get(segment_address) {
-            return Ok(data);
+    loop {
+        {
+            let mut segments = state.cache.segments.lock().await;
+            if let Some(data) = segments.get(segment_address) {
+                return Ok(data);
+            }
+        }
+
+        let maybe_receiver = {
+            let mut fetches = state.cache.segment_fetches.lock().await;
+            if let Some(receiver) = fetches.get(segment_address) {
+                Some(receiver.clone())
+            } else {
+                let (sender, receiver) = watch::channel(None);
+                fetches.insert(segment_address.to_string(), receiver);
+                drop(fetches);
+
+                let result = fetch_segment_data_uncached(state, segment_address).await;
+                let _ = sender.send(Some(result.clone()));
+                state
+                    .cache
+                    .segment_fetches
+                    .lock()
+                    .await
+                    .remove(segment_address);
+                return result;
+            }
+        };
+
+        let Some(mut receiver) = maybe_receiver else {
+            continue;
+        };
+        loop {
+            let result = receiver.borrow().clone();
+            if let Some(result) = result {
+                return result;
+            }
+            if receiver.changed().await.is_err() {
+                break;
+            }
         }
     }
+}
 
+async fn fetch_segment_data_uncached(
+    state: &AppState,
+    segment_address: &str,
+) -> Result<Vec<u8>, String> {
     let data = state
         .antd
         .data_get_public(segment_address)
         .await
         .map_err(|e| format!("Autonomi fetch failed: {e}"))?;
 
-    {
-        let mut segments = state.cache.segments.lock().await;
-        segments.insert(segment_address.to_string(), data.clone());
-    }
+    let mut segments = state.cache.segments.lock().await;
+    segments.insert(segment_address.to_string(), data.clone());
 
     Ok(data)
 }

@@ -95,6 +95,7 @@ struct Config {
     hls_segment_duration: f64,
     ffmpeg_threads: usize,
     ffmpeg_filter_threads: usize,
+    ffmpeg_max_parallel_renditions: usize,
     upload_max_duration_seconds: f64,
     upload_max_source_pixels: i64,
     upload_max_source_long_edge: i64,
@@ -561,6 +562,10 @@ impl Config {
         if ffmpeg_filter_threads < 1 {
             anyhow::bail!("FFMPEG_FILTER_THREADS must be at least 1");
         }
+        let ffmpeg_max_parallel_renditions = parse_usize_env("FFMPEG_MAX_PARALLEL_RENDITIONS", 1)?;
+        if ffmpeg_max_parallel_renditions < 1 {
+            anyhow::bail!("FFMPEG_MAX_PARALLEL_RENDITIONS must be at least 1");
+        }
 
         let upload_quote_transcoded_overhead =
             parse_f64_env("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", 1.08)?;
@@ -683,6 +688,7 @@ impl Config {
             hls_segment_duration,
             ffmpeg_threads,
             ffmpeg_filter_threads,
+            ffmpeg_max_parallel_renditions,
             upload_max_duration_seconds,
             upload_max_source_pixels,
             upload_max_source_long_edge,
@@ -3205,45 +3211,17 @@ async fn process_video_inner(
 
     let total_duration = probe_duration(source_path).await?.unwrap_or(0.0);
     let source_dimensions = probe_video_dimensions(source_path).await?;
+    let renditions = transcode_renditions(
+        state,
+        video_id,
+        source_path,
+        resolutions,
+        job_dir,
+        source_dimensions,
+    )
+    .await?;
 
-    for resolution in resolutions {
-        let Some((preset_width, preset_height, video_kbps, audio_kbps)) =
-            resolution_preset(resolution)
-        else {
-            continue;
-        };
-        let (width, height) =
-            target_dimensions_for_source(preset_width, preset_height, source_dimensions);
-        let video_kbps =
-            target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
-        let seg_dir = job_dir.join(resolution);
-        fs::create_dir_all(&seg_dir).map_err(|err| {
-            ApiError::new(
-                StatusCode::INSUFFICIENT_STORAGE,
-                format!("Could not create segment directory: {err}"),
-            )
-        })?;
-
-        info!("Transcoding {} -> {}", video_id, resolution);
-        run_ffmpeg(
-            state,
-            source_path,
-            &seg_dir,
-            width,
-            height,
-            video_kbps,
-            audio_kbps,
-        )
-        .await?;
-
-        let ts_files = collect_segment_files(&seg_dir)?;
-        if ts_files.is_empty() {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("FFmpeg produced no segments for {resolution}"),
-            ));
-        }
-
+    for rendition in renditions {
         let variant_row = sqlx::query(
             r#"
             INSERT INTO video_variants
@@ -3251,39 +3229,23 @@ async fn process_video_inner(
                  segment_duration, total_duration, segment_count)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
             RETURNING id
-            "#,
+        "#,
         )
         .bind(video_uuid)
-        .bind(resolution)
-        .bind(width)
-        .bind(height)
-        .bind(video_kbps * 1000)
-        .bind(audio_kbps * 1000)
+        .bind(&rendition.resolution)
+        .bind(rendition.width)
+        .bind(rendition.height)
+        .bind(rendition.video_kbps * 1000)
+        .bind(rendition.audio_kbps * 1000)
         .bind(state.config.hls_segment_duration)
         .bind(total_duration)
-        .bind(ts_files.len() as i32)
+        .bind(rendition.segments.len() as i32)
         .fetch_one(&state.pool)
         .await
         .map_err(db_error)?;
         let variant_id: Uuid = variant_row.try_get("id").map_err(db_error)?;
 
-        for (idx, ts_path) in ts_files.iter().enumerate() {
-            let duration = probe_duration(ts_path)
-                .await?
-                .unwrap_or(state.config.hls_segment_duration);
-            let byte_size = fs::metadata(ts_path)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
-            if byte_size < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
-                return Err(ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
-                        "FFmpeg produced a segment too small for Autonomi storage: {} ({} bytes)",
-                        ts_path.display(),
-                        byte_size
-                    ),
-                ));
-            }
+        for segment in rendition.segments {
             sqlx::query(
                 r#"
                 INSERT INTO video_segments
@@ -3293,13 +3255,13 @@ async fn process_video_inner(
                   SET duration=EXCLUDED.duration,
                       byte_size=EXCLUDED.byte_size,
                       local_path=EXCLUDED.local_path
-                "#,
+            "#,
             )
             .bind(variant_id)
-            .bind(idx as i32)
-            .bind(duration)
-            .bind(byte_size as i64)
-            .bind(ts_path.to_string_lossy().as_ref())
+            .bind(segment.segment_index)
+            .bind(segment.duration)
+            .bind(segment.byte_size)
+            .bind(segment.local_path.to_string_lossy().as_ref())
             .execute(&state.pool)
             .await
             .map_err(db_error)?;
@@ -3317,6 +3279,192 @@ async fn process_video_inner(
         expires_at.to_rfc3339()
     );
     Ok(())
+}
+
+struct TranscodedRendition {
+    order: usize,
+    resolution: String,
+    width: i32,
+    height: i32,
+    video_kbps: i32,
+    audio_kbps: i32,
+    segments: Vec<TranscodedSegment>,
+}
+
+struct TranscodedSegment {
+    segment_index: i32,
+    duration: f64,
+    byte_size: i64,
+    local_path: PathBuf,
+}
+
+async fn transcode_renditions(
+    state: &AppState,
+    video_id: &str,
+    source_path: &FsPath,
+    resolutions: &[String],
+    job_dir: &FsPath,
+    source_dimensions: Option<(i32, i32)>,
+) -> Result<Vec<TranscodedRendition>, ApiError> {
+    let semaphore = Arc::new(Semaphore::new(state.config.ffmpeg_max_parallel_renditions));
+    let mut jobs = JoinSet::new();
+    let mut scheduled = 0_usize;
+
+    for (order, resolution) in resolutions.iter().enumerate() {
+        if resolution_preset(resolution).is_none() {
+            continue;
+        }
+        let state = state.clone();
+        let semaphore = semaphore.clone();
+        let video_id = video_id.to_string();
+        let source_path = source_path.to_path_buf();
+        let job_dir = job_dir.to_path_buf();
+        let resolution = resolution.clone();
+        scheduled += 1;
+        jobs.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not acquire FFmpeg rendition slot: {err}"),
+                )
+            })?;
+            transcode_one_rendition(
+                &state,
+                &video_id,
+                &source_path,
+                &job_dir,
+                order,
+                resolution,
+                source_dimensions,
+            )
+            .await
+        });
+    }
+
+    if scheduled == 0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            supported_resolutions_error(),
+        ));
+    }
+
+    info!(
+        "Transcoding {} rendition(s) for {} with max_parallel={}",
+        scheduled, video_id, state.config.ffmpeg_max_parallel_renditions
+    );
+
+    let mut renditions = Vec::with_capacity(scheduled);
+    while let Some(joined) = jobs.join_next().await {
+        match joined {
+            Ok(Ok(rendition)) => renditions.push(rendition),
+            Ok(Err(err)) => {
+                jobs.abort_all();
+                return Err(err);
+            }
+            Err(err) => {
+                jobs.abort_all();
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Transcode task failed: {err}"),
+                ));
+            }
+        }
+    }
+    renditions.sort_by_key(|rendition| rendition.order);
+    Ok(renditions)
+}
+
+async fn transcode_one_rendition(
+    state: &AppState,
+    video_id: &str,
+    source_path: &FsPath,
+    job_dir: &FsPath,
+    order: usize,
+    resolution: String,
+    source_dimensions: Option<(i32, i32)>,
+) -> Result<TranscodedRendition, ApiError> {
+    let Some((preset_width, preset_height, video_kbps, audio_kbps)) =
+        resolution_preset(&resolution)
+    else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            supported_resolutions_error(),
+        ));
+    };
+    let (width, height) =
+        target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+    let video_kbps =
+        target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
+    let seg_dir = job_dir.join(&resolution);
+    fs::create_dir_all(&seg_dir).map_err(|err| {
+        ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            format!("Could not create segment directory: {err}"),
+        )
+    })?;
+
+    info!("Transcoding {} -> {}", video_id, resolution);
+    run_ffmpeg(
+        state,
+        source_path,
+        &seg_dir,
+        width,
+        height,
+        video_kbps,
+        audio_kbps,
+    )
+    .await?;
+
+    let ts_files = collect_segment_files(&seg_dir)?;
+    if ts_files.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("FFmpeg produced no segments for {resolution}"),
+        ));
+    }
+
+    let mut segments = Vec::with_capacity(ts_files.len());
+    for (idx, ts_path) in ts_files.into_iter().enumerate() {
+        let duration = probe_duration(&ts_path)
+            .await?
+            .unwrap_or(state.config.hls_segment_duration);
+        let byte_size = fs::metadata(&ts_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if byte_size < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "FFmpeg produced a segment too small for Autonomi storage: {} ({} bytes)",
+                    ts_path.display(),
+                    byte_size
+                ),
+            ));
+        }
+        segments.push(TranscodedSegment {
+            segment_index: idx as i32,
+            duration,
+            byte_size: byte_size as i64,
+            local_path: ts_path,
+        });
+    }
+
+    info!(
+        "Transcoded {} -> {} ({} segment(s))",
+        video_id,
+        resolution,
+        segments.len()
+    );
+
+    Ok(TranscodedRendition {
+        order,
+        resolution,
+        width,
+        height,
+        video_kbps,
+        audio_kbps,
+        segments,
+    })
 }
 
 fn collect_segment_files(seg_dir: &FsPath) -> Result<Vec<PathBuf>, ApiError> {
