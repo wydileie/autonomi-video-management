@@ -150,6 +150,9 @@ cp .env.local.example .env.local
 # Optional but recommended for large uploads: point processing files at a
 # large, persistent host disk.
 # VIDEO_PROCESSING_HOST_PATH=/mnt/video-processing/autvid
+#
+# Local devnet defaults set UPLOAD_MIN_FREE_BYTES=0, so uploads are only
+# limited by the actual free space on VIDEO_PROCESSING_HOST_PATH.
 
 docker compose --env-file .env.local \
   -f docker-compose.yml \
@@ -252,7 +255,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `UPLOAD_MAX_DURATION_SECONDS` | No | Max accepted source duration from server-side `ffprobe`. Default: `14400` |
 | `UPLOAD_MAX_SOURCE_PIXELS` | No | Max accepted source pixel count after rotation metadata. Default: `33177600` (8K) |
 | `UPLOAD_MAX_SOURCE_LONG_EDGE` | No | Max accepted source long edge in pixels after rotation metadata. Default: `7680` |
-| `UPLOAD_MIN_FREE_BYTES` | No | Processing-disk free-space headroom required before and during upload writes. Default: `5368709120` (5 GiB) |
+| `UPLOAD_MIN_FREE_BYTES` | No | Extra processing-disk free-space headroom required before and during upload writes. Base/prod default: `5368709120` (5 GiB). Local devnet default: `0` |
 | `UPLOAD_MAX_CONCURRENT_SAVES` | No | Max concurrent source uploads being streamed/probed to disk. Default: `2` |
 | `UPLOAD_FFPROBE_TIMEOUT_SECONDS` | No | Server-side upload validation `ffprobe` timeout. Default: `30` |
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |

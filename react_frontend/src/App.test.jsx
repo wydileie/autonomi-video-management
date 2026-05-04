@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { vi } from "vitest";
 import axios from "axios";
 import Hls from "hls.js";
-import App from "./App";
+import App, { formatAttoTokens } from "./App";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -177,6 +177,11 @@ afterEach(async () => {
   root = null;
   container = null;
   vi.restoreAllMocks();
+});
+
+test("formats signed atto token values without a malformed fractional sign", () => {
+  expect(formatAttoTokens("10000000000000000000")).toBe("10 ANT");
+  expect(formatAttoTokens("-5322870000000000000")).toBe("-5.32287 ANT");
 });
 
 test("logs in, stores the admin token, and sends bearer auth on admin requests", async () => {
