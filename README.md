@@ -250,6 +250,11 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `ANTD_REQUIRE_COST_READY` | No | Whether admin startup and health require a successful Autonomi write-cost probe, not just `/health`. Default: `false` |
 | `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
+| `ADMIN_JOB_WORKERS` | No | Number of durable `rust_admin` DB job workers. Default: `1` |
+| `ADMIN_JOB_POLL_INTERVAL_SECONDS` | No | Poll interval when no durable jobs are ready. Default: `2` |
+| `ADMIN_JOB_LEASE_SECONDS` | No | Lease duration for a running durable job before another worker may recover it. Default: `43200` |
+| `ADMIN_JOB_MAX_ATTEMPTS` | No | Max processing/upload job attempts before a video is marked `error`. Default: `3` |
+| `CATALOG_PUBLISH_JOB_MAX_ATTEMPTS` | No | Max durable catalog publish attempts before the publish job is marked failed. Default: `12` |
 | `UPLOAD_QUOTE_TRANSCODED_OVERHEAD` | No | Multiplier applied to upload quote estimates for transcoded bytes. Default: `1.08` |
 | `UPLOAD_QUOTE_MAX_SAMPLE_BYTES` | No | Max sample size for upload quote cost checks. Default: `16777216` |
 | `UPLOAD_MAX_FILE_BYTES` | No | Max accepted source upload bytes. Default: `21474836480` (20 GiB) |

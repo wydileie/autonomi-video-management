@@ -51,6 +51,13 @@ const DEFAULT_API_PORT: u16 = 8000;
 const CATALOG_CONTENT_TYPE: &str = "application/vnd.autonomi.video.catalog+json;v=1";
 const VIDEO_MANIFEST_CONTENT_TYPE: &str = "application/vnd.autonomi.video.manifest+json;v=1";
 const MIN_ANTD_SELF_ENCRYPTION_BYTES: usize = 3;
+const JOB_KIND_PROCESS_VIDEO: &str = "process_video";
+const JOB_KIND_UPLOAD_VIDEO: &str = "upload_video";
+const JOB_KIND_PUBLISH_CATALOG: &str = "publish_catalog";
+const JOB_STATUS_QUEUED: &str = "queued";
+const JOB_STATUS_RUNNING: &str = "running";
+const JOB_STATUS_SUCCEEDED: &str = "succeeded";
+const JOB_STATUS_FAILED: &str = "failed";
 const SUPPORTED_RESOLUTIONS: &[&str] = &[
     "8k", "4k", "1440p", "1080p", "720p", "540p", "480p", "360p", "240p", "144p",
 ];
@@ -103,6 +110,11 @@ struct Config {
     antd_approve_on_startup: bool,
     antd_require_cost_ready: bool,
     antd_direct_upload_max_bytes: usize,
+    admin_job_workers: usize,
+    admin_job_poll_interval_seconds: u64,
+    admin_job_lease_seconds: i64,
+    admin_job_max_attempts: i32,
+    catalog_publish_job_max_attempts: i32,
 }
 
 #[derive(Clone)]
@@ -309,10 +321,42 @@ struct UploadQuoteOut {
 
 struct AcceptedUpload {
     video_id: String,
-    source_path: PathBuf,
-    resolutions: Vec<String>,
-    job_dir: PathBuf,
     video: VideoOut,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JobKind {
+    ProcessVideo,
+    UploadVideo,
+    PublishCatalog,
+}
+
+impl JobKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ProcessVideo => JOB_KIND_PROCESS_VIDEO,
+            Self::UploadVideo => JOB_KIND_UPLOAD_VIDEO,
+            Self::PublishCatalog => JOB_KIND_PUBLISH_CATALOG,
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            JOB_KIND_PROCESS_VIDEO => Some(Self::ProcessVideo),
+            JOB_KIND_UPLOAD_VIDEO => Some(Self::UploadVideo),
+            JOB_KIND_PUBLISH_CATALOG => Some(Self::PublishCatalog),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct LeasedJob {
+    id: Uuid,
+    kind: JobKind,
+    video_id: Option<Uuid>,
+    attempts: i32,
+    max_attempts: i32,
 }
 
 struct UploadMediaMetadata {
@@ -423,6 +467,7 @@ async fn main() -> anyhow::Result<()> {
     };
     cleanup_expired_approvals(&state).await?;
     recover_interrupted_jobs(state.clone()).await?;
+    start_job_workers(&state);
     tokio::spawn(approval_cleanup_loop(state.clone()));
 
     let app = Router::new()
@@ -587,6 +632,27 @@ impl Config {
         if antd_direct_upload_max_bytes < MIN_ANTD_SELF_ENCRYPTION_BYTES {
             anyhow::bail!("ANTD_DIRECT_UPLOAD_MAX_BYTES must be at least 3");
         }
+        let admin_job_workers = parse_usize_env("ADMIN_JOB_WORKERS", 1)?;
+        if admin_job_workers < 1 {
+            anyhow::bail!("ADMIN_JOB_WORKERS must be at least 1");
+        }
+        let admin_job_poll_interval_seconds = parse_u64_env("ADMIN_JOB_POLL_INTERVAL_SECONDS", 2)?;
+        if admin_job_poll_interval_seconds == 0 {
+            anyhow::bail!("ADMIN_JOB_POLL_INTERVAL_SECONDS must be greater than zero");
+        }
+        let admin_job_lease_seconds = parse_i64_env("ADMIN_JOB_LEASE_SECONDS", 12 * 60 * 60)?;
+        if admin_job_lease_seconds <= 0 {
+            anyhow::bail!("ADMIN_JOB_LEASE_SECONDS must be greater than zero");
+        }
+        let admin_job_max_attempts = parse_i32_env("ADMIN_JOB_MAX_ATTEMPTS", 3)?;
+        if admin_job_max_attempts < 1 {
+            anyhow::bail!("ADMIN_JOB_MAX_ATTEMPTS must be at least 1");
+        }
+        let catalog_publish_job_max_attempts =
+            parse_i32_env("CATALOG_PUBLISH_JOB_MAX_ATTEMPTS", 12)?;
+        if catalog_publish_job_max_attempts < 1 {
+            anyhow::bail!("CATALOG_PUBLISH_JOB_MAX_ATTEMPTS must be at least 1");
+        }
 
         Ok(Self {
             db_dsn,
@@ -632,6 +698,11 @@ impl Config {
             antd_approve_on_startup: parse_bool_env("ANTD_APPROVE_ON_STARTUP", true),
             antd_require_cost_ready: parse_bool_env("ANTD_REQUIRE_COST_READY", false),
             antd_direct_upload_max_bytes,
+            admin_job_workers,
+            admin_job_poll_interval_seconds,
+            admin_job_lease_seconds,
+            admin_job_max_attempts,
+            catalog_publish_job_max_attempts,
         })
     }
 }
@@ -651,6 +722,13 @@ fn parse_u64_env(name: &str, default_value: u64) -> anyhow::Result<u64> {
     env::var(name)
         .unwrap_or_else(|_| default_value.to_string())
         .parse::<u64>()
+        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
+}
+
+fn parse_i32_env(name: &str, default_value: i32) -> anyhow::Result<i32> {
+    env::var(name)
+        .unwrap_or_else(|_| default_value.to_string())
+        .parse::<i32>()
         .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
 }
 
@@ -1309,7 +1387,7 @@ async fn update_video_visibility(
     let is_public: bool = row.try_get("is_public").unwrap_or(false);
     if status == STATUS_READY && is_public {
         let epoch = refresh_local_catalog_from_db(&state, "visibility").await?;
-        schedule_catalog_publish(state.clone(), epoch, format!("visibility:{video_id}"));
+        schedule_catalog_publish(&state, epoch, format!("visibility:{video_id}")).await?;
     }
 
     Ok(Json(get_db_video(&state, &video_id, true).await?))
@@ -1322,14 +1400,13 @@ async fn upload_video(
 ) -> Result<Json<VideoOut>, ApiError> {
     let username = require_admin(&state, &headers)?;
     let accepted = accept_upload(&state, &headers, multipart, &username).await?;
-    schedule_processing_job(
-        state.clone(),
-        accepted.video_id,
-        accepted.source_path,
-        accepted.resolutions,
-        accepted.job_dir,
-        false,
-    );
+    if let Err(err) = schedule_processing_job(&state, &accepted.video_id).await {
+        let _ = set_status(&state, &accepted.video_id, STATUS_ERROR, Some(&err.detail)).await;
+        if let Ok(Some(job_dir)) = fetch_job_dir(&state, &accepted.video_id).await {
+            let _ = fs::remove_dir_all(job_dir);
+        }
+        return Err(err);
+    }
     Ok(Json(accepted.video))
 }
 
@@ -1416,7 +1493,10 @@ async fn approve_video(
         ));
     }
 
-    schedule_upload_job(state.clone(), video_id.clone());
+    if let Err(err) = schedule_upload_job(&state, &video_id).await {
+        let _ = set_status(&state, &video_id, STATUS_ERROR, Some(&err.detail)).await;
+        return Err(err);
+    }
     Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
 
@@ -1463,7 +1543,7 @@ async fn update_video_publication(
         "unpublish"
     };
     let epoch = refresh_local_catalog_from_db(&state, reason).await?;
-    schedule_catalog_publish(state.clone(), epoch, format!("{reason}:{video_id}"));
+    schedule_catalog_publish(&state, epoch, format!("{reason}:{video_id}")).await?;
 
     Ok(Json(get_db_video(&state, &video_id, true).await?))
 }
@@ -1491,7 +1571,7 @@ async fn delete_video(
     }
 
     let epoch = refresh_local_catalog_from_db(&state, "delete").await?;
-    schedule_catalog_publish(state.clone(), epoch, format!("delete:{video_id}"));
+    schedule_catalog_publish(&state, epoch, format!("delete:{video_id}")).await?;
 
     if let Some(row) = job_dir_row {
         if let Ok(Some(job_dir)) = row.try_get::<Option<String>, _>("job_dir") {
@@ -1734,13 +1814,7 @@ async fn accept_upload(
 
     let video = get_db_video(state, &video_id, false).await?;
     guard.disarm();
-    Ok(AcceptedUpload {
-        video_id,
-        source_path,
-        resolutions: selected,
-        job_dir,
-        video,
-    })
+    Ok(AcceptedUpload { video_id, video })
 }
 
 fn content_length(headers: &HeaderMap) -> Option<u64> {
@@ -2701,42 +2775,398 @@ fn apply_catalog_visibility(
     video.original_file_byte_size = None;
 }
 
-fn schedule_processing_job(
-    state: AppState,
-    video_id: String,
-    source_path: PathBuf,
-    resolutions: Vec<String>,
-    job_dir: PathBuf,
-    reset_existing: bool,
-) {
-    tokio::spawn(async move {
-        if let Err(err) = process_video_inner(
-            &state,
-            &video_id,
-            &source_path,
-            &resolutions,
-            &job_dir,
-            reset_existing,
-        )
-        .await
-        {
-            error!("Processing failed for {}: {:?}", video_id, err);
-            let _ = set_status(&state, &video_id, STATUS_ERROR, Some(&err.detail)).await;
-            let _ = fs::remove_dir_all(job_dir);
-        }
-    });
+async fn schedule_processing_job(state: &AppState, video_id: &str) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    enqueue_video_job(state, JobKind::ProcessVideo, video_uuid).await
 }
 
-fn schedule_upload_job(state: AppState, video_id: String) {
-    tokio::spawn(async move {
-        if let Err(err) = upload_approved_video_inner(&state, &video_id).await {
-            error!("Approved upload failed for {}: {:?}", video_id, err);
-            let _ = set_status(&state, &video_id, STATUS_ERROR, Some(&err.detail)).await;
-            if let Ok(Some(job_dir)) = fetch_job_dir(&state, &video_id).await {
-                let _ = fs::remove_dir_all(job_dir);
+async fn schedule_upload_job(state: &AppState, video_id: &str) -> Result<(), ApiError> {
+    let video_uuid = parse_video_uuid(video_id)?;
+    enqueue_video_job(state, JobKind::UploadVideo, video_uuid).await
+}
+
+fn start_job_workers(state: &AppState) {
+    for worker_index in 0..state.config.admin_job_workers {
+        let worker_id = format!("admin-{}-{worker_index}", Uuid::new_v4());
+        tokio::spawn(job_worker_loop(state.clone(), worker_id));
+    }
+    info!(
+        "Started {} durable admin job worker(s)",
+        state.config.admin_job_workers
+    );
+}
+
+async fn job_worker_loop(state: AppState, worker_id: String) {
+    loop {
+        match acquire_next_job(&state, &worker_id).await {
+            Ok(Some(job)) => {
+                let kind = job.kind;
+                let job_id = job.id;
+                let result = run_leased_job(&state, &job).await;
+                match result {
+                    Ok(()) => {
+                        if let Err(err) = mark_job_succeeded(&state, job_id).await {
+                            warn!(
+                                "Worker {} could not mark {:?} job {} succeeded: {}",
+                                worker_id, kind, job_id, err.detail
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        let detail = err.detail;
+                        warn!(
+                            "Worker {} {:?} job {} failed on attempt {}/{}: {}",
+                            worker_id, kind, job_id, job.attempts, job.max_attempts, detail
+                        );
+                        if let Err(mark_err) = mark_job_failed(&state, &job, &detail).await {
+                            warn!(
+                                "Worker {} could not persist {:?} job {} failure: {}",
+                                worker_id, kind, job_id, mark_err.detail
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                sleep(StdDuration::from_secs(
+                    state.config.admin_job_poll_interval_seconds,
+                ))
+                .await;
+            }
+            Err(err) => {
+                warn!("Worker {} could not lease a job: {}", worker_id, err.detail);
+                sleep(StdDuration::from_secs(
+                    state.config.admin_job_poll_interval_seconds,
+                ))
+                .await;
             }
         }
-    });
+    }
+}
+
+async fn enqueue_video_job(
+    state: &AppState,
+    kind: JobKind,
+    video_id: Uuid,
+) -> Result<(), ApiError> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO video_jobs (job_kind, video_id, status, max_attempts, run_after)
+        SELECT $1, $2, $3, $4, NOW()
+        WHERE NOT EXISTS (
+            SELECT 1 FROM video_jobs
+            WHERE job_kind=$1
+              AND video_id=$2
+              AND status IN ($3, $5)
+        )
+        "#,
+    )
+    .bind(kind.as_str())
+    .bind(video_id)
+    .bind(JOB_STATUS_QUEUED)
+    .bind(state.config.admin_job_max_attempts)
+    .bind(JOB_STATUS_RUNNING)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    if result.rows_affected() > 0 {
+        info!("Queued durable {:?} job for video {}", kind, video_id);
+    } else {
+        info!(
+            "Durable {:?} job for video {} is already queued or running",
+            kind, video_id
+        );
+    }
+    Ok(())
+}
+
+async fn enqueue_catalog_publish_job(state: &AppState) -> Result<(), ApiError> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO video_jobs (job_kind, video_id, status, max_attempts, run_after)
+        SELECT $1, NULL::uuid, $2, $3, NOW()
+        WHERE NOT EXISTS (
+            SELECT 1 FROM video_jobs
+            WHERE job_kind=$1
+              AND status=$2
+        )
+        "#,
+    )
+    .bind(JOB_KIND_PUBLISH_CATALOG)
+    .bind(JOB_STATUS_QUEUED)
+    .bind(state.config.catalog_publish_job_max_attempts)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    if result.rows_affected() > 0 {
+        info!("Queued durable catalog publish job");
+    } else {
+        info!("Durable catalog publish job is already queued");
+    }
+    Ok(())
+}
+
+async fn acquire_next_job(
+    state: &AppState,
+    worker_id: &str,
+) -> Result<Option<LeasedJob>, ApiError> {
+    let row = sqlx::query(
+        r#"
+        UPDATE video_jobs
+        SET status=$1,
+            attempts=attempts + 1,
+            lease_owner=$2,
+            lease_expires_at=NOW() + ($3::bigint * INTERVAL '1 second'),
+            updated_at=NOW()
+        WHERE id = (
+            SELECT id
+            FROM video_jobs
+            WHERE (
+                status=$4
+                AND run_after <= NOW()
+            ) OR (
+                status=$1
+                AND lease_expires_at IS NOT NULL
+                AND lease_expires_at <= NOW()
+            )
+            ORDER BY run_after, created_at
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        RETURNING id, job_kind, video_id, attempts, max_attempts
+        "#,
+    )
+    .bind(JOB_STATUS_RUNNING)
+    .bind(worker_id)
+    .bind(state.config.admin_job_lease_seconds)
+    .bind(JOB_STATUS_QUEUED)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let id: Uuid = row.try_get("id").map_err(db_error)?;
+    let kind_raw: String = row.try_get("job_kind").map_err(db_error)?;
+    let kind = JobKind::parse(&kind_raw).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Unknown durable job kind {kind_raw:?}"),
+        )
+    })?;
+    Ok(Some(LeasedJob {
+        id,
+        kind,
+        video_id: row.try_get("video_id").map_err(db_error)?,
+        attempts: row.try_get("attempts").map_err(db_error)?,
+        max_attempts: row.try_get("max_attempts").map_err(db_error)?,
+    }))
+}
+
+async fn run_leased_job(state: &AppState, job: &LeasedJob) -> Result<(), ApiError> {
+    match job.kind {
+        JobKind::ProcessVideo => run_process_video_job(state, job.video_id).await,
+        JobKind::UploadVideo => run_upload_video_job(state, job.video_id).await,
+        JobKind::PublishCatalog => run_catalog_publish_job(state).await,
+    }
+}
+
+async fn run_process_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Result<(), ApiError> {
+    let video_uuid = video_uuid.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Process video job is missing video_id",
+        )
+    })?;
+    let video_id = video_uuid.to_string();
+    let row = sqlx::query(
+        r#"
+        SELECT status, job_dir, job_source_path, requested_resolutions
+        FROM videos
+        WHERE id=$1
+        "#,
+    )
+    .bind(video_uuid)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(db_error)?;
+
+    let Some(row) = row else {
+        info!("Skipping process job for deleted video {}", video_id);
+        return Ok(());
+    };
+    let status: String = row.try_get("status").map_err(db_error)?;
+    if !matches!(status.as_str(), STATUS_PENDING | STATUS_PROCESSING) {
+        info!(
+            "Skipping process job for video {} because status is {}",
+            video_id, status
+        );
+        return Ok(());
+    }
+
+    let job_dir = row
+        .try_get::<Option<String>, _>("job_dir")
+        .map_err(db_error)?
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Processing job is missing job_dir",
+            )
+        })?;
+    let resolutions =
+        decode_requested_resolutions(row.try_get("requested_resolutions").map_err(db_error)?);
+    let job_source_path: Option<String> = row.try_get("job_source_path").map_err(db_error)?;
+    let source_path =
+        recover_source_path(Some(&job_dir), job_source_path.as_deref()).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Processing job is missing its source file",
+            )
+        })?;
+    if resolutions.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Processing job has no supported requested resolutions",
+        ));
+    }
+
+    process_video_inner(state, &video_id, &source_path, &resolutions, &job_dir, true).await
+}
+
+async fn run_upload_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Result<(), ApiError> {
+    let video_uuid = video_uuid.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Upload video job is missing video_id",
+        )
+    })?;
+    let video_id = video_uuid.to_string();
+    let row = sqlx::query("SELECT status FROM videos WHERE id=$1")
+        .bind(video_uuid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(db_error)?;
+    let Some(row) = row else {
+        info!("Skipping upload job for deleted video {}", video_id);
+        return Ok(());
+    };
+    let status: String = row.try_get("status").map_err(db_error)?;
+    if status != STATUS_UPLOADING {
+        info!(
+            "Skipping upload job for video {} because status is {}",
+            video_id, status
+        );
+        return Ok(());
+    }
+
+    upload_approved_video_inner(state, &video_id).await
+}
+
+async fn run_catalog_publish_job(state: &AppState) -> Result<(), ApiError> {
+    let epoch = state.catalog_publish_epoch.load(Ordering::SeqCst);
+    publish_current_catalog_to_network(state, epoch, "durable-job").await
+}
+
+async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        UPDATE video_jobs
+        SET status=$1,
+            lease_owner=NULL,
+            lease_expires_at=NULL,
+            last_error=NULL,
+            updated_at=NOW()
+        WHERE id=$2
+        "#,
+    )
+    .bind(JOB_STATUS_SUCCEEDED)
+    .bind(job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn mark_job_failed(state: &AppState, job: &LeasedJob, detail: &str) -> Result<(), ApiError> {
+    let final_failure = job.attempts >= job.max_attempts;
+    if final_failure {
+        sqlx::query(
+            r#"
+            UPDATE video_jobs
+            SET status=$1,
+                lease_owner=NULL,
+                lease_expires_at=NULL,
+                last_error=$2,
+                updated_at=NOW()
+            WHERE id=$3
+            "#,
+        )
+        .bind(JOB_STATUS_FAILED)
+        .bind(detail)
+        .bind(job.id)
+        .execute(&state.pool)
+        .await
+        .map_err(db_error)?;
+        handle_final_job_failure(state, job, detail).await;
+        return Ok(());
+    }
+
+    let delay_seconds = job_retry_delay_seconds(job.attempts);
+    let run_after = Utc::now() + Duration::seconds(delay_seconds);
+    sqlx::query(
+        r#"
+        UPDATE video_jobs
+        SET status=$1,
+            lease_owner=NULL,
+            lease_expires_at=NULL,
+            run_after=$2,
+            last_error=$3,
+            updated_at=NOW()
+        WHERE id=$4
+        "#,
+    )
+    .bind(JOB_STATUS_QUEUED)
+    .bind(run_after)
+    .bind(detail)
+    .bind(job.id)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    info!(
+        "Retrying {:?} job {} in {}s after attempt {}/{}",
+        job.kind, job.id, delay_seconds, job.attempts, job.max_attempts
+    );
+    Ok(())
+}
+
+async fn handle_final_job_failure(state: &AppState, job: &LeasedJob, detail: &str) {
+    let Some(video_uuid) = job.video_id else {
+        error!(
+            "{:?} job {} failed permanently after {} attempt(s): {}",
+            job.kind, job.id, job.attempts, detail
+        );
+        return;
+    };
+    let video_id = video_uuid.to_string();
+    error!(
+        "{:?} job {} for video {} failed permanently after {} attempt(s): {}",
+        job.kind, job.id, video_id, job.attempts, detail
+    );
+    if matches!(job.kind, JobKind::ProcessVideo | JobKind::UploadVideo) {
+        let _ = set_status(state, &video_id, STATUS_ERROR, Some(detail)).await;
+        if let Ok(Some(job_dir)) = fetch_job_dir(state, &video_id).await {
+            let _ = fs::remove_dir_all(job_dir);
+        }
+    }
+}
+
+fn job_retry_delay_seconds(attempts: i32) -> i64 {
+    let exponent = attempts.saturating_sub(1).min(5) as u32;
+    (30_i64 * 2_i64.pow(exponent)).min(15 * 60)
 }
 
 async fn process_video_inner(
@@ -3565,7 +3995,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         )
         .await?;
         let epoch = refresh_local_catalog_from_db(state, "auto-publish").await?;
-        schedule_catalog_publish(state.clone(), epoch, format!("auto-publish:{video_id}"));
+        schedule_catalog_publish(state, epoch, format!("auto-publish:{video_id}")).await?;
         is_public = true;
     }
     if let Some(job_dir) = job_dir {
@@ -4011,16 +4441,18 @@ async fn refresh_local_catalog_from_db(state: &AppState, reason: &str) -> Result
     Ok(epoch)
 }
 
-fn schedule_catalog_publish(state: AppState, epoch: u64, reason: impl Into<String>) {
+async fn schedule_catalog_publish(
+    state: &AppState,
+    epoch: u64,
+    reason: impl Into<String>,
+) -> Result<(), ApiError> {
     let reason = reason.into();
-    tokio::spawn(async move {
-        if let Err(err) = publish_current_catalog_to_network(&state, epoch, &reason).await {
-            error!(
-                "Background catalog publish failed epoch={} reason={}: {:?}",
-                epoch, reason, err
-            );
-        }
-    });
+    enqueue_catalog_publish_job(state).await?;
+    info!(
+        "Queued durable catalog publish epoch={} reason={}",
+        epoch, reason
+    );
+    Ok(())
 }
 
 async fn publish_current_catalog_to_network(
@@ -4407,6 +4839,28 @@ async fn approval_cleanup_loop(state: AppState) {
 }
 
 async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
+    let reset_jobs = sqlx::query(
+        r#"
+        UPDATE video_jobs
+        SET status=$1,
+            lease_owner=NULL,
+            lease_expires_at=NULL,
+            run_after=NOW(),
+            updated_at=NOW()
+        WHERE status=$2
+        "#,
+    )
+    .bind(JOB_STATUS_QUEUED)
+    .bind(JOB_STATUS_RUNNING)
+    .execute(&state.pool)
+    .await?;
+    if reset_jobs.rows_affected() > 0 {
+        info!(
+            "Requeued {} running durable job(s) from a previous admin process",
+            reset_jobs.rows_affected()
+        );
+    }
+
     let rows = sqlx::query(
         r#"
         SELECT id, status, job_dir, job_source_path, requested_resolutions
@@ -4454,17 +4908,14 @@ async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
                 continue;
             }
 
-            schedule_processing_job(
-                state.clone(),
-                video_id,
-                source_path.unwrap(),
-                resolutions,
-                job_dir.unwrap(),
-                true,
-            );
+            schedule_processing_job(&state, &video_id)
+                .await
+                .map_err(|err| anyhow::anyhow!(err.detail))?;
             recovered_processing += 1;
         } else if status == STATUS_UPLOADING {
-            schedule_upload_job(state.clone(), video_id);
+            schedule_upload_job(&state, &video_id)
+                .await
+                .map_err(|err| anyhow::anyhow!(err.detail))?;
             recovered_uploads += 1;
         }
     }
@@ -4474,6 +4925,15 @@ async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
             "Recovered interrupted jobs: processing={} uploading={}",
             recovered_processing, recovered_uploads
         );
+    }
+    if read_catalog_state_value(&state.config)
+        .and_then(|value| value.get("publish_pending").and_then(Value::as_bool))
+        .unwrap_or(false)
+    {
+        enqueue_catalog_publish_job(&state)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.detail))?;
+        info!("Recovered pending catalog publish from local catalog state");
     }
     Ok(())
 }
@@ -5008,6 +5468,31 @@ mod tests {
 
         let err = anyhow::anyhow!("error sending request for url (http://antd:8082/health)");
         assert!(!is_missing_file_upload_endpoint(&err));
+    }
+
+    #[test]
+    fn parses_durable_job_kinds() {
+        assert_eq!(
+            JobKind::parse(JOB_KIND_PROCESS_VIDEO),
+            Some(JobKind::ProcessVideo)
+        );
+        assert_eq!(
+            JobKind::parse(JOB_KIND_UPLOAD_VIDEO),
+            Some(JobKind::UploadVideo)
+        );
+        assert_eq!(
+            JobKind::parse(JOB_KIND_PUBLISH_CATALOG),
+            Some(JobKind::PublishCatalog)
+        );
+        assert_eq!(JobKind::parse("unknown"), None);
+    }
+
+    #[test]
+    fn durable_job_retry_backoff_caps() {
+        assert_eq!(job_retry_delay_seconds(1), 30);
+        assert_eq!(job_retry_delay_seconds(2), 60);
+        assert_eq!(job_retry_delay_seconds(6), 900);
+        assert_eq!(job_retry_delay_seconds(20), 900);
     }
 
     #[test]
