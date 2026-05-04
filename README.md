@@ -427,7 +427,12 @@ autonomi-video-management/
 │   ├── vite.config.mjs
 │   └── src/
 │       ├── main.jsx
-│       └── App.jsx             # Upload form, video library, hls.js player
+│       ├── App.jsx             # Root shell and tab composition
+│       ├── api/                # Axios API client wrappers
+│       ├── components/         # Upload, library, login, quote, and player components
+│       ├── hooks/              # Browser auth/session hooks
+│       ├── styles/             # Split component-oriented CSS
+│       └── utils/              # Formatting, status, and resolution helpers
 ├── nginx/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
 ├── postgres-init/

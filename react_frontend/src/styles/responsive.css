@@ -1,0 +1,156 @@
+@media (max-width: 980px) {
+  .topbar,
+  .topbar-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .brand {
+    width: 100%;
+  }
+
+  .topbar-actions,
+  .topbar nav {
+    width: 100%;
+  }
+
+  .topbar nav {
+    overflow-x: auto;
+  }
+
+  .topbar nav button {
+    flex: 1;
+    white-space: nowrap;
+  }
+
+  .upload-head,
+  .library-head,
+  .resolution-toolbar,
+  .quote-panel,
+  .final-quote-panel,
+  .video-summary,
+  .detail-footer {
+    align-items: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .quote-breakdown {
+    align-items: stretch;
+  }
+
+  .resolution-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .source-panel,
+  .form-grid,
+  .login-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .login-brand-panel {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    min-height: 180px;
+    padding-left: 0;
+    padding-top: 24px;
+  }
+
+  .row-meta {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 12px;
+  }
+
+  .topbar {
+    top: 8px;
+  }
+
+  .brand {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .brand-image {
+    height: 86px;
+    width: 100%;
+  }
+
+  .brand-summary {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    max-width: none;
+    min-width: 0;
+    padding-left: 0;
+    padding-top: 10px;
+    width: 100%;
+  }
+
+  .topbar nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .upload-card,
+  .library-card,
+  .login-card {
+    padding: 20px;
+  }
+
+  .upload-head h1,
+  .login-card h1 {
+    font-size: 32px;
+  }
+
+  .library-head h2 {
+    font-size: 30px;
+  }
+
+  .source-panel {
+    gap: 10px;
+  }
+
+  .resolution-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .video-title {
+    align-items: flex-start;
+  }
+
+  .video-thumb {
+    flex-basis: 64px;
+    height: 42px;
+  }
+
+  .video-thumb span {
+    left: 27px;
+    top: 11px;
+  }
+
+  .player-shell {
+    height: clamp(260px, 64vh, 620px);
+    height: clamp(260px, 64dvh, 620px);
+  }
+
+  .upload-progress > div:first-child {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
