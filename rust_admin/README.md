@@ -22,6 +22,14 @@ cargo test
 cargo run
 ```
 
+Source layout:
+
+- `main.rs` wires configuration, database, Autonomi readiness, workers, and the Axum router.
+- `routes.rs` owns HTTP handlers and admin authorization boundaries.
+- `upload.rs`, `media.rs`, `quote.rs`, and `pipeline.rs` handle upload intake, probing/transcoding, quote estimation, and process/upload jobs.
+- `catalog.rs` and `storage.rs` own manifests, catalog state, publication, and verified Autonomi JSON writes.
+- `db.rs`, `jobs.rs`, `models.rs`, `state.rs`, `config.rs`, and `antd_client.rs` hold shared service plumbing.
+
 Run in the local stack:
 
 ```bash
