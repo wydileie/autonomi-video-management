@@ -20,6 +20,10 @@ jobs:
         with:
           workspaces: rust_admin
 
+      - name: Check formatting
+        run: cargo fmt --check
+        working-directory: rust_admin
+
       - name: Run cargo tests
         run: cargo test
         working-directory: rust_admin
@@ -46,6 +50,10 @@ jobs:
         with:
           workspaces: rust_stream
 
+      - name: Check formatting
+        run: cargo fmt --check
+        working-directory: rust_stream
+
       - name: Run cargo tests
         run: cargo test
         working-directory: rust_stream
@@ -53,6 +61,36 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
         working-directory: rust_stream
+
+  antd-service:
+    name: antd service tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2.9.0
+        with:
+          workspaces: antd_service
+
+      - name: Check formatting
+        run: cargo fmt --check
+        working-directory: antd_service
+
+      - name: Run cargo tests
+        run: cargo test
+        working-directory: antd_service
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: antd_service
 
   react-frontend:
     name: React frontend build and tests
@@ -81,3 +119,19 @@ jobs:
         working-directory: react_frontend
         env:
           CI: "true"
+
+  compose-config:
+    name: Compose config validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Render local Compose config
+        run: docker compose --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
+
+      - name: Render public local-devnet Compose config
+        run: docker compose --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
+
+      - name: Render production Compose config
+        run: docker compose --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
