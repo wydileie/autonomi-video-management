@@ -267,6 +267,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
 | `FFMPEG_THREADS` | No | Maximum FFmpeg/x264 encoder threads. Default: `2` to reduce memory use for high-resolution portrait transcodes |
 | `FFMPEG_FILTER_THREADS` | No | Maximum FFmpeg filter graph threads. Default: `1` |
+| `FFMPEG_MAX_PARALLEL_RENDITIONS` | No | Max renditions to transcode at once inside one processing job. Base/prod default: `1`; local examples set `2` |
 | `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | No | Seconds before an unapproved final quote expires and local transcoded files are deleted. Default: `14400` |
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | No | Seconds between cleanup scans for expired final quotes. Default: `300` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
