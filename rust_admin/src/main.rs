@@ -48,6 +48,7 @@ const STATUS_ERROR: &str = "error";
 const DEFAULT_API_PORT: u16 = 8000;
 const CATALOG_CONTENT_TYPE: &str = "application/vnd.autonomi.video.catalog+json;v=1";
 const VIDEO_MANIFEST_CONTENT_TYPE: &str = "application/vnd.autonomi.video.manifest+json;v=1";
+const MIN_ANTD_SELF_ENCRYPTION_BYTES: usize = 3;
 const SUPPORTED_RESOLUTIONS: &[&str] = &[
     "8k", "4k", "1440p", "1080p", "720p", "540p", "480p", "360p", "240p", "144p",
 ];
@@ -856,6 +857,31 @@ impl AntdRestClient {
             Some(json!({ "data": BASE64.encode(data) })),
         )
         .await
+    }
+
+    async fn data_cost_for_size(&self, byte_size: usize) -> anyhow::Result<AntdDataCostResponse> {
+        let quote_size = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES);
+        let mut data = vec![0_u8; quote_size];
+        rand::thread_rng().fill_bytes(&mut data);
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self.data_cost(&data).await {
+                Ok(estimate) => return Ok(estimate),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt < 3 {
+                        sleep(StdDuration::from_millis(100 * attempt as u64)).await;
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .map(|err| {
+                anyhow::anyhow!("Autonomi cost estimate failed for {quote_size} quote bytes: {err}")
+            })
+            .unwrap_or_else(|| {
+                anyhow::anyhow!("Autonomi cost estimate failed for {quote_size} quote bytes")
+            }))
     }
 
     async fn data_put_public(
@@ -2751,6 +2777,16 @@ async fn process_video_inner(
             let byte_size = fs::metadata(ts_path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
+            if byte_size < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!(
+                        "FFmpeg produced a segment too small for Autonomi storage: {} ({} bytes)",
+                        ts_path.display(),
+                        byte_size
+                    ),
+                ));
+            }
             sqlx::query(
                 r#"
                 INSERT INTO video_segments
@@ -2819,14 +2855,15 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         estimated_bytes: i64,
         actual_bytes: i64,
         chunk_count: i64,
-        storage_cost_atto: i64,
-        estimated_gas_cost_wei: i64,
+        storage_cost_atto: u128,
+        estimated_gas_cost_wei: u128,
         payment_mode: String,
     }
     struct FinalSegmentQuoteInput {
         order: usize,
         variant_id: Uuid,
         resolution: String,
+        segment_index: i32,
         width: i32,
         height: i32,
         total_duration: Option<f64>,
@@ -2840,8 +2877,8 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
         height: i32,
         total_duration: Option<f64>,
         byte_size: i64,
-        storage_cost: i64,
-        gas_cost: i64,
+        storage_cost: u128,
+        gas_cost: u128,
         chunk_count: i64,
         payment_mode: String,
     }
@@ -2909,6 +2946,7 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
             order,
             variant_id: row.try_get("variant_id").map_err(db_error)?,
             resolution: row.try_get("resolution").unwrap_or_default(),
+            segment_index: row.try_get("segment_index").unwrap_or_default(),
             width: row.try_get("width").unwrap_or_default(),
             height: row.try_get("height").unwrap_or_default(),
             total_duration: row
@@ -2931,13 +2969,28 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
                 .acquire_owned()
                 .await
                 .map_err(|err| err.to_string())?;
-            let data = tokio_fs::read(&input.local_path)
+            let metadata = tokio_fs::metadata(&input.local_path)
                 .await
-                .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
+                .map_err(|err| format!("Could not inspect transcoded segment: {err}"))?;
+            let byte_size = metadata.len();
+            if byte_size < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
+                return Err(format!(
+                    "Transcoded segment is too small to store on Autonomi: {}/{}/segment-{:05} has {} bytes",
+                    input.resolution,
+                    input.variant_id,
+                    input.segment_index,
+                    byte_size
+                ));
+            }
             let estimate = antd
-                .data_cost(&data)
+                .data_cost_for_size(byte_size as usize)
                 .await
-                .map_err(|err| format!("Could not get final Autonomi price quote: {err}"))?;
+                .map_err(|err| {
+                    format!(
+                        "Could not get final Autonomi price quote for {}/segment-{:05} ({} bytes): {err}",
+                        input.resolution, input.segment_index, byte_size
+                    )
+                })?;
             Ok::<FinalSegmentQuoteResult, String>(FinalSegmentQuoteResult {
                 order: input.order,
                 variant_id: input.variant_id,
@@ -2945,9 +2998,9 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
                 width: input.width,
                 height: input.height,
                 total_duration: input.total_duration,
-                byte_size: data.len() as i64,
-                storage_cost: parse_cost_i64(estimate.cost.as_deref()),
-                gas_cost: parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref()),
+                byte_size: byte_size as i64,
+                storage_cost: parse_cost_u128(estimate.cost.as_deref()),
+                gas_cost: parse_cost_u128(estimate.estimated_gas_cost_wei.as_deref()),
                 chunk_count: estimate.chunk_count.unwrap_or(0),
                 payment_mode: estimate.payment_mode.unwrap_or(default_payment_mode),
             })
@@ -2981,8 +3034,8 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
     let mut variants = Vec::<FinalVariantQuote>::new();
     let mut variant_indexes = HashMap::<String, usize>::new();
     let mut quote_cache = HashMap::<i64, QuoteValue>::new();
-    let mut total_storage_cost = 0_i64;
-    let mut total_gas_cost = 0_i64;
+    let mut total_storage_cost = 0_u128;
+    let mut total_gas_cost = 0_u128;
     let mut total_bytes = 0_i64;
     let mut total_chunks = 0_i64;
     let mut max_duration = 0.0_f64;
@@ -3035,30 +3088,34 @@ async fn build_final_upload_quote(state: &AppState, video_id: &str) -> Result<Va
                 ),
             ));
         }
-        let data = tokio_fs::read(&path).await.map_err(|err| {
+        let metadata = tokio_fs::metadata(&path).await.map_err(|err| {
             ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not read original source file: {err}"),
+                format!("Could not inspect original source file: {err}"),
             )
         })?;
-        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("Could not get final Autonomi price quote for original file: {err}"),
-            )
-        })?;
-        let storage_cost = parse_cost_i64(estimate.cost.as_deref());
-        let gas_cost = parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref());
-        let chunk_count = estimate.chunk_count.unwrap_or(0);
-        let payment_mode = estimate
-            .payment_mode
-            .unwrap_or_else(|| state.config.antd_payment_mode.clone());
+        let byte_size = metadata.len() as i64;
+        let quote = quote_data_size(state, byte_size, &mut quote_cache)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    err.status,
+                    format!(
+                        "Could not get final Autonomi price quote for original file: {}",
+                        err.detail
+                    ),
+                )
+            })?;
+        let storage_cost = quote.storage_cost_atto;
+        let gas_cost = quote.estimated_gas_cost_wei;
+        let chunk_count = quote.chunk_count;
+        let payment_mode = quote.payment_mode;
         total_storage_cost += storage_cost;
         total_gas_cost += gas_cost;
-        total_bytes += data.len() as i64;
+        total_bytes += byte_size;
         total_chunks += chunk_count;
         original_file_quote = Some(json!({
-            "byte_size": data.len() as i64,
+            "byte_size": byte_size,
             "chunk_count": chunk_count,
             "storage_cost_atto": storage_cost.to_string(),
             "estimated_gas_cost_wei": gas_cost.to_string(),
@@ -3279,6 +3336,12 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
                     .await
                     .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
                 let byte_size = data.len() as i64;
+                if data.len() < MIN_ANTD_SELF_ENCRYPTION_BYTES {
+                    return Err(format!(
+                        "Transcoded segment is too small to store on Autonomi: {} has {} bytes",
+                        input.label, byte_size
+                    ));
+                }
                 let result = put_public_verified_inner(
                     antd,
                     payment_mode,
@@ -4420,11 +4483,32 @@ fn ceil_ratio(value: i64, numerator: i64, denominator: i64) -> i64 {
         / i128::from(denominator)) as i64
 }
 
+fn ceil_ratio_u128(value: u128, numerator: i64, denominator: i64) -> u128 {
+    if value == 0 || numerator <= 0 || denominator <= 0 {
+        return 0;
+    }
+    let numerator = numerator as u128;
+    let denominator = denominator as u128;
+    (value * numerator + denominator - 1) / denominator
+}
+
+fn quote_sample_bytes(byte_size: i64, max_sample_bytes: usize) -> Option<i64> {
+    if byte_size <= 0 {
+        return None;
+    }
+    let max_sample_bytes = max_sample_bytes.max(MIN_ANTD_SELF_ENCRYPTION_BYTES) as i64;
+    Some(
+        byte_size
+            .min(max_sample_bytes)
+            .max(MIN_ANTD_SELF_ENCRYPTION_BYTES as i64),
+    )
+}
+
 #[derive(Clone)]
 struct QuoteValue {
     sampled: bool,
-    storage_cost_atto: i64,
-    estimated_gas_cost_wei: i64,
+    storage_cost_atto: u128,
+    estimated_gas_cost_wei: u128,
     chunk_count: i64,
     payment_mode: String,
 }
@@ -4444,22 +4528,26 @@ async fn quote_data_size(
         });
     }
 
-    let sample_bytes = byte_size.min(state.config.upload_quote_max_sample_bytes as i64);
+    let quote_bytes = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES as i64);
+    let sample_bytes = quote_sample_bytes(byte_size, state.config.upload_quote_max_sample_bytes)
+        .unwrap_or(MIN_ANTD_SELF_ENCRYPTION_BYTES as i64);
     if cache.get(&sample_bytes).is_none() {
-        let mut data = vec![0_u8; sample_bytes as usize];
-        rand::thread_rng().fill_bytes(&mut data);
-        let estimate = state.antd.data_cost(&data).await.map_err(|err| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("Could not get Autonomi price quote: {err}"),
-            )
-        })?;
+        let estimate = state
+            .antd
+            .data_cost_for_size(sample_bytes as usize)
+            .await
+            .map_err(|err| {
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Could not get Autonomi price quote: {err}"),
+                )
+            })?;
         cache.insert(
             sample_bytes,
             QuoteValue {
                 sampled: false,
-                storage_cost_atto: parse_cost_i64(estimate.cost.as_deref()),
-                estimated_gas_cost_wei: parse_cost_i64(estimate.estimated_gas_cost_wei.as_deref()),
+                storage_cost_atto: parse_cost_u128(estimate.cost.as_deref()),
+                estimated_gas_cost_wei: parse_cost_u128(estimate.estimated_gas_cost_wei.as_deref()),
                 chunk_count: estimate.chunk_count.unwrap_or(0),
                 payment_mode: estimate
                     .payment_mode
@@ -4469,22 +4557,26 @@ async fn quote_data_size(
     }
 
     let quoted = cache.get(&sample_bytes).cloned().unwrap();
-    if sample_bytes == byte_size {
+    if sample_bytes == quote_bytes {
         return Ok(quoted);
     }
 
     Ok(QuoteValue {
         sampled: true,
-        storage_cost_atto: ceil_ratio(quoted.storage_cost_atto, byte_size, sample_bytes),
-        estimated_gas_cost_wei: ceil_ratio(quoted.estimated_gas_cost_wei, byte_size, sample_bytes),
-        chunk_count: ceil_ratio(quoted.chunk_count, byte_size, sample_bytes).max(1),
+        storage_cost_atto: ceil_ratio_u128(quoted.storage_cost_atto, quote_bytes, sample_bytes),
+        estimated_gas_cost_wei: ceil_ratio_u128(
+            quoted.estimated_gas_cost_wei,
+            quote_bytes,
+            sample_bytes,
+        ),
+        chunk_count: ceil_ratio(quoted.chunk_count, quote_bytes, sample_bytes).max(1),
         payment_mode: quoted.payment_mode,
     })
 }
 
-fn parse_cost_i64(value: Option<&str>) -> i64 {
+fn parse_cost_u128(value: Option<&str>) -> u128 {
     value
-        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|value| value.parse::<u128>().ok())
         .unwrap_or(0)
 }
 
@@ -4558,8 +4650,8 @@ async fn build_upload_quote(
 
     let mut quote_cache = std::collections::HashMap::new();
     let mut variants = Vec::new();
-    let mut total_storage_cost = 0_i64;
-    let mut total_gas_cost = 0_i64;
+    let mut total_storage_cost = 0_u128;
+    let mut total_gas_cost = 0_u128;
     let mut total_bytes = 0_i64;
     let mut total_segments = 0_i64;
     let mut any_sampled = false;
@@ -4589,8 +4681,8 @@ async fn build_upload_quote(
         );
         let full_quote = quote_data_size(state, full_segment_bytes, &mut quote_cache).await?;
 
-        let mut variant_storage_cost = full_quote.storage_cost_atto * full_segments;
-        let mut variant_gas_cost = full_quote.estimated_gas_cost_wei * full_segments;
+        let mut variant_storage_cost = full_quote.storage_cost_atto * full_segments as u128;
+        let mut variant_gas_cost = full_quote.estimated_gas_cost_wei * full_segments as u128;
         let mut variant_bytes = full_segment_bytes * full_segments;
         let mut variant_chunks = full_quote.chunk_count * full_segments;
         any_sampled = any_sampled || full_quote.sampled;
@@ -4723,6 +4815,36 @@ mod tests {
     #[test]
     fn estimate_transcoded_bytes_uses_bitrate_and_overhead() {
         assert_eq!(estimate_transcoded_bytes(1.0, 500, 96, 1.08), 80460);
+    }
+
+    #[test]
+    fn parses_quote_costs_above_i64_max() {
+        let ten_ant_atto = "10000000000000000000";
+        assert_eq!(
+            parse_cost_u128(Some(ten_ant_atto)),
+            10_000_000_000_000_000_000_u128
+        );
+        assert_eq!(parse_cost_u128(Some("-1")), 0);
+        assert_eq!(parse_cost_u128(Some("not-a-number")), 0);
+    }
+
+    #[test]
+    fn scales_sampled_quote_costs_without_signed_overflow() {
+        let value = 10_000_000_000_000_000_000_u128;
+        assert_eq!(
+            ceil_ratio_u128(value, 3, 2),
+            15_000_000_000_000_000_000_u128
+        );
+    }
+
+    #[test]
+    fn quote_sample_bytes_respects_autonomi_minimum() {
+        assert_eq!(quote_sample_bytes(0, 16), None);
+        assert_eq!(quote_sample_bytes(1, 16), Some(3));
+        assert_eq!(quote_sample_bytes(2, 16), Some(3));
+        assert_eq!(quote_sample_bytes(10, 16), Some(10));
+        assert_eq!(quote_sample_bytes(100, 16), Some(16));
+        assert_eq!(quote_sample_bytes(100, 1), Some(3));
     }
 
     #[test]
