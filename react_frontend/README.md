@@ -81,14 +81,37 @@ public/
 └── runtime-config.js # Optional runtime browser config hook
 src/
 ├── main.jsx
-└── App.jsx     # All components in one file: App, UploadPanel, Library, VideoPlayer
+├── App.jsx
+├── api/
+│   └── client.js
+├── components/
+│   ├── FinalQuotePanel.jsx
+│   ├── Library.jsx
+│   ├── LoginPanel.jsx
+│   ├── UploadPanel.jsx
+│   └── VideoPlayer.jsx
+├── hooks/
+│   └── useAuth.js
+├── styles/
+│   ├── base.css
+│   ├── library.css
+│   ├── player.css
+│   ├── quote.css
+│   ├── responsive.css
+│   └── upload.css
+└── utils/
+    ├── format.js
+    ├── resolutions.js
+    └── status.js
 ```
 
-`App.jsx` contains four components:
+The frontend is split by responsibility:
 
-| Component | Description |
+| Area | Description |
 |---|---|
-| `App` | Root: tab state (Library / Upload), nav bar |
-| `UploadPanel` | File input, title/description fields, resolution and upload option checkboxes, upload progress |
-| `Library` | Video list table, status polling, row expand, resolution selector |
-| `VideoPlayer` | hls.js wrapper; attaches/detaches on mount/unmount |
+| `App.jsx` | Root shell, tab state, and top navigation |
+| `api/client.js` | Axios calls for auth, upload quotes/uploads, admin actions, and catalog reads |
+| `components/` | Upload, library, login, final quote, and HLS player UI |
+| `hooks/useAuth.js` | Local token storage and `/auth/me` validation |
+| `utils/` | Formatting, status, and resolution ladder helpers |
+| `styles/` | Smaller CSS files grouped by surface |
