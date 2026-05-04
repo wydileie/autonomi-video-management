@@ -29,7 +29,7 @@ Browser
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
 5. Rust admin sums the actual transcoded segment sizes, optionally includes the original source file, and asks `antd` for a final quote using the real bytes.
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
-7. After approval, every segment and the optional original source file are uploaded to the Autonomi network via the `antd` daemon using `data_put_public`.
+7. After approval, every segment and the optional original source file are streamed to the Autonomi network through the `antd` daemon file endpoint; small JSON metadata still uses the data endpoint.
 8. A video manifest JSON containing resolution, segment order, durations, optional original-file metadata, and Autonomi addresses is stored on Autonomi.
 9. The job status flips to `ready`. Admins can then publish or unpublish the video from the public library, or choose automatic publishing during upload.
 10. Publishing stores a catalog JSON containing the public video list and manifest addresses on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
@@ -415,7 +415,7 @@ autonomi-video-management/
 ├── rust_admin/
 │   ├── Dockerfile
 │   ├── Cargo.toml
-│   └── src/main.rs             # Axum: upload, transcode, Autonomi upload, metadata API
+│   └── src/                    # Axum admin API split into config, auth, routes, jobs, upload, media, catalog, pipeline, storage, DB, models, state, and antd client
 ├── rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
@@ -431,7 +431,7 @@ autonomi-video-management/
 ├── nginx/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
 ├── postgres-init/
-│   └── init-dbs.sh             # Creates databases, users, and video schema
+│   └── init-dbs.sh             # Creates databases and users; Rust services apply SQLx migrations
 ├── docs/
 │   ├── DEPLOYMENT.md           # Production deployment guide
 │   ├── RUNTIME_MODES.md        # Containerized and future native runtime boundaries
