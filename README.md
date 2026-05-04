@@ -248,6 +248,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_QUOTE_CONCURRENCY` | No | Rust admin concurrent final-quote cost checks. Default: `8` |
 | `ANTD_UPLOAD_CONCURRENCY` | No | Rust admin concurrent segment upload/verify tasks. Default: `4` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
+| `ANTD_REQUIRE_COST_READY` | No | Whether admin startup and health require a successful Autonomi write-cost probe, not just `/health`. Default: `false` |
+| `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
 | `UPLOAD_QUOTE_TRANSCODED_OVERHEAD` | No | Multiplier applied to upload quote estimates for transcoded bytes. Default: `1.08` |
 | `UPLOAD_QUOTE_MAX_SAMPLE_BYTES` | No | Max sample size for upload quote cost checks. Default: `16777216` |
 | `UPLOAD_MAX_FILE_BYTES` | No | Max accepted source upload bytes. Default: `21474836480` (20 GiB) |
@@ -265,7 +267,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |
 | `STREAM_CATALOG_CACHE_TTL_SECONDS` | No | Rust stream catalog metadata cache TTL. Default: `10`; set `0` to disable |
 | `STREAM_MANIFEST_CACHE_TTL_SECONDS` | No | Rust stream video manifest cache TTL. Default: `300`; set `0` to disable |
-| `STREAM_SEGMENT_CACHE_TTL_SECONDS` | No | Rust stream segment byte cache TTL and response `Cache-Control` max-age. Default: `60`; set `0` to disable in-process segment caching |
+| `STREAM_SEGMENT_CACHE_TTL_SECONDS` | No | Rust stream segment byte cache TTL and response `Cache-Control` max-age. Default: `3600`; set `0` to disable in-process segment caching |
 | `STREAM_SEGMENT_CACHE_MAX_BYTES` | No | Rust stream in-process segment cache byte cap. Default: `67108864` |
 | `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
 | `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |

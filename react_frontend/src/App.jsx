@@ -1,7 +1,6 @@
 /* global BigInt */
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import axios from "axios";
-import Hls from "hls.js";
 import "./App.css";
 import { API_BASE_URL, STREAM_BASE_URL } from "./runtimeConfig";
 
@@ -224,6 +223,8 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
     if (!video) return undefined;
 
     setPlaybackError("");
+    let active = true;
+    let cleanupPlayback = () => {};
     const { currentTime: resumeAt, shouldResume } = playbackStateRef.current;
     let resumedAfterRestore = false;
     const resumePlayback = () => {
@@ -256,29 +257,7 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
       video.removeEventListener("loadedmetadata", restoreNativePlayback);
     };
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-        startPosition: resumeAt > 0 ? resumeAt : -1,
-      });
-      hlsRef.current = hls;
-      hls.loadSource(src);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, resumePlayback);
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data?.fatal) {
-          setPlaybackError("Playback failed because the video segments could not be loaded.");
-        }
-      });
-      return () => {
-        capturePlaybackState();
-        hls.destroy();
-        hlsRef.current = null;
-      };
-    }
-
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    const attachNativePlayback = () => {
       const onNativePlaybackError = () => {
         setPlaybackError("Playback failed because the video segments could not be loaded.");
       };
@@ -289,16 +268,54 @@ function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolut
       video.addEventListener("error", onNativePlaybackError, { once: true });
       video.src = src;
       video.load();
-      return () => {
-        capturePlaybackState();
+      cleanupPlayback = () => {
         video.removeEventListener("canplay", restoreNativePlayback);
         video.removeEventListener("durationchange", restoreNativePlayback);
         video.removeEventListener("loadeddata", restoreNativePlayback);
         video.removeEventListener("loadedmetadata", restoreNativePlayback);
         video.removeEventListener("error", onNativePlaybackError);
       };
-    }
-    return undefined;
+    };
+
+    import("hls.js").then(({ default: Hls }) => {
+      if (!active) return;
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+          startPosition: resumeAt > 0 ? resumeAt : -1,
+        });
+        hlsRef.current = hls;
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, resumePlayback);
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (data?.fatal) {
+            setPlaybackError("Playback failed because the video segments could not be loaded.");
+          }
+        });
+        cleanupPlayback = () => {
+          hls.destroy();
+          hlsRef.current = null;
+        };
+        return;
+      }
+
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        attachNativePlayback();
+      }
+    }).catch(() => {
+      if (active && video.canPlayType("application/vnd.apple.mpegurl")) {
+        attachNativePlayback();
+      }
+    });
+
+    return () => {
+      active = false;
+      capturePlaybackState();
+      cleanupPlayback();
+      hlsRef.current = null;
+    };
   }, [capturePlaybackState, src]);
 
   useEffect(() => {

@@ -23,17 +23,19 @@ use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use subtle::ConstantTimeEq;
 use tokio::{
     fs as tokio_fs,
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     process::Command,
     sync::{Mutex, Semaphore},
     task::JoinSet,
     time::sleep,
 };
+use tokio_util::io::ReaderStream;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -99,6 +101,8 @@ struct Config {
     antd_quote_concurrency: usize,
     antd_upload_concurrency: usize,
     antd_approve_on_startup: bool,
+    antd_require_cost_ready: bool,
+    antd_direct_upload_max_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -132,10 +136,20 @@ struct AntdDataPutResponse {
     cost: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AntdFilePutResponse {
+    address: String,
+    byte_size: u64,
+    storage_cost_atto: String,
+    payment_mode_used: String,
+}
+
 #[derive(Serialize)]
 struct HealthResponse {
     ok: bool,
     autonomi: AutonomiHealth,
+    postgres: PostgresHealth,
+    write_ready: bool,
     payment_mode: String,
     final_quote_approval_ttl_seconds: i64,
     implementation: &'static str,
@@ -146,6 +160,12 @@ struct HealthResponse {
 struct AutonomiHealth {
     ok: bool,
     network: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PostgresHealth {
+    ok: bool,
     error: Option<String>,
 }
 
@@ -562,6 +582,11 @@ impl Config {
         if antd_upload_concurrency < 1 {
             anyhow::bail!("ANTD_UPLOAD_CONCURRENCY must be at least 1");
         }
+        let antd_direct_upload_max_bytes =
+            parse_usize_env("ANTD_DIRECT_UPLOAD_MAX_BYTES", 16 * 1024 * 1024)?;
+        if antd_direct_upload_max_bytes < MIN_ANTD_SELF_ENCRYPTION_BYTES {
+            anyhow::bail!("ANTD_DIRECT_UPLOAD_MAX_BYTES must be at least 3");
+        }
 
         Ok(Self {
             db_dsn,
@@ -605,6 +630,8 @@ impl Config {
             antd_quote_concurrency,
             antd_upload_concurrency,
             antd_approve_on_startup: parse_bool_env("ANTD_APPROVE_ON_STARTUP", true),
+            antd_require_cost_ready: parse_bool_env("ANTD_REQUIRE_COST_READY", false),
+            antd_direct_upload_max_bytes,
         })
     }
 }
@@ -800,6 +827,7 @@ impl AntdRestClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
+                .connect_timeout(StdDuration::from_secs(5))
                 .timeout(duration_from_secs_f64(timeout_seconds))
                 .build()?,
         })
@@ -900,6 +928,36 @@ impl AntdRestClient {
         .await
     }
 
+    async fn file_put_public(
+        &self,
+        path: &FsPath,
+        payment_mode: &str,
+        verify: bool,
+    ) -> anyhow::Result<AntdFilePutResponse> {
+        let (_, sha256) = sha256_file_async(path).await?;
+        let file = tokio_fs::File::open(path).await?;
+        let stream = ReaderStream::new(file);
+        let url = format!(
+            "{}/v1/file/public?payment_mode={payment_mode}&verify={}",
+            self.base_url, verify
+        );
+        let response = self
+            .client
+            .post(url)
+            .header("content-type", "application/octet-stream")
+            .header("x-content-sha256", sha256)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+        let status = response.status();
+        let text = response.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("POST /v1/file/public failed: {} {}", status, text);
+        }
+        serde_json::from_str(&text)
+            .map_err(|err| anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err))
+    }
+
     async fn request_json<T>(
         &self,
         method: reqwest::Method,
@@ -925,6 +983,24 @@ impl AntdRestClient {
     }
 }
 
+fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    if message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 ") {
+        return true;
+    }
+
+    // Some antd-compatible servers close the connection as soon as they reject
+    // the unsupported streaming route, while reqwest is still sending the body.
+    // Treat that as "endpoint unavailable" so small media can use the legacy
+    // JSON upload path instead of failing mid-stream.
+    let message = message.to_ascii_lowercase();
+    message.contains("/v1/file/public")
+        && (message.contains("error sending request")
+            || message.contains("connection reset")
+            || message.contains("broken pipe")
+            || message.contains("connection closed"))
+}
+
 async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow::Result<()> {
     let status = antd.health().await?;
     if !status.status.eq_ignore_ascii_case("ok") {
@@ -937,147 +1013,75 @@ async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow
         let approved = antd.wallet_approve().await?;
         info!(?approved, "Autonomi wallet spend approval checked");
     }
+    if config.antd_require_cost_ready {
+        antd.data_cost_for_size(MIN_ANTD_SELF_ENCRYPTION_BYTES)
+            .await?;
+        info!("Autonomi write cost probe succeeded");
+    }
     Ok(())
 }
 
 async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
-    const SCHEMA_SQL: &str = r#"
-        CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
-        CREATE TABLE IF NOT EXISTS videos (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            title TEXT NOT NULL,
-            original_filename TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL DEFAULT 'pending',
-            manifest_address TEXT,
-            catalog_address TEXT,
-            error_message TEXT,
-            job_dir TEXT,
-            job_source_path TEXT,
-            requested_resolutions JSONB,
-            final_quote JSONB,
-            final_quote_created_at TIMESTAMPTZ,
-            approval_expires_at TIMESTAMPTZ,
-            is_public BOOLEAN NOT NULL DEFAULT FALSE,
-            show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
-            show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
-            upload_original BOOLEAN NOT NULL DEFAULT FALSE,
-            original_file_address TEXT,
-            original_file_byte_size BIGINT,
-            original_file_autonomi_cost_atto TEXT,
-            original_file_autonomi_payment_mode TEXT,
-            publish_when_ready BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            user_id TEXT
-        );
-
-        ALTER TABLE videos
-            ADD COLUMN IF NOT EXISTS manifest_address TEXT,
-            ADD COLUMN IF NOT EXISTS catalog_address TEXT,
-            ADD COLUMN IF NOT EXISTS error_message TEXT,
-            ADD COLUMN IF NOT EXISTS job_dir TEXT,
-            ADD COLUMN IF NOT EXISTS job_source_path TEXT,
-            ADD COLUMN IF NOT EXISTS requested_resolutions JSONB,
-            ADD COLUMN IF NOT EXISTS final_quote JSONB,
-            ADD COLUMN IF NOT EXISTS final_quote_created_at TIMESTAMPTZ,
-            ADD COLUMN IF NOT EXISTS approval_expires_at TIMESTAMPTZ,
-            ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS show_original_filename BOOLEAN NOT NULL DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS show_manifest_address BOOLEAN NOT NULL DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS upload_original BOOLEAN NOT NULL DEFAULT FALSE,
-            ADD COLUMN IF NOT EXISTS original_file_address TEXT,
-            ADD COLUMN IF NOT EXISTS original_file_byte_size BIGINT,
-            ADD COLUMN IF NOT EXISTS original_file_autonomi_cost_atto TEXT,
-            ADD COLUMN IF NOT EXISTS original_file_autonomi_payment_mode TEXT,
-            ADD COLUMN IF NOT EXISTS publish_when_ready BOOLEAN NOT NULL DEFAULT FALSE;
-
-        CREATE TABLE IF NOT EXISTS video_variants (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
-            resolution TEXT NOT NULL,
-            width INTEGER NOT NULL,
-            height INTEGER NOT NULL,
-            video_bitrate INTEGER NOT NULL,
-            audio_bitrate INTEGER NOT NULL,
-            segment_duration FLOAT NOT NULL DEFAULT 10.0,
-            total_duration FLOAT,
-            segment_count INTEGER,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS video_segments (
-            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-            variant_id UUID NOT NULL REFERENCES video_variants(id) ON DELETE CASCADE,
-            segment_index INTEGER NOT NULL,
-            autonomi_address TEXT,
-            autonomi_cost_atto TEXT,
-            autonomi_payment_mode TEXT,
-            duration FLOAT NOT NULL DEFAULT 10.0,
-            byte_size BIGINT,
-            local_path TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE (variant_id, segment_index)
-        );
-
-        ALTER TABLE video_segments
-            ADD COLUMN IF NOT EXISTS autonomi_cost_atto TEXT,
-            ADD COLUMN IF NOT EXISTS autonomi_payment_mode TEXT,
-            ADD COLUMN IF NOT EXISTS local_path TEXT;
-
-        ALTER TABLE video_segments
-            ALTER COLUMN autonomi_address DROP NOT NULL;
-
-        CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-        CREATE INDEX IF NOT EXISTS idx_videos_is_public ON videos(is_public);
-        CREATE INDEX IF NOT EXISTS idx_variants_video ON video_variants(video_id);
-        CREATE INDEX IF NOT EXISTS idx_segments_variant ON video_segments(variant_id);
-
-        UPDATE videos
-        SET show_original_filename=FALSE
-        WHERE show_original_filename=TRUE;
-    "#;
-
-    for statement in SCHEMA_SQL
-        .split(';')
-        .map(str::trim)
-        .filter(|sql| !sql.is_empty())
-    {
-        sqlx::query(statement).execute(pool).await?;
-    }
+    sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    match state.antd.health().await {
-        Ok(status) => Json(HealthResponse {
+    let autonomi = match state.antd.health().await {
+        Ok(status) => AutonomiHealth {
             ok: status.status.eq_ignore_ascii_case("ok"),
-            autonomi: AutonomiHealth {
-                ok: status.status.eq_ignore_ascii_case("ok"),
-                network: status.network,
-                error: None,
-            },
-            payment_mode: state.config.antd_payment_mode.clone(),
-            final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
-            implementation: "rust_admin",
-            role: "primary_admin",
-        })
-        .into_response(),
-        Err(err) => Json(HealthResponse {
+            network: status.network,
+            error: None,
+        },
+        Err(err) => AutonomiHealth {
             ok: false,
-            autonomi: AutonomiHealth {
-                ok: false,
-                network: None,
-                error: Some(err.to_string()),
-            },
+            network: None,
+            error: Some(err.to_string()),
+        },
+    };
+    let postgres = match sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(_) => PostgresHealth {
+            ok: true,
+            error: None,
+        },
+        Err(err) => PostgresHealth {
+            ok: false,
+            error: Some(err.to_string()),
+        },
+    };
+    let write_ready = if state.config.antd_require_cost_ready {
+        state
+            .antd
+            .data_cost_for_size(MIN_ANTD_SELF_ENCRYPTION_BYTES)
+            .await
+            .is_ok()
+    } else {
+        autonomi.ok
+    };
+    let ok = autonomi.ok && postgres.ok && write_ready;
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status,
+        Json(HealthResponse {
+            ok,
+            autonomi,
+            postgres,
+            write_ready,
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
             implementation: "rust_admin",
             role: "primary_admin",
-        })
-        .into_response(),
-    }
+        }),
+    )
+        .into_response()
 }
 
 async fn login(
@@ -1845,6 +1849,33 @@ fn format_bytes(byte_count: u64) -> String {
     format!("{byte_count} B")
 }
 
+async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
+    let mut file = tokio_fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut byte_size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        byte_size += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok((byte_size, hex_lower(&digest)))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 async fn run_command_output(
     mut command: Command,
     timeout_seconds: Option<f64>,
@@ -2233,9 +2264,45 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
 }
 
 fn read_catalog_state_value(config: &Config) -> Option<Value> {
-    fs::read_to_string(&config.catalog_state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    let raw = match fs::read_to_string(&config.catalog_state_path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            warn!(
+                path = %config.catalog_state_path.display(),
+                "Could not read catalog state file: {err}"
+            );
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            let broken_path = catalog_state_broken_path(&config.catalog_state_path);
+            match fs::rename(&config.catalog_state_path, &broken_path) {
+                Ok(()) => warn!(
+                    path = %config.catalog_state_path.display(),
+                    broken_path = %broken_path.display(),
+                    "Quarantined invalid catalog state file: {err}"
+                ),
+                Err(rename_err) => warn!(
+                    path = %config.catalog_state_path.display(),
+                    broken_path = %broken_path.display(),
+                    "Invalid catalog state file could not be quarantined: {err}; rename failed: {rename_err}"
+                ),
+            }
+            None
+        }
+    }
+}
+
+fn catalog_state_broken_path(path: &FsPath) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("catalog.json");
+    path.with_file_name(format!("{file_name}.broken"))
 }
 
 fn catalog_address_from_state(value: &Value) -> Option<String> {
@@ -3244,6 +3311,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
         segment_index: i32,
         address: String,
         cost: Option<String>,
+        payment_mode: String,
         byte_size: i64,
     }
 
@@ -3327,36 +3395,66 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
             let payment_mode = state.config.antd_payment_mode.clone();
             let upload_verify = state.config.antd_upload_verify;
             let upload_retries = state.config.antd_upload_retries;
+            let direct_upload_max_bytes = state.config.antd_direct_upload_max_bytes;
             jobs.spawn(async move {
                 let _permit = semaphore
                     .acquire_owned()
                     .await
                     .map_err(|err| err.to_string())?;
-                let data = tokio_fs::read(&input.local_path)
+                let metadata = tokio_fs::metadata(&input.local_path)
                     .await
-                    .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
-                let byte_size = data.len() as i64;
-                if data.len() < MIN_ANTD_SELF_ENCRYPTION_BYTES {
+                    .map_err(|err| format!("Could not inspect transcoded segment: {err}"))?;
+                let byte_size = metadata.len() as i64;
+                if metadata.len() < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
                     return Err(format!(
                         "Transcoded segment is too small to store on Autonomi: {} has {} bytes",
                         input.label, byte_size
                     ));
                 }
-                let result = put_public_verified_inner(
-                    antd,
-                    payment_mode,
-                    upload_verify,
-                    upload_retries,
-                    data,
-                    input.label,
-                )
-                .await?;
-                Ok::<SegmentUploadResult, String>(SegmentUploadResult {
-                    segment_index: input.segment_index,
-                    address: result.address,
-                    cost: result.cost,
-                    byte_size,
-                })
+                match antd
+                    .file_put_public(&input.local_path, &payment_mode, upload_verify)
+                    .await
+                {
+                    Ok(result) => Ok::<SegmentUploadResult, String>(SegmentUploadResult {
+                        segment_index: input.segment_index,
+                        address: result.address,
+                        cost: Some(result.storage_cost_atto),
+                        payment_mode: result.payment_mode_used,
+                        byte_size: result.byte_size as i64,
+                    }),
+                    Err(err) if is_missing_file_upload_endpoint(&err) => {
+                        if metadata.len() as usize > direct_upload_max_bytes {
+                            return Err(format!(
+                                "Autonomi file upload endpoint is unavailable and legacy JSON upload for {} would exceed ANTD_DIRECT_UPLOAD_MAX_BYTES ({})",
+                                input.label,
+                                direct_upload_max_bytes
+                            ));
+                        }
+                        let data = tokio_fs::read(&input.local_path)
+                            .await
+                            .map_err(|err| format!("Could not read transcoded segment: {err}"))?;
+                        let result = put_public_verified_inner(
+                            antd,
+                            payment_mode.clone(),
+                            upload_verify,
+                            upload_retries,
+                            data,
+                            input.label,
+                        )
+                        .await?;
+                        Ok(SegmentUploadResult {
+                            segment_index: input.segment_index,
+                            address: result.address,
+                            cost: result.cost,
+                            payment_mode,
+                            byte_size,
+                        })
+                    }
+                    Err(err) => Err(format!(
+                        "Autonomi file upload failed for {}: {err}",
+                        input.label
+                    )),
+                }
             });
         }
 
@@ -3399,7 +3497,7 @@ async fn upload_approved_video_inner(state: &AppState, video_id: &str) -> Result
             )
             .bind(&result.address)
             .bind(result.cost.as_deref())
-            .bind(&state.config.antd_payment_mode)
+            .bind(&result.payment_mode)
             .bind(result.byte_size)
             .bind(variant_id)
             .bind(result.segment_index)
@@ -3529,23 +3627,67 @@ async fn upload_original_file_if_needed(
         ));
     }
 
-    let data = tokio_fs::read(&source_path).await.map_err(|err| {
+    let metadata = tokio_fs::metadata(&source_path).await.map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not read original source file: {err}"),
+            format!("Could not inspect original source file: {err}"),
         )
     })?;
-    let byte_size = data.len() as i64;
+    let byte_size = metadata.len() as i64;
     let filename = video_row
         .try_get::<String, _>("original_filename")
         .unwrap_or_else(|_| "source".to_string());
-    let result = put_public_verified_with_mode(
-        state,
-        &data,
-        &format!("{video_id}/original/{filename}"),
-        &state.config.antd_payment_mode,
-    )
-    .await?;
+    let upload_label = format!("{video_id}/original/{filename}");
+    let file_result = state
+        .antd
+        .file_put_public(
+            &source_path,
+            &state.config.antd_payment_mode,
+            state.config.antd_upload_verify,
+        )
+        .await;
+    let (address, cost, payment_mode) = match file_result {
+        Ok(result) => (
+            result.address,
+            Some(result.storage_cost_atto),
+            result.payment_mode_used,
+        ),
+        Err(err) if is_missing_file_upload_endpoint(&err) => {
+            if metadata.len() as usize > state.config.antd_direct_upload_max_bytes {
+                warn!(
+                    label = %upload_label,
+                    byte_size = metadata.len(),
+                    direct_upload_max_bytes = state.config.antd_direct_upload_max_bytes,
+                    "Skipping optional original source upload because the Autonomi file upload endpoint is unavailable and legacy JSON upload would exceed the configured cap"
+                );
+                return Ok(None);
+            }
+            let data = tokio_fs::read(&source_path).await.map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not read original source file: {err}"),
+                )
+            })?;
+            let result = put_public_verified_with_mode(
+                state,
+                &data,
+                &upload_label,
+                &state.config.antd_payment_mode,
+            )
+            .await?;
+            (
+                result.address,
+                result.cost,
+                state.config.antd_payment_mode.clone(),
+            )
+        }
+        Err(err) => {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Autonomi original source upload failed for {upload_label}: {err}"),
+            ));
+        }
+    };
     sqlx::query(
         r#"
         UPDATE videos
@@ -3557,20 +3699,20 @@ async fn upload_original_file_if_needed(
         WHERE id=$5
         "#,
     )
-    .bind(&result.address)
+    .bind(&address)
     .bind(byte_size)
-    .bind(result.cost.as_deref())
-    .bind(&state.config.antd_payment_mode)
+    .bind(cost.as_deref())
+    .bind(&payment_mode)
     .bind(video_uuid)
     .execute(&state.pool)
     .await
     .map_err(db_error)?;
 
     Ok(Some(json!({
-        "autonomi_address": result.address,
+        "autonomi_address": address,
         "byte_size": byte_size,
-        "autonomi_cost_atto": result.cost,
-        "payment_mode": state.config.antd_payment_mode.clone(),
+        "autonomi_cost_atto": cost,
+        "payment_mode": payment_mode,
     })))
 }
 
@@ -3958,6 +4100,16 @@ async fn put_public_verified_with_mode(
     label: &str,
     payment_mode: &str,
 ) -> Result<AntdDataPutResponse, ApiError> {
+    if data.len() > state.config.antd_direct_upload_max_bytes {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "Direct JSON upload for {label} is {} but ANTD_DIRECT_UPLOAD_MAX_BYTES is {}; media uploads must use the streaming file endpoint",
+                format_bytes(data.len() as u64),
+                format_bytes(state.config.antd_direct_upload_max_bytes as u64)
+            ),
+        ));
+    }
     put_public_verified_inner(
         state.antd.clone(),
         payment_mode.to_string(),
@@ -4489,7 +4641,7 @@ fn ceil_ratio_u128(value: u128, numerator: i64, denominator: i64) -> u128 {
     }
     let numerator = numerator as u128;
     let denominator = denominator as u128;
-    (value * numerator + denominator - 1) / denominator
+    (value * numerator).div_ceil(denominator)
 }
 
 fn quote_sample_bytes(byte_size: i64, max_sample_bytes: usize) -> Option<i64> {
@@ -4845,6 +4997,17 @@ mod tests {
         assert_eq!(quote_sample_bytes(10, 16), Some(10));
         assert_eq!(quote_sample_bytes(100, 16), Some(16));
         assert_eq!(quote_sample_bytes(100, 1), Some(3));
+    }
+
+    #[test]
+    fn treats_stream_abort_on_file_upload_route_as_missing_endpoint() {
+        let err = anyhow::anyhow!(
+            "error sending request for url (http://antd:8082/v1/file/public?payment_mode=auto&verify=true)"
+        );
+        assert!(is_missing_file_upload_endpoint(&err));
+
+        let err = anyhow::anyhow!("error sending request for url (http://antd:8082/health)");
+        assert!(!is_missing_file_upload_endpoint(&err));
     }
 
     #[test]

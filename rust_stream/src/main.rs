@@ -13,7 +13,7 @@
 //!   GET  /stream/manifest/{manifest_address}/{resolution}/{seg_index}.ts → TS segment by address
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     env, fs,
     path::PathBuf,
     sync::Arc,
@@ -29,6 +29,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use linked_hash_map::LinkedHashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
@@ -66,8 +67,7 @@ struct CachedValue<T> {
 }
 
 struct SegmentCache {
-    entries: HashMap<String, CachedSegment>,
-    order: VecDeque<String>,
+    entries: LinkedHashMap<String, CachedSegment>,
     total_bytes: usize,
     max_bytes: usize,
     ttl: Duration,
@@ -189,7 +189,7 @@ impl CacheConfig {
         Self {
             catalog_ttl: duration_from_env("STREAM_CATALOG_CACHE_TTL_SECONDS", 10),
             manifest_ttl: duration_from_env("STREAM_MANIFEST_CACHE_TTL_SECONDS", 300),
-            segment_ttl: duration_from_env("STREAM_SEGMENT_CACHE_TTL_SECONDS", 60),
+            segment_ttl: duration_from_env("STREAM_SEGMENT_CACHE_TTL_SECONDS", 3600),
             segment_max_bytes: usize_from_env("STREAM_SEGMENT_CACHE_MAX_BYTES", 64 * 1024 * 1024),
         }
     }
@@ -219,8 +219,7 @@ impl AppCache {
 impl SegmentCache {
     fn new(max_bytes: usize, ttl: Duration) -> Self {
         Self {
-            entries: HashMap::new(),
-            order: VecDeque::new(),
+            entries: LinkedHashMap::new(),
             total_bytes: 0,
             max_bytes,
             ttl,
@@ -233,10 +232,9 @@ impl SegmentCache {
         }
 
         let now = Instant::now();
-        match self.entries.get(address) {
+        match self.entries.get_refresh(address) {
             Some(entry) if entry.expires_at > now => {
                 let data = entry.data.clone();
-                self.touch(address);
                 Some(data)
             }
             Some(_) => {
@@ -255,7 +253,6 @@ impl SegmentCache {
         let now = Instant::now();
         self.remove(&address);
         self.total_bytes += data.len();
-        self.order.push_back(address.clone());
         self.entries.insert(
             address,
             CachedSegment {
@@ -271,18 +268,10 @@ impl SegmentCache {
         self.max_bytes == 0 || self.ttl.is_zero()
     }
 
-    fn touch(&mut self, address: &str) {
-        self.order
-            .retain(|cached_address| cached_address != address);
-        self.order.push_back(address.to_string());
-    }
-
     fn remove(&mut self, address: &str) {
         if let Some(entry) = self.entries.remove(address) {
             self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
         }
-        self.order
-            .retain(|cached_address| cached_address != address);
     }
 
     fn evict_expired(&mut self, now: Instant) {
@@ -300,23 +289,23 @@ impl SegmentCache {
 
     fn evict_to_limit(&mut self) {
         while self.total_bytes > self.max_bytes {
-            let Some(address) = self.order.pop_front() else {
+            let Some((_address, entry)) = self.entries.pop_front() else {
                 break;
             };
-
-            if let Some(entry) = self.entries.remove(&address) {
-                self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
-            }
+            self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
         }
     }
 }
 
 impl AntdRestClient {
-    fn new(base_url: &str) -> Self {
-        Self {
+    fn new(base_url: &str) -> anyhow::Result<Self> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-        }
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(60))
+                .build()?,
+        })
     }
 
     async fn health(&self) -> anyhow::Result<AntdHealthResponse> {
@@ -368,7 +357,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(|value| !value.is_empty());
     let cache_config = CacheConfig::from_env();
 
-    let antd = AntdRestClient::new(&antd_url);
+    let antd = AntdRestClient::new(&antd_url)?;
 
     let state = AppState {
         antd,
@@ -844,7 +833,7 @@ mod tests {
         };
 
         AppState {
-            antd: AntdRestClient::new("http://127.0.0.1:0"),
+            antd: AntdRestClient::new("http://127.0.0.1:0").unwrap(),
             catalog_state_path: env::temp_dir().join(format!(
                 "rust_stream_missing_catalog_{}.json",
                 std::process::id()
