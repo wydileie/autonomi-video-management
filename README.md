@@ -121,8 +121,7 @@ make ci
 
 The Rust stream and Rust admin targets run `cargo test` and `cargo clippy`
 under `rust_stream` and `rust_admin`. The React target runs the Vite/Vitest test
-command once. The legacy `python_admin` tests are kept out of the default gates
-while that implementation is being decommissioned.
+command once.
 
 ---
 
@@ -391,7 +390,7 @@ devnets.
 ```
 autonomi-video-management/
 ├── .devcontainer/
-│   ├── Dockerfile              # Dev image: Python 3.12, Rust, Node 24, antd, ant, ant-devnet
+│   ├── Dockerfile              # Dev image: Rust, Node 24, Python helpers, antd, ant, ant-devnet
 │   ├── devcontainer.json       # VS Code dev container config + MCP servers
 │   ├── start_autonomi.sh       # postStartCommand: starts local devnet + antd
 │   ├── setup_claude.py         # Writes MCP server config to ~/.claude.json
@@ -405,7 +404,6 @@ autonomi-video-management/
 │   ├── Dockerfile
 │   ├── Cargo.toml
 │   └── src/main.rs             # Axum: upload, transcode, Autonomi upload, metadata API
-├── python_admin/               # Legacy FastAPI admin retained for decommission/reference
 ├── rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
