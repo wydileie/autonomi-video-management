@@ -5,35 +5,8 @@ on:
   pull_request:
 
 jobs:
-  rust-admin:
-    name: Rust admin tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
-        with:
-          workspaces: rust_admin
-
-      - name: Check formatting
-        run: cargo fmt --check
-        working-directory: rust_admin
-
-      - name: Run cargo tests
-        run: cargo test
-        working-directory: rust_admin
-
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: rust_admin
-
-  rust-stream:
-    name: Rust stream tests
+  rust-workspace:
+    name: Rust workspace checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,50 +20,15 @@ jobs:
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.0
-        with:
-          workspaces: rust_stream
 
       - name: Check formatting
-        run: cargo fmt --check
-        working-directory: rust_stream
+        run: cargo fmt --all --check
 
       - name: Run cargo tests
-        run: cargo test
-        working-directory: rust_stream
+        run: cargo test --workspace
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: rust_stream
-
-  antd-service:
-    name: antd service tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
-        with:
-          workspaces: antd_service
-
-      - name: Check formatting
-        run: cargo fmt --check
-        working-directory: antd_service
-
-      - name: Run cargo tests
-        run: cargo test
-        working-directory: antd_service
-
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
-        working-directory: antd_service
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   react-frontend:
     name: React frontend build and tests

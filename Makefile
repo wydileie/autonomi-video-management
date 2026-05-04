@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-admin test-antd clippy-rust clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -6,10 +6,14 @@ DOCKER_COMPOSE ?= docker compose
 
 help:
 	@echo "Available targets:"
-	@echo "  make test-rust       Run Rust stream cargo tests"
+	@echo "  make test-rust       Run all Rust cargo tests"
+	@echo "  make test-rust-workspace Run all Rust cargo tests"
+	@echo "  make test-rust-stream Run Rust stream cargo tests"
 	@echo "  make test-rust-admin Run Rust admin cargo tests"
 	@echo "  make test-antd       Run antd service cargo tests"
-	@echo "  make clippy-rust     Run Rust stream clippy checks"
+	@echo "  make clippy-rust     Run all Rust clippy checks"
+	@echo "  make clippy-rust-workspace Run all Rust clippy checks"
+	@echo "  make clippy-rust-stream Run Rust stream clippy checks"
 	@echo "  make clippy-rust-admin Run Rust admin clippy checks"
 	@echo "  make clippy-antd     Run antd service clippy checks"
 	@echo "  make fmt-rust        Check Rust formatting"
@@ -21,27 +25,35 @@ help:
 	@echo "  make ci              Install dependencies and run CI checks"
 
 test-rust:
-	cd rust_stream && $(CARGO) test
+	$(CARGO) test --workspace
+
+test-rust-workspace: test-rust
+
+test-rust-stream:
+	$(CARGO) test -p rust_stream
 
 test-rust-admin:
-	cd rust_admin && $(CARGO) test
+	$(CARGO) test -p rust_admin
 
 test-antd:
-	cd antd_service && $(CARGO) test
+	$(CARGO) test -p antd
 
 clippy-rust:
-	cd rust_stream && $(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
+
+clippy-rust-workspace: clippy-rust
+
+clippy-rust-stream:
+	$(CARGO) clippy -p rust_stream --all-targets -- -D warnings
 
 clippy-rust-admin:
-	cd rust_admin && $(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy -p rust_admin --all-targets -- -D warnings
 
 clippy-antd:
-	cd antd_service && $(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy -p antd --all-targets -- -D warnings
 
 fmt-rust:
-	cd rust_stream && $(CARGO) fmt --check
-	cd rust_admin && $(CARGO) fmt --check
-	cd antd_service && $(CARGO) fmt --check
+	$(CARGO) fmt --all --check
 
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
@@ -57,6 +69,6 @@ build-react:
 test-react:
 	cd react_frontend && CI=true $(NPM) test
 
-test: test-rust test-rust-admin test-antd test-react
+test: test-rust test-react
 
-ci: fmt-rust test-rust test-rust-admin test-antd clippy-rust clippy-rust-admin clippy-antd install-react build-react test-react compose-config
+ci: fmt-rust test-rust clippy-rust install-react build-react test-react compose-config

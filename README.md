@@ -119,8 +119,8 @@ make test
 make ci
 ```
 
-The Rust stream and Rust admin targets run `cargo test` and `cargo clippy`
-under `rust_stream` and `rust_admin`. The React target runs the Vite/Vitest test
+The Rust targets run from the root Cargo workspace and cover `rust_admin`,
+`rust_stream`, and `antd_service`. The React target runs the Vite/Vitest test
 command once.
 
 ---
@@ -397,6 +397,7 @@ devnets.
 
 ```
 autonomi-video-management/
+├── Cargo.toml                  # Root Rust workspace for shared helpers and Rust services
 ├── .devcontainer/
 │   ├── Dockerfile              # Dev image: Rust, Node 24, Python helpers, antd, ant, ant-devnet
 │   ├── devcontainer.json       # VS Code dev container config + MCP servers
@@ -404,10 +405,13 @@ autonomi-video-management/
 │   ├── setup_claude.py         # Writes MCP server config to ~/.claude.json
 │   └── setup_codex.py          # Registers MCP servers with Codex
 ├── antd_service/
-│   └── Dockerfile              # Production/default-network antd daemon container
+│   ├── Dockerfile              # Production/default-network antd daemon container
+│   └── src/                    # Axum gateway split into client, routes, errors, and state
 ├── autonomi_devnet/
 │   ├── Dockerfile              # Self-contained local ant-devnet + antd testnet
 │   └── start-local-devnet.sh
+├── common/
+│   └── src/lib.rs              # Shared Rust helpers used by multiple services
 ├── rust_admin/
 │   ├── Dockerfile
 │   ├── Cargo.toml

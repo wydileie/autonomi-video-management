@@ -11,10 +11,21 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock* ./
-COPY src ./src
+COPY Cargo.toml Cargo.lock ./
+COPY common/Cargo.toml common/Cargo.toml
+COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
+COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
+COPY antd_service/Cargo.toml antd_service/Cargo.toml
+RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src && \
+    echo "" > common/src/lib.rs && \
+    echo "fn main(){}" > rust_admin/src/main.rs && \
+    echo "fn main(){}" > rust_stream/src/main.rs && \
+    echo "fn main(){}" > antd_service/src/main.rs && \
+    cargo build --release -p antd
 
-RUN cargo build --release
+COPY common/src common/src
+COPY antd_service/src antd_service/src
+RUN touch common/src/lib.rs antd_service/src/main.rs && cargo build --release -p antd
 
 # ── Stage 2: Minimal runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim

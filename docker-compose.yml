@@ -43,7 +43,9 @@ services:
 
   # 3) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
   rust_admin:
-    build: ./rust_admin
+    build:
+      context: .
+      dockerfile: rust_admin/Dockerfile
     container_name: rust_admin
     environment:
       APP_ENV: "${APP_ENV:-development}"
@@ -124,7 +126,9 @@ services:
 
   # 4) Rust streaming — HLS manifest generation + Autonomi segment proxy
   rust_stream:
-    build: ./rust_stream
+    build:
+      context: .
+      dockerfile: rust_stream/Dockerfile
     container_name: rust_stream
     environment:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"

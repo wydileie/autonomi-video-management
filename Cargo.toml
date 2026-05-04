@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "common",
+    "antd_service",
+    "rust_admin",
+    "rust_stream",
+]
+resolver = "2"
