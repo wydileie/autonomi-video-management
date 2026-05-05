@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -21,6 +21,9 @@ help:
 	@echo "  make install-react   Install React frontend dependencies"
 	@echo "  make build-react     Build the React frontend"
 	@echo "  make test-react      Run React tests in CI mode"
+	@echo "  make smoke-local     Run an end-to-end local devnet smoke test"
+	@echo "  make smoke-local-restart Run smoke test with rust_admin restart recovery"
+	@echo "  make smoke-local-large-original Run smoke test with >16MB original source upload"
 	@echo "  make audit-rust      Run cargo audit if installed"
 	@echo "  make audit-react     Run npm production audit"
 	@echo "  make audit-trivy     Run Trivy filesystem scan if installed"
@@ -72,6 +75,15 @@ build-react:
 
 test-react:
 	cd react_frontend && CI=true $(NPM) test
+
+smoke-local:
+	scripts/smoke-local-devnet.sh
+
+smoke-local-restart:
+	scripts/smoke-local-devnet.sh --restart-admin
+
+smoke-local-large-original:
+	scripts/smoke-local-devnet.sh --large-original
 
 audit-rust:
 	@if command -v cargo-audit >/dev/null 2>&1; then \

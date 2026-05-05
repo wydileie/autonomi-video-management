@@ -150,6 +150,33 @@ command once. CI also runs non-blocking advisory scans with `cargo audit`,
 failures are reported as warnings so findings can be triaged before those gates
 become blocking.
 
+When the local devnet stack is already running, the smoke harness exercises the
+same browser-facing contracts a real upload uses: `/api` auth, quote, upload,
+final approval, publication, `/stream` playlists, and segment fetches.
+
+```bash
+# In one terminal, run the local stack.
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  up --build
+
+# In another terminal, run the workflow smoke.
+make smoke-local
+
+# Restart rust_admin during the workflow to exercise durable job recovery.
+make smoke-local-restart
+
+# Expand the generated source over 16MB and require original-source storage.
+make smoke-local-large-original
+```
+
+Set `SMOKE_BASE_URL`, `SMOKE_ADMIN_USERNAME`, `SMOKE_ADMIN_PASSWORD`,
+`SMOKE_RESOLUTIONS`, or `SMOKE_VIDEO_PATH` to point the harness at a different
+stack, account, rendition set, or source file. The large-original smoke is the
+quick regression check that media uploads use the streaming file endpoint rather
+than the legacy JSON body path.
+
 ---
 
 ## Running the application stack
