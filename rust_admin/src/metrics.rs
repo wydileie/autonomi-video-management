@@ -141,3 +141,39 @@ impl AdminMetrics {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_admin_metrics_as_prometheus_text() {
+        let metrics = AdminMetrics::default();
+        metrics.http.record_request(200, Duration::from_millis(10));
+        metrics.record_job_started();
+        metrics.record_job_succeeded();
+        metrics.record_job_failed();
+        metrics.record_ffmpeg_duration(Duration::from_millis(1500));
+        metrics.record_antd_request(Duration::from_millis(80), true);
+        metrics.record_antd_request(Duration::from_millis(20), false);
+        metrics.record_upload_retry();
+
+        let rendered = metrics.render_prometheus();
+
+        assert!(rendered.contains("autvid_http_requests_total{service=\"rust_admin\"} 1"));
+        assert!(rendered.contains("autvid_admin_jobs_started_total{service=\"rust_admin\"} 1"));
+        assert!(rendered.contains("autvid_admin_jobs_succeeded_total{service=\"rust_admin\"} 1"));
+        assert!(rendered.contains("autvid_admin_jobs_failed_total{service=\"rust_admin\"} 1"));
+        assert!(rendered.contains("autvid_admin_ffmpeg_runs_total{service=\"rust_admin\"} 1"));
+        assert!(
+            rendered.contains("autvid_admin_ffmpeg_duration_ms_total{service=\"rust_admin\"} 1500")
+        );
+        assert!(rendered.contains("autvid_admin_antd_requests_total{service=\"rust_admin\"} 2"));
+        assert!(
+            rendered.contains("autvid_admin_antd_request_errors_total{service=\"rust_admin\"} 1")
+        );
+        assert!(rendered
+            .contains("autvid_admin_antd_request_latency_ms_total{service=\"rust_admin\"} 100"));
+        assert!(rendered.contains("autvid_admin_upload_retries_total{service=\"rust_admin\"} 1"));
+    }
+}

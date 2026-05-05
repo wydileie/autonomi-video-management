@@ -21,6 +21,8 @@ pub(crate) struct Config {
     pub(crate) catalog_bootstrap_address: Option<String>,
     pub(crate) cors_allowed_origins: Vec<HeaderValue>,
     pub(crate) bind_addr: SocketAddr,
+    pub(crate) admin_request_timeout_seconds: f64,
+    pub(crate) admin_upload_request_timeout_seconds: f64,
     pub(crate) upload_temp_dir: PathBuf,
     pub(crate) upload_max_file_bytes: u64,
     pub(crate) upload_min_free_bytes: u64,
@@ -77,6 +79,15 @@ impl Config {
         }
         let admin_auth_cookie_secure =
             parse_bool_env("ADMIN_AUTH_COOKIE_SECURE", is_production_environment());
+        let admin_request_timeout_seconds = parse_f64_env("ADMIN_REQUEST_TIMEOUT_SECONDS", 120.0)?;
+        if admin_request_timeout_seconds <= 0.0 {
+            anyhow::bail!("ADMIN_REQUEST_TIMEOUT_SECONDS must be greater than zero");
+        }
+        let admin_upload_request_timeout_seconds =
+            parse_f64_env("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS", 3600.0)?;
+        if admin_upload_request_timeout_seconds <= 0.0 {
+            anyhow::bail!("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS must be greater than zero");
+        }
         validate_admin_auth_config(
             &admin_username,
             &admin_password,
@@ -227,6 +238,8 @@ impl Config {
                 .filter(|value| !value.is_empty()),
             cors_allowed_origins: cors_allowed_origins()?,
             bind_addr,
+            admin_request_timeout_seconds,
+            admin_upload_request_timeout_seconds,
             upload_temp_dir: PathBuf::from(
                 env::var("UPLOAD_TEMP_DIR").unwrap_or_else(|_| "/tmp/video_uploads".into()),
             ),

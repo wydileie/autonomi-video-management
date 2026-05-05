@@ -139,15 +139,16 @@ make test
 # Run the full CI-shaped sequence, including dependency installs
 make ci
 
-# Run advisory checks locally if cargo-audit is installed
+# Run advisory checks locally; optional cargo-audit and Trivy scans are skipped if unavailable
 make audit
 ```
 
 The Rust targets run from the root Cargo workspace and cover `rust_admin`,
 `rust_stream`, and `antd_service`. The React target runs the Vite/Vitest test
 command once. CI also runs non-blocking advisory scans with `cargo audit`,
-`npm audit --omit=dev`, and Trivy filesystem scanning so findings can be triaged
-before those gates become blocking.
+`npm audit --omit=dev`, and Trivy filesystem scanning. Optional scanner install
+failures are reported as warnings so findings can be triaged before those gates
+become blocking.
 
 ---
 
@@ -256,6 +257,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `ADMIN_AUTH_COOKIE_SECURE` | No | Whether the HttpOnly admin cookie includes `Secure`. Defaults to `true` when `APP_ENV=production`, otherwise `false` |
+| `ADMIN_REQUEST_TIMEOUT_SECONDS` | No | Default `rust_admin` route timeout for non-upload requests. Default: `120` |
+| `ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `rust_admin` source upload route timeout. Default: `3600` |
 | `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart. A one-shot Compose init container creates and chowns it for the non-root admin service user |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
@@ -278,6 +281,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `ANTD_REQUIRE_COST_READY` | No | Whether admin startup and health require a successful Autonomi write-cost probe, not just `/health`. Default: `false` |
 | `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
+| `ANTD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway default route timeout for non-file-upload requests. Default: `60` |
+| `ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway streaming file upload route timeout. Default: `3600` |
 | `ADMIN_JOB_WORKERS` | No | Number of durable `rust_admin` DB job workers. Default: `1` |
 | `ADMIN_JOB_POLL_INTERVAL_SECONDS` | No | Poll interval when no durable jobs are ready. Default: `2` |
 | `ADMIN_JOB_LEASE_SECONDS` | No | Lease duration for a running durable job before another worker may recover it. Default: `43200` |
@@ -303,6 +308,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `STREAM_MANIFEST_CACHE_TTL_SECONDS` | No | Rust stream video manifest cache TTL. Default: `300`; set `0` to disable |
 | `STREAM_SEGMENT_CACHE_TTL_SECONDS` | No | Rust stream segment byte cache TTL and response `Cache-Control` max-age. Default: `3600`; set `0` to disable in-process segment caching |
 | `STREAM_SEGMENT_CACHE_MAX_BYTES` | No | Rust stream in-process segment cache byte cap. Default: `67108864` |
+| `STREAM_REQUEST_TIMEOUT_SECONDS` | No | `rust_stream` route timeout. Default: `60` |
 | `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
 | `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |
 | `PROD_EVM_PAYMENT_VAULT_ADDRESS` | Production/custom | Payment vault contract for custom payment networks |

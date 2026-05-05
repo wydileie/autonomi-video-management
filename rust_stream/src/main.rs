@@ -11,6 +11,7 @@ use axum::http::{header, HeaderName, Method, Request, Response};
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing::{info, info_span, Span};
@@ -18,7 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 use crate::antd_client::AntdRestClient;
 use crate::cache::AppCache;
-use crate::config::{cors_allowed_origins, CacheConfig};
+use crate::config::{cors_allowed_origins, request_timeout_from_env, CacheConfig};
 use crate::state::AppState;
 
 mod antd_client;
@@ -46,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let cache_config = CacheConfig::from_env();
+    let request_timeout = request_timeout_from_env();
 
     let antd = AntdRestClient::new(&antd_url)?;
 
@@ -77,11 +79,13 @@ async fn main() -> anyhow::Result<()> {
         manifest_cache_ttl_seconds = state.cache_config.manifest_ttl.as_secs(),
         segment_cache_ttl_seconds = state.cache_config.segment_ttl.as_secs(),
         segment_cache_max_bytes = state.cache_config.segment_max_bytes,
+        request_timeout_seconds = request_timeout.as_secs(),
         "configured stream caches"
     );
 
     let service_metrics = state.metrics.clone();
     let app = routes::router()
+        .layer(TimeoutLayer::new(request_timeout))
         .layer(cors)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(

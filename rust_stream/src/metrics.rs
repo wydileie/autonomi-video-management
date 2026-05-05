@@ -53,3 +53,33 @@ impl StreamMetrics {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn renders_stream_metrics_as_prometheus_text() {
+        let metrics = StreamMetrics::default();
+        metrics.http.record_request(500, Duration::from_millis(33));
+        metrics.record_segment_cache_hit();
+        metrics.record_segment_cache_miss();
+        metrics.record_segment_fetch_coalesced();
+
+        let rendered = metrics.render_prometheus();
+
+        assert!(rendered.contains("autvid_http_requests_total{service=\"rust_stream\"} 1"));
+        assert!(rendered.contains("autvid_http_request_errors_total{service=\"rust_stream\"} 1"));
+        assert!(
+            rendered.contains("autvid_http_request_latency_ms_total{service=\"rust_stream\"} 33")
+        );
+        assert!(
+            rendered.contains("autvid_stream_segment_cache_hits_total{service=\"rust_stream\"} 1")
+        );
+        assert!(rendered
+            .contains("autvid_stream_segment_cache_misses_total{service=\"rust_stream\"} 1"));
+        assert!(rendered
+            .contains("autvid_stream_segment_fetch_coalesced_total{service=\"rust_stream\"} 1"));
+    }
+}

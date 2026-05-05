@@ -1,7 +1,7 @@
 use std::time::Duration as StdDuration;
 
 use axum::http::StatusCode;
-use serde_json::Value;
+use serde::Serialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -12,9 +12,9 @@ use crate::{
     upload::format_bytes,
 };
 
-pub(crate) async fn store_json_public(
+pub(crate) async fn store_json_public<T: Serialize + ?Sized>(
     state: &AppState,
-    payload: &Value,
+    payload: &T,
 ) -> Result<String, ApiError> {
     let data = serde_json::to_vec(payload).map_err(|err| {
         ApiError::new(

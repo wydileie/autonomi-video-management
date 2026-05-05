@@ -94,10 +94,18 @@ async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow
     }
     let wallet = antd.wallet_address().await?;
     let balance = antd.wallet_balance().await?;
-    info!(?wallet, ?balance, "Autonomi wallet ready");
+    info!(
+        wallet_address = %wallet.address,
+        token_balance = %balance.balance,
+        gas_balance = %balance.gas_balance,
+        "Autonomi wallet ready"
+    );
     if config.antd_approve_on_startup {
         let approved = antd.wallet_approve().await?;
-        info!(?approved, "Autonomi wallet spend approval checked");
+        info!(
+            approved = approved.approved,
+            "Autonomi wallet spend approval checked"
+        );
     }
     if config.antd_require_cost_ready {
         antd.data_cost_for_size(MIN_ANTD_SELF_ENCRYPTION_BYTES)

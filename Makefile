@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react audit-rust audit-react audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -23,6 +23,7 @@ help:
 	@echo "  make test-react      Run React tests in CI mode"
 	@echo "  make audit-rust      Run cargo audit if installed"
 	@echo "  make audit-react     Run npm production audit"
+	@echo "  make audit-trivy     Run Trivy filesystem scan if installed"
 	@echo "  make audit           Run advisory checks locally"
 	@echo "  make test            Run all test suites"
 	@echo "  make ci              Install dependencies and run CI checks"
@@ -73,12 +74,23 @@ test-react:
 	cd react_frontend && CI=true $(NPM) test
 
 audit-rust:
-	$(CARGO) audit
+	@if command -v cargo-audit >/dev/null 2>&1; then \
+		$(CARGO) audit; \
+	else \
+		echo "cargo-audit is not installed; skipping Rust advisory scan"; \
+	fi
 
 audit-react:
 	cd react_frontend && $(NPM) audit --omit=dev
 
-audit: audit-rust audit-react
+audit-trivy:
+	@if command -v trivy >/dev/null 2>&1; then \
+		trivy fs --ignore-unfixed --severity CRITICAL,HIGH .; \
+	else \
+		echo "trivy is not installed; skipping filesystem image/dependency scan"; \
+	fi
+
+audit: audit-rust audit-react audit-trivy
 
 test: test-rust test-react
 
