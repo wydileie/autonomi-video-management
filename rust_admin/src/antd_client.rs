@@ -304,7 +304,47 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_missing_file_upload_endpoint;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    use axum::{
+        body::{to_bytes, Body},
+        extract::{Path, Query, State},
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::{get, post},
+        Json, Router,
+    };
+    use base64::Engine;
+    use tokio::fs as tokio_fs;
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    use super::{
+        hex_lower, is_missing_file_upload_endpoint, AntdRestClient, Digest, Sha256, BASE64,
+    };
+    use crate::metrics::AdminMetrics;
+
+    #[derive(Clone, Default)]
+    struct MockAntdState {
+        cost_failures_remaining: Arc<AtomicUsize>,
+        cost_requests: Arc<AtomicUsize>,
+        last_file_upload: Arc<Mutex<Option<FileUploadObservation>>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct FileUploadObservation {
+        body: Vec<u8>,
+        content_type: Option<String>,
+        payment_mode: Option<String>,
+        verify: Option<String>,
+        sha256: Option<String>,
+    }
 
     #[test]
     fn treats_stream_abort_on_file_upload_route_as_missing_endpoint() {
@@ -315,5 +355,242 @@ mod tests {
 
         let err = anyhow::anyhow!("error sending request for url (http://antd:8082/health)");
         assert!(!is_missing_file_upload_endpoint(&err));
+    }
+
+    #[tokio::test]
+    async fn mock_antd_client_exercises_json_wallet_data_and_file_routes() {
+        let mock_state = MockAntdState::default();
+        let base_url = spawn_mock_antd(mock_state.clone()).await;
+        let metrics = Arc::new(AdminMetrics::default());
+        let client = AntdRestClient::new(&base_url, 5.0, metrics.clone()).unwrap();
+
+        let health = client.health().await.unwrap();
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.network.as_deref(), Some("mocknet"));
+
+        let wallet = client.wallet_address().await.unwrap();
+        assert_eq!(wallet.address, "0xabc123");
+        let balance = client.wallet_balance().await.unwrap();
+        assert_eq!(balance.balance, "1000");
+        assert_eq!(balance.gas_balance, "2000");
+        assert!(client.wallet_approve().await.unwrap().approved);
+
+        let cost = client.data_cost_for_size(1).await.unwrap();
+        assert_eq!(cost.cost.as_deref(), Some("321"));
+        assert_eq!(cost.chunk_count, Some(1));
+        assert_eq!(cost.estimated_gas_cost_wei.as_deref(), Some("654"));
+        assert_eq!(cost.payment_mode.as_deref(), Some("auto"));
+
+        let put = client.data_put_public(b"manifest", "merkle").await.unwrap();
+        assert_eq!(put.address, "data-address");
+        assert_eq!(put.cost.as_deref(), Some("111"));
+
+        let fetched = client.data_get_public("segment-address").await.unwrap();
+        assert_eq!(fetched, b"payload:segment-address");
+
+        let source_path =
+            std::env::temp_dir().join(format!("autvid_antd_client_file_{}.bin", Uuid::new_v4()));
+        tokio_fs::write(&source_path, b"file upload bytes")
+            .await
+            .unwrap();
+        let file = client
+            .file_put_public(&source_path, "auto", true)
+            .await
+            .unwrap();
+        let _ = tokio_fs::remove_file(&source_path).await;
+        assert_eq!(file.address, "file-address");
+        assert_eq!(file.byte_size, 17);
+        assert_eq!(file.storage_cost_atto, "222");
+        assert_eq!(file.payment_mode_used, "auto");
+
+        let upload = mock_state.last_file_upload.lock().await.clone().unwrap();
+        assert_eq!(upload.body, b"file upload bytes");
+        assert_eq!(
+            upload.content_type.as_deref(),
+            Some("application/octet-stream")
+        );
+        assert_eq!(upload.payment_mode.as_deref(), Some("auto"));
+        assert_eq!(upload.verify.as_deref(), Some("true"));
+        let mut hasher = Sha256::new();
+        hasher.update(b"file upload bytes");
+        let expected_sha = hex_lower(&hasher.finalize());
+        assert_eq!(upload.sha256.as_deref(), Some(expected_sha.as_str()));
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("autvid_admin_antd_requests_total{service=\"rust_admin\"} 8"));
+        assert!(
+            rendered.contains("autvid_admin_antd_request_errors_total{service=\"rust_admin\"} 0")
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_antd_cost_estimate_retries_transient_failures() {
+        let mock_state = MockAntdState::default();
+        mock_state
+            .cost_failures_remaining
+            .store(2, Ordering::Relaxed);
+        let base_url = spawn_mock_antd(mock_state.clone()).await;
+        let client =
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default())).unwrap();
+
+        let cost = client.data_cost_for_size(3).await.unwrap();
+
+        assert_eq!(cost.cost.as_deref(), Some("321"));
+        assert_eq!(mock_state.cost_requests.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn mock_antd_client_rejects_invalid_base64_downloads() {
+        let base_url = spawn_mock_antd(MockAntdState::default()).await;
+        let client =
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default())).unwrap();
+
+        let err = client.data_get_public("bad-base64").await.unwrap_err();
+
+        assert!(err.to_string().contains("invalid base64 public data"));
+    }
+
+    async fn spawn_mock_antd(state: MockAntdState) -> String {
+        let app = Router::new()
+            .route("/health", get(mock_health))
+            .route("/v1/wallet/address", get(mock_wallet_address))
+            .route("/v1/wallet/balance", get(mock_wallet_balance))
+            .route("/v1/wallet/approve", post(mock_wallet_approve))
+            .route("/v1/data/cost", post(mock_data_cost))
+            .route("/v1/data/public", post(mock_data_put_public))
+            .route("/v1/data/public/:address", get(mock_data_get_public))
+            .route("/v1/file/public", post(mock_file_put_public))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    async fn mock_health() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "status": "ok",
+            "network": "mocknet",
+        }))
+    }
+
+    async fn mock_wallet_address() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "address": "0xabc123" }))
+    }
+
+    async fn mock_wallet_balance() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "balance": "1000",
+            "gas_balance": "2000",
+        }))
+    }
+
+    async fn mock_wallet_approve() -> Json<serde_json::Value> {
+        Json(serde_json::json!({ "approved": true }))
+    }
+
+    async fn mock_data_cost(
+        State(state): State<MockAntdState>,
+        Json(body): Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        state.cost_requests.fetch_add(1, Ordering::Relaxed);
+        if state
+            .cost_failures_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return (StatusCode::SERVICE_UNAVAILABLE, "cost unavailable").into_response();
+        }
+
+        let data = body
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert!(BASE64.decode(data).unwrap().len() >= 3);
+        Json(serde_json::json!({
+            "cost": "321",
+            "chunk_count": 1,
+            "estimated_gas_cost_wei": "654",
+            "payment_mode": "auto",
+        }))
+        .into_response()
+    }
+
+    async fn mock_data_put_public(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+        assert_eq!(
+            body.get("payment_mode").and_then(serde_json::Value::as_str),
+            Some("merkle")
+        );
+        assert_eq!(
+            BASE64
+                .decode(
+                    body.get("data")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap()
+                )
+                .unwrap(),
+            b"manifest"
+        );
+        Json(serde_json::json!({
+            "address": "data-address",
+            "cost": "111",
+        }))
+    }
+
+    async fn mock_data_get_public(Path(address): Path<String>) -> Json<serde_json::Value> {
+        if address == "bad-base64" {
+            return Json(serde_json::json!({ "data": "%%%" }));
+        }
+
+        Json(serde_json::json!({
+            "data": BASE64.encode(format!("payload:{address}")),
+        }))
+    }
+
+    async fn mock_file_put_public(
+        State(state): State<MockAntdState>,
+        Query(query): Query<HashMap<String, String>>,
+        headers: HeaderMap,
+        body: Body,
+    ) -> Json<serde_json::Value> {
+        let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        let expected_sha = hex_lower(&hasher.finalize());
+        assert_eq!(
+            headers
+                .get("x-content-sha256")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_sha.as_str())
+        );
+        *state.last_file_upload.lock().await = Some(FileUploadObservation {
+            body: body.clone(),
+            content_type: headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+            payment_mode: query.get("payment_mode").cloned(),
+            verify: query.get("verify").cloned(),
+            sha256: headers
+                .get("x-content-sha256")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string),
+        });
+
+        Json(serde_json::json!({
+            "address": "file-address",
+            "byte_size": body.len(),
+            "chunks_stored": 2,
+            "total_chunks": 2,
+            "chunks_failed": 0,
+            "storage_cost_atto": "222",
+            "estimated_gas_cost_wei": "333",
+            "payment_mode_used": "auto",
+            "verified": true,
+        }))
     }
 }

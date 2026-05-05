@@ -639,7 +639,12 @@ fn recover_source_path(job_dir: Option<&FsPath>, job_source_path: Option<&str>) 
 
 #[cfg(test)]
 mod tests {
-    use super::job_retry_delay_seconds;
+    use std::{fs, path::PathBuf};
+
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{decode_requested_resolutions, job_retry_delay_seconds, recover_source_path};
 
     #[test]
     fn durable_job_retry_backoff_caps() {
@@ -647,5 +652,45 @@ mod tests {
         assert_eq!(job_retry_delay_seconds(2), 60);
         assert_eq!(job_retry_delay_seconds(6), 900);
         assert_eq!(job_retry_delay_seconds(20), 900);
+    }
+
+    #[test]
+    fn recovery_resolution_decode_accepts_arrays_and_legacy_strings() {
+        assert_eq!(
+            decode_requested_resolutions(Some(json!(["1080p", "720p", "bogus"]))),
+            vec!["1080p".to_string(), "720p".to_string()]
+        );
+        assert_eq!(
+            decode_requested_resolutions(Some(json!("480p,360p,unknown"))),
+            vec!["480p".to_string(), "360p".to_string()]
+        );
+        assert!(decode_requested_resolutions(Some(json!({ "bad": true }))).is_empty());
+    }
+
+    #[test]
+    fn recovery_source_path_prefers_existing_explicit_path_then_original_file() {
+        let dir = std::env::temp_dir().join(format!("autvid_job_recover_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let explicit = dir.join("custom-source.mp4");
+        let fallback = dir.join("original_upload.mp4");
+        fs::write(&explicit, b"explicit").unwrap();
+        fs::write(&fallback, b"fallback").unwrap();
+
+        assert_eq!(
+            recover_source_path(Some(&dir), Some(explicit.to_str().unwrap())),
+            Some(explicit.clone())
+        );
+
+        assert_eq!(
+            recover_source_path(Some(&dir), Some("/definitely/missing/source.mp4")),
+            Some(fallback.clone())
+        );
+
+        assert_eq!(
+            recover_source_path(Some(&PathBuf::from("/definitely/missing/job-dir")), None),
+            None
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

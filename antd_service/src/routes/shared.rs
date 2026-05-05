@@ -94,4 +94,20 @@ mod tests {
         ));
         assert!(parse_payment_mode("bad").is_err());
     }
+
+    #[test]
+    fn decodes_base64_payloads_and_rejects_invalid_input() {
+        assert_eq!(decode_base64("YXV0dmlk").unwrap(), b"autvid");
+        assert!(decode_base64("%%%").is_err());
+    }
+
+    #[test]
+    fn parses_32_byte_hex_addresses_only() {
+        let address =
+            hex_to_address("abababababababababababababababababababababababababababababababab")
+                .unwrap();
+        assert_eq!(address, [0xab; 32]);
+        assert!(hex_to_address("ab").is_err());
+        assert!(hex_to_address("not-hex").is_err());
+    }
 }

@@ -394,6 +394,85 @@ test("sends original-source and auto-publish options with an upload", async () =
   expect(uploadedForm.get("file")).toBe(file);
 });
 
+test("shows quote and upload errors without clearing the selected source", async () => {
+  vi.useFakeTimers();
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setupGetRoutes();
+
+  const realCreateElement = document.createElement.bind(document);
+  vi.spyOn(document, "createElement").mockImplementation((tagName, options) => {
+    const element = realCreateElement(tagName, options);
+    if (tagName === "video") {
+      Object.defineProperties(element, {
+        duration: { configurable: true, value: 20 },
+        videoHeight: { configurable: true, value: 720 },
+        videoWidth: { configurable: true, value: 1280 },
+        src: {
+          configurable: true,
+          get: () => "blob:video",
+          set: () => {
+            if (element.onloadedmetadata) element.onloadedmetadata();
+          },
+        },
+      });
+    }
+    return element;
+  });
+
+  let quoteAttempts = 0;
+  axios.post.mockImplementation((url, body, config) => {
+    if (url === "/api/videos/upload/quote") {
+      quoteAttempts += 1;
+      if (quoteAttempts === 1) {
+        return Promise.reject({ response: { data: { detail: "Quote service unavailable" } } });
+      }
+      return Promise.resolve({
+        data: {
+          estimated_bytes: 2048,
+          estimated_gas_cost_wei: "42",
+          payment_mode: "single",
+          sampled: false,
+          segment_count: 1,
+          storage_cost_atto: "1000000000000000000",
+        },
+      });
+    }
+    if (url === "/api/videos/upload") {
+      config.onUploadProgress({ loaded: 5, total: 10 });
+      return Promise.reject({ response: { data: { detail: "Upload disk full" } } });
+    }
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+
+  await renderApp();
+  await click(findButton("Upload"));
+
+  const fileInput = container.querySelector('input[type="file"]');
+  const file = new File(["source bytes"], "failure.mp4", { type: "video/mp4" });
+  await act(async () => {
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [file] });
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  await act(async () => {
+    vi.advanceTimersByTime(260);
+  });
+  await flushPromises();
+  expect(text()).toContain("Quote service unavailable");
+
+  await click(findButton("Current only"));
+  await act(async () => {
+    vi.advanceTimersByTime(260);
+  });
+  await flushPromises();
+  expect(text()).toContain("1 ANT");
+
+  await click(findButton("Upload source"));
+  await flushPromises();
+  expect(text()).toContain("Upload disk full");
+  expect(text()).toContain("failure.mp4");
+});
+
 test("approves an awaiting upload and deletes the video through admin controls", async () => {
   window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
   const adminVideo = {
@@ -472,6 +551,44 @@ test("approves an awaiting upload and deletes the video through admin controls",
     { headers: { Authorization: "Bearer stored-token" } },
   );
   expect(text()).not.toContain("Needs approval");
+});
+
+test("polls the admin library while videos are actively processing", async () => {
+  vi.useFakeTimers();
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  let adminListCalls = 0;
+  axios.get.mockImplementation((url) => {
+    if (url === "/api/auth/me") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/api/videos") {
+      return Promise.resolve({ data: [] });
+    }
+    if (url === "/api/admin/videos") {
+      adminListCalls += 1;
+      return Promise.resolve({
+        data: [{
+          created_at: "2026-04-27T12:00:00Z",
+          id: "vid-processing",
+          status: "processing",
+          title: `Processing ${adminListCalls}`,
+        }],
+      });
+    }
+    return Promise.reject(new Error(`Unexpected GET ${url}`));
+  });
+
+  await renderApp();
+  await click(findButton("Manage"));
+  expect(text()).toContain("Processing 1");
+
+  await act(async () => {
+    vi.advanceTimersByTime(5000);
+  });
+  await flushPromises();
+
+  expect(adminListCalls).toBeGreaterThanOrEqual(2);
+  expect(text()).toContain("Processing 2");
 });
 
 test("keeps public catalog metadata redacted when filename and manifest are hidden", async () => {

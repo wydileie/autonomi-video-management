@@ -386,7 +386,9 @@ pub(crate) fn format_bytes(byte_count: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_resolutions, sanitize_upload_filename};
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    use super::{content_length, parse_form_bool, parse_resolutions, sanitize_upload_filename};
 
     #[test]
     fn sanitizes_upload_filename_like_admin_service() {
@@ -403,5 +405,30 @@ mod tests {
             parse_resolutions("720p, nope,1440p,1080p,4k"),
             vec!["720p", "1440p", "1080p", "4k"]
         );
+    }
+
+    #[test]
+    fn parses_form_booleans_from_common_browser_values() {
+        for truthy in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert!(parse_form_bool(truthy), "{truthy} should be truthy");
+        }
+        for falsy in ["0", "false", "no", "off", "", "maybe"] {
+            assert!(!parse_form_bool(falsy), "{falsy} should be falsy");
+        }
+    }
+
+    #[test]
+    fn parses_content_length_only_when_valid() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(content_length(&headers), None);
+
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("42"));
+        assert_eq!(content_length(&headers), Some(42));
+
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_static("not-a-number"),
+        );
+        assert_eq!(content_length(&headers), None);
     }
 }
