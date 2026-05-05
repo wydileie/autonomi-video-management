@@ -21,6 +21,10 @@ export async function loginAdmin(credentials) {
   return res.data;
 }
 
+export async function logoutAdmin() {
+  await axios.post(`${API}/auth/logout`);
+}
+
 export async function getCurrentUser(token) {
   const res = await axios.get(`${API}/auth/me`, { headers: authHeaders(token) });
   return res.data;

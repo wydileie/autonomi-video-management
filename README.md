@@ -61,6 +61,27 @@ Browser
 | `/api/*` | Rust admin (path rewritten to `/*`) |
 | `/stream/*` | Rust streaming service |
 
+### Observability and proxy safety
+
+Nginx and all Rust HTTP services accept or generate `X-Request-ID`, expose it
+to browser clients, and preserve it in structured request logs. Service logs
+include the service name, request ID, method, URI, status, and latency; longer
+admin jobs add fields such as `video_id`, `job_id`, `resolution`,
+`segment_index`, and `catalog_publish_epoch`.
+
+The Nginx proxy keeps uploads unlimited at the proxy layer and relies on
+`UPLOAD_MAX_FILE_BYTES` in `rust_admin` for the application limit. It also
+applies standard security headers and rate limits login attempts on
+`/api/auth/login`.
+Admin login continues returning bearer tokens for compatibility and also sets a
+HttpOnly SameSite cookie for browser sessions.
+
+Internal Prometheus-style metrics are exposed on `/api/metrics`,
+`/stream/metrics`, and the internal `antd` gateway `/metrics` endpoint. They
+cover HTTP request counts/latency, admin job counts, FFmpeg runtime, outbound
+`antd` latency, upload retries, and stream segment cache hit/miss/coalescing
+counts.
+
 ---
 
 ## Quick start (development)
@@ -117,11 +138,16 @@ make test
 
 # Run the full CI-shaped sequence, including dependency installs
 make ci
+
+# Run advisory checks locally if cargo-audit is installed
+make audit
 ```
 
 The Rust targets run from the root Cargo workspace and cover `rust_admin`,
 `rust_stream`, and `antd_service`. The React target runs the Vite/Vitest test
-command once.
+command once. CI also runs non-blocking advisory scans with `cargo audit`,
+`npm audit --omit=dev`, and Trivy filesystem scanning so findings can be triaged
+before those gates become blocking.
 
 ---
 
@@ -229,6 +255,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
+| `ADMIN_AUTH_COOKIE_SECURE` | No | Whether the HttpOnly admin cookie includes `Secure`. Defaults to `true` when `APP_ENV=production`, otherwise `false` |
 | `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart. A one-shot Compose init container creates and chowns it for the non-root admin service user |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
@@ -236,6 +263,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated explicit browser origins allowed to call admin/stream directly. Wildcard `*` is rejected |
 | `ANTD_REST_PORT` / `ANTD_GRPC_PORT` | Local/debug only | Direct host ports for the Autonomi gateway when using a local/debug compose override |
 | `PROD_AUTONOMI_WALLET_KEY` | Production writes | Hex-encoded EVM private key (`0x...`) for Autonomi storage payments |
+| `PROD_AUTONOMI_WALLET_KEY_FILE` | Production writes | Optional file path, usually a Docker Secret mounted under `/run/secrets`, containing the wallet private key. When set, this takes precedence over `PROD_AUTONOMI_WALLET_KEY` |
 | `PROD_ANTD_NETWORK` | Production | `default` unless you are targeting a custom network |
 | `PROD_AUTONOMI_PEERS` | Production/custom | Comma-separated bootstrap multiaddrs |
 | `ANT_DEVNET_PRESET` | Local only | Local devnet size: `minimal`, `small`, or `default` |
@@ -326,7 +354,9 @@ catalog manifest
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `GET` | `/metrics` | Internal Prometheus-style metrics |
 | `POST` | `/auth/login` | Sign in as the single admin user |
+| `POST` | `/auth/logout` | Clear the HttpOnly admin cookie |
 | `GET` | `/auth/me` | Validate the current admin bearer token |
 | `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions and optional original file |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`, optional `upload_original`, optional `publish_when_ready`) |
@@ -359,6 +389,7 @@ curl -X POST http://localhost/api/videos/upload \
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Health check |
+| `GET` | `/metrics` | Internal Prometheus-style metrics |
 | `GET` | `/stream/{video_id}/{resolution}/playlist.m3u8` | HLS manifest |
 | `GET` | `/stream/{video_id}/{resolution}/{index}.ts` | TS segment (proxied from Autonomi) |
 

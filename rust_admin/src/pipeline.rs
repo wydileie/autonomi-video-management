@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::Row;
 use tokio::{fs as tokio_fs, sync::Semaphore, task::JoinSet};
-use tracing::{info, warn};
+use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -30,6 +30,10 @@ use crate::{
     MIN_ANTD_SELF_ENCRYPTION_BYTES, STATUS_PROCESSING, STATUS_READY, VIDEO_MANIFEST_CONTENT_TYPE,
 };
 
+#[instrument(
+    skip(state, source_path, resolutions, job_dir),
+    fields(video_id = %video_id, resolution_count = resolutions.len(), reset_existing = reset_existing)
+)]
 pub(crate) async fn process_video_inner(
     state: &AppState,
     video_id: &str,
@@ -136,6 +140,7 @@ pub(crate) async fn process_video_inner(
     Ok(())
 }
 
+#[instrument(skip(state), fields(video_id = %video_id))]
 pub(crate) async fn build_final_upload_quote(
     state: &AppState,
     video_id: &str,
@@ -466,6 +471,7 @@ pub(crate) async fn build_final_upload_quote(
     }))
 }
 
+#[instrument(skip(state), fields(video_id = %video_id))]
 pub(crate) async fn upload_approved_video_inner(
     state: &AppState,
     video_id: &str,
@@ -809,6 +815,7 @@ pub(crate) async fn upload_approved_video_inner(
     Ok(())
 }
 
+#[instrument(skip(state, video_row), fields(video_id = %video_id, video_uuid = %video_uuid))]
 async fn upload_original_file_if_needed(
     state: &AppState,
     video_uuid: Uuid,

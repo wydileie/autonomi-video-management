@@ -100,6 +100,7 @@ pub(crate) async fn put_public_verified_inner(
         }
 
         if attempt < upload_retries {
+            antd.record_upload_retry();
             let delay = 2_u64.pow((attempt - 1).min(3) as u32);
             warn!(
                 "Autonomi upload verification failed for {} on attempt {}/{}: {}; retrying in {}s",
