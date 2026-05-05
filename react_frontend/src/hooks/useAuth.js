@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { getCurrentUser } from "../api/client";
+import { getCurrentUser, logoutAdmin } from "../api/client";
 import { AUTH_STORAGE_KEY } from "../constants";
 
 export default function useAuth(onInvalid) {
@@ -36,6 +36,7 @@ export default function useAuth(onInvalid) {
   }, []);
 
   const logout = useCallback(() => {
+    logoutAdmin().catch(() => {});
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
     setAuth(null);
   }, []);
