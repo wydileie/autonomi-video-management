@@ -130,6 +130,30 @@ ANTD_APPROVE_ON_STARTUP=true
 VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
 ```
 
+### Wallet Secret Files
+
+For production, prefer mounting the wallet key as a Docker Secret or another
+root-readable file instead of storing it directly in `.env.production`.
+`PROD_AUTONOMI_WALLET_KEY_FILE` is passed through to the `antd` gateway as
+`AUTONOMI_WALLET_KEY_FILE`; when it is set, the gateway reads that file and
+ignores `PROD_AUTONOMI_WALLET_KEY`.
+
+Example with Docker Compose secrets:
+
+```yaml
+services:
+  antd:
+    secrets:
+      - autonomi_wallet_key
+    environment:
+      AUTONOMI_WALLET_KEY:
+      AUTONOMI_WALLET_KEY_FILE: /run/secrets/autonomi_wallet_key
+
+secrets:
+  autonomi_wallet_key:
+    file: ./secrets/autonomi_wallet_key.txt
+```
+
 For public deployments, put TLS, auth, and domain routing in front of the stack
 with a host reverse proxy, cloud load balancer, Tailscale/Funnel, Caddy,
 Traefik, Nginx Proxy Manager, or similar. The app stack itself serves local HTTP
@@ -199,6 +223,62 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   logs -f rust_admin rust_stream antd
+```
+
+Every request flowing through Nginx and the Rust services has an
+`X-Request-ID`. Provide your own request ID when debugging, or let the proxy and
+services generate one. Request logs include request ID, service, method, URI,
+status, and latency; admin job logs add `video_id`, `job_id`, `resolution`,
+`segment_index`, and `catalog_publish_epoch` where applicable.
+
+Admin auth is still bearer-token compatible for scripts and older clients. The
+browser login route also sets an HttpOnly SameSite cookie. Keep
+`ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use `false` only for
+local HTTP testing.
+
+Metrics endpoints emit Prometheus text:
+
+```bash
+curl http://localhost/api/metrics
+curl http://localhost/stream/metrics
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec antd curl -fsS http://127.0.0.1:8082/metrics
+```
+
+These metrics are intentionally internal. Do not expose the `antd` service port
+publicly, and protect any external scrape path at your edge proxy.
+
+Backup Postgres:
+
+```bash
+mkdir -p ./backups
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec -T db sh -ceu 'pg_dump -U "$ADMIN_USER" "$ADMIN_DB"' \
+  > ./backups/autvid-$(date -u +%Y%m%dT%H%M%SZ).sql
+```
+
+Restore Postgres into a fresh stack:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec -T db sh -ceu 'psql -U "$ADMIN_USER" "$ADMIN_DB"' \
+  < ./backups/autvid-YYYYMMDDTHHMMSSZ.sql
+```
+
+Back up the catalog bookmark:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec -T rust_admin cat /catalog/catalog.json \
+  > ./backups/catalog.json
 ```
 
 Stop without deleting data:

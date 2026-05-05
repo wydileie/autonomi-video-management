@@ -2,12 +2,13 @@ use std::{
     fs,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use axum::http::StatusCode;
 use serde_json::Value;
 use tokio::{process::Command, sync::Semaphore, task::JoinSet};
-use tracing::info;
+use tracing::{info, instrument};
 
 use crate::{
     config::duration_from_secs_f64,
@@ -374,6 +375,10 @@ fn parse_probe_duration(data: &Value, stream: &Value) -> Option<f64> {
         .next()
 }
 
+#[instrument(
+    skip(state, source_path, resolutions, job_dir),
+    fields(video_id = %video_id, resolution_count = resolutions.len())
+)]
 pub(crate) async fn transcode_renditions(
     state: &AppState,
     video_id: &str,
@@ -450,6 +455,10 @@ pub(crate) async fn transcode_renditions(
     Ok(renditions)
 }
 
+#[instrument(
+    skip(state, source_path, job_dir),
+    fields(video_id = %video_id, resolution = %resolution, order = order)
+)]
 async fn transcode_one_rendition(
     state: &AppState,
     video_id: &str,
@@ -479,7 +488,8 @@ async fn transcode_one_rendition(
         )
     })?;
     info!("Transcoding {} -> {}", video_id, resolution);
-    run_ffmpeg(
+    let ffmpeg_started = Instant::now();
+    let ffmpeg_result = run_ffmpeg(
         state,
         source_path,
         &seg_dir,
@@ -488,7 +498,11 @@ async fn transcode_one_rendition(
         video_kbps,
         audio_kbps,
     )
-    .await?;
+    .await;
+    state
+        .metrics
+        .record_ffmpeg_duration(ffmpeg_started.elapsed());
+    ffmpeg_result?;
 
     let ts_files = collect_segment_files(&seg_dir)?;
     if ts_files.is_empty() {
