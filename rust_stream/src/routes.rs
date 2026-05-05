@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -30,8 +30,6 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/stream/health", get(health))
-        .route("/metrics", get(metrics))
-        .route("/stream/metrics", get(metrics))
         .route(
             "/stream/manifest/:manifest_address/:resolution/playlist.m3u8",
             get(hls_manifest_by_address),
@@ -48,13 +46,6 @@ pub(crate) fn router() -> Router<AppState> {
             "/stream/:video_id/:resolution/:segment_index",
             get(hls_segment),
         )
-}
-
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.render_prometheus(),
-    )
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {

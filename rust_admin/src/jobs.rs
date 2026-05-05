@@ -10,7 +10,7 @@ use chrono::{Duration, Utc};
 use serde_json::Value;
 use sqlx::Row;
 use tokio::time::sleep;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -56,11 +56,9 @@ async fn job_worker_loop(state: AppState, worker_id: String) {
             Ok(Some(job)) => {
                 let kind = job.kind;
                 let job_id = job.id;
-                state.metrics.record_job_started();
                 let result = run_leased_job(&state, &job).await;
                 match result {
                     Ok(()) => {
-                        state.metrics.record_job_succeeded();
                         if let Err(err) = mark_job_succeeded(&state, job_id).await {
                             warn!(
                                 "Worker {} could not mark {:?} job {} succeeded: {}",
@@ -69,7 +67,6 @@ async fn job_worker_loop(state: AppState, worker_id: String) {
                         }
                     }
                     Err(err) => {
-                        state.metrics.record_job_failed();
                         let detail = err.detail;
                         warn!(
                             "Worker {} {:?} job {} failed on attempt {}/{}: {}",
@@ -223,7 +220,6 @@ async fn acquire_next_job(
     }))
 }
 
-#[instrument(skip(state, job), fields(job_id = %job.id, job_kind = ?job.kind, video_id = ?job.video_id))]
 async fn run_leased_job(state: &AppState, job: &LeasedJob) -> Result<(), ApiError> {
     match job.kind {
         JobKind::ProcessVideo => run_process_video_job(state, job.video_id).await,
@@ -232,7 +228,6 @@ async fn run_leased_job(state: &AppState, job: &LeasedJob) -> Result<(), ApiErro
     }
 }
 
-#[instrument(skip(state), fields(video_id = ?video_uuid))]
 async fn run_process_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Result<(), ApiError> {
     let video_uuid = video_uuid.ok_or_else(|| {
         ApiError::new(
@@ -296,7 +291,6 @@ async fn run_process_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Re
     process_video_inner(state, &video_id, &source_path, &resolutions, &job_dir, true).await
 }
 
-#[instrument(skip(state), fields(video_id = ?video_uuid))]
 async fn run_upload_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Result<(), ApiError> {
     let video_uuid = video_uuid.ok_or_else(|| {
         ApiError::new(
@@ -326,13 +320,11 @@ async fn run_upload_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Res
     upload_approved_video_inner(state, &video_id).await
 }
 
-#[instrument(skip(state), fields(catalog_publish_epoch = state.catalog_publish_epoch.load(Ordering::SeqCst)))]
 async fn run_catalog_publish_job(state: &AppState) -> Result<(), ApiError> {
     let epoch = state.catalog_publish_epoch.load(Ordering::SeqCst);
     publish_current_catalog_to_network(state, epoch, "durable-job").await
 }
 
-#[instrument(skip(state), fields(job_id = %job_id))]
 async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiError> {
     sqlx::query(
         r#"
@@ -353,7 +345,6 @@ async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiErr
     Ok(())
 }
 
-#[instrument(skip(state, job, detail), fields(job_id = %job.id, job_kind = ?job.kind, video_id = ?job.video_id))]
 async fn mark_job_failed(state: &AppState, job: &LeasedJob, detail: &str) -> Result<(), ApiError> {
     let final_failure = job.attempts >= job.max_attempts;
     if final_failure {

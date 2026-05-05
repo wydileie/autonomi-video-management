@@ -5,15 +5,11 @@
 //! - Proxy individual .ts segments by fetching them from the Autonomi network
 //!   via the antd daemon REST API.
 
-use std::{env, path::PathBuf, sync::Arc, time::Duration as StdDuration};
+use std::{env, path::PathBuf, sync::Arc};
 
-use axum::http::{header, HeaderName, Method, Request, Response};
-use tower_http::{
-    cors::CorsLayer,
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::TraceLayer,
-};
-use tracing::{info, info_span, Span};
+use axum::http::{header, Method};
+use tower_http::cors::CorsLayer;
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::antd_client::AntdRestClient;
@@ -25,7 +21,6 @@ mod antd_client;
 mod cache;
 mod config;
 mod hls;
-mod metrics;
 mod models;
 mod routes;
 mod state;
@@ -55,7 +50,6 @@ async fn main() -> anyhow::Result<()> {
         catalog_bootstrap_address,
         cache: Arc::new(AppCache::new(&cache_config)),
         cache_config,
-        metrics: Arc::new(metrics::StreamMetrics::default()),
     };
     let cors_allowed_origins = cors_allowed_origins()?;
 
@@ -67,9 +61,7 @@ async fn main() -> anyhow::Result<()> {
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             header::RANGE,
-            HeaderName::from_static("x-request-id"),
-        ])
-        .expose_headers([HeaderName::from_static("x-request-id")]);
+        ]);
 
     info!(
         cors_allowed_origins = ?cors_allowed_origins,
@@ -80,42 +72,7 @@ async fn main() -> anyhow::Result<()> {
         "configured stream caches"
     );
 
-    let service_metrics = state.metrics.clone();
-    let app = routes::router()
-        .layer(cors)
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get("x-request-id")
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or("");
-                    info_span!(
-                        "http_request",
-                        service = "rust_stream",
-                        request_id = %request_id,
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        version = ?request.version(),
-                    )
-                })
-                .on_response(
-                    move |response: &Response<_>, latency: StdDuration, _span: &Span| {
-                        service_metrics
-                            .http
-                            .record_request(response.status().as_u16(), latency);
-                        info!(
-                            status = response.status().as_u16(),
-                            latency_ms = latency.as_millis(),
-                            "request completed"
-                        );
-                    },
-                ),
-        )
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        .with_state(state);
+    let app = routes::router().layer(cors).with_state(state);
 
     let bind_addr = "0.0.0.0:8081";
     info!("Listening on {}", bind_addr);
@@ -157,7 +114,6 @@ mod tests {
             catalog_bootstrap_address: catalog_bootstrap_address.map(str::to_string),
             cache: Arc::new(AppCache::new(&cache_config)),
             cache_config,
-            metrics: Arc::new(metrics::StreamMetrics::default()),
         }
     }
 

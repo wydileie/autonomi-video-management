@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react audit-rust audit-react audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -21,9 +21,6 @@ help:
 	@echo "  make install-react   Install React frontend dependencies"
 	@echo "  make build-react     Build the React frontend"
 	@echo "  make test-react      Run React tests in CI mode"
-	@echo "  make audit-rust      Run cargo audit if installed"
-	@echo "  make audit-react     Run npm production audit"
-	@echo "  make audit           Run advisory checks locally"
 	@echo "  make test            Run all test suites"
 	@echo "  make ci              Install dependencies and run CI checks"
 
@@ -71,14 +68,6 @@ build-react:
 
 test-react:
 	cd react_frontend && CI=true $(NPM) test
-
-audit-rust:
-	$(CARGO) audit
-
-audit-react:
-	cd react_frontend && $(NPM) audit --omit=dev
-
-audit: audit-rust audit-react
 
 test: test-rust test-react
 

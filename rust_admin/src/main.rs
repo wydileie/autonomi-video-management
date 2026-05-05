@@ -25,7 +25,6 @@ mod db;
 mod errors;
 mod jobs;
 mod media;
-mod metrics;
 mod models;
 mod pipeline;
 mod quote;
@@ -56,11 +55,9 @@ async fn main() -> anyhow::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let metrics = Arc::new(metrics::AdminMetrics::default());
     let antd = AntdRestClient::new(
         &config.antd_url,
         config.antd_upload_timeout_seconds.max(60.0) + 30.0,
-        metrics.clone(),
     )?;
     ensure_autonomi_ready(&config, &antd).await?;
 
@@ -68,7 +65,6 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         pool,
         antd,
-        metrics,
         catalog_lock: Arc::new(Mutex::new(())),
         catalog_publish_lock: Arc::new(Mutex::new(())),
         catalog_publish_epoch: Arc::new(AtomicU64::new(0)),

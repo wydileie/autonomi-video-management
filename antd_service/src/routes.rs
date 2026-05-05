@@ -4,8 +4,7 @@ use std::path::Path as FsPath;
 use ant_core::data::{Client as CoreClient, DataMap, PaymentMode};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap};
-use axum::response::IntoResponse;
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -97,7 +96,6 @@ struct DataGetResponse {
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/metrics", get(metrics))
         .route("/v1/wallet/address", get(wallet_address))
         .route("/v1/wallet/balance", get(wallet_balance))
         .route("/v1/wallet/approve", post(wallet_approve))
@@ -106,13 +104,6 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/v1/data/public/{address}", get(data_get_public))
         .route("/v1/file/public", post(file_put_public))
         .with_state(state)
-}
-
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.render_prometheus("antd_service"),
-    )
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

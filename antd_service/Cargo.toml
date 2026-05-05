@@ -7,7 +7,6 @@ edition = "2021"
 anyhow = "1"
 ant-core = "=0.2.2"
 ant-node = "=0.11.0"
-autvid_common = { path = "../common" }
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"
@@ -22,7 +21,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
-tower-http = { version = "0.6", features = ["cors", "request-id", "trace", "util"] }
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xor_name = "=5.0.0"

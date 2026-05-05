@@ -1,5 +1,5 @@
+use std::env;
 use std::sync::Arc;
-use std::{env, fs};
 
 use ant_core::data::{
     Client as CoreClient, ClientConfig, CoreNodeConfig, IPDiversityConfig, MultiAddr, NodeMode,
@@ -78,18 +78,8 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
 }
 
 fn wallet_key() -> Option<String> {
-    env::var("AUTONOMI_WALLET_KEY_FILE")
+    env::var("AUTONOMI_WALLET_KEY")
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .and_then(|path| match fs::read_to_string(&path) {
-            Ok(value) => Some(value),
-            Err(err) => {
-                warn!("Could not read AUTONOMI_WALLET_KEY_FILE at {path}: {err}");
-                None
-            }
-        })
-        .or_else(|| env::var("AUTONOMI_WALLET_KEY").ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }

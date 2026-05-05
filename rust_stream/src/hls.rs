@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use axum::http::{header, HeaderMap, HeaderValue};
 use tokio::sync::watch;
-use tracing::{debug, instrument};
 
 use crate::cache::CachedValue;
 use crate::models::{Catalog, CatalogState, VideoManifest};
@@ -41,7 +40,6 @@ fn cache_control_header(max_age_seconds: u64) -> HeaderValue {
         .unwrap_or_else(|_| HeaderValue::from_static("no-store"))
 }
 
-#[instrument(skip(state), fields(video_id = %video_id, resolution = %resolution))]
 pub(crate) async fn build_manifest(
     state: &AppState,
     video_id: &str,
@@ -53,7 +51,6 @@ pub(crate) async fn build_manifest(
     })
 }
 
-#[instrument(skip(state), fields(manifest_address = %manifest_address, resolution = %resolution))]
 pub(crate) async fn build_manifest_from_address(
     state: &AppState,
     manifest_address: &str,
@@ -109,7 +106,6 @@ where
     Ok(m3u8)
 }
 
-#[instrument(skip(state), fields(video_id = %video_id, resolution = %resolution, segment_index = seg_index))]
 pub(crate) async fn fetch_segment(
     state: &AppState,
     video_id: &str,
@@ -133,7 +129,6 @@ pub(crate) async fn fetch_segment(
     fetch_segment_data(state, &segment_address).await
 }
 
-#[instrument(skip(state), fields(manifest_address = %manifest_address, resolution = %resolution, segment_index = seg_index))]
 pub(crate) async fn fetch_segment_from_address(
     state: &AppState,
     manifest_address: &str,
@@ -205,28 +200,16 @@ async fn load_video_manifest(state: &AppState, video_id: &str) -> Result<VideoMa
     Ok(manifest)
 }
 
-#[instrument(skip(state), fields(catalog_address = %catalog_address))]
 async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Catalog, String> {
     if !state.cache_config.catalog_ttl.is_zero() {
         let now = Instant::now();
         let mut catalogs = state.cache.catalogs.lock().await;
         match catalogs.get(catalog_address) {
-            Some(cached) if cached.expires_at > now => {
-                debug!(cache = "catalog", hit = true, "catalog cache hit");
-                return Ok(cached.value.clone());
-            }
+            Some(cached) if cached.expires_at > now => return Ok(cached.value.clone()),
             Some(_) => {
-                debug!(
-                    cache = "catalog",
-                    hit = false,
-                    expired = true,
-                    "catalog cache expired"
-                );
                 catalogs.remove(catalog_address);
             }
-            None => {
-                debug!(cache = "catalog", hit = false, "catalog cache miss");
-            }
+            None => {}
         }
     }
 
@@ -252,28 +235,16 @@ async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Catalog
     Ok(catalog)
 }
 
-#[instrument(skip(state), fields(manifest_address = %manifest_address))]
 async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<VideoManifest, String> {
     if !state.cache_config.manifest_ttl.is_zero() {
         let now = Instant::now();
         let mut manifests = state.cache.manifests.lock().await;
         match manifests.get(manifest_address) {
-            Some(cached) if cached.expires_at > now => {
-                debug!(cache = "manifest", hit = true, "manifest cache hit");
-                return Ok(cached.value.clone());
-            }
+            Some(cached) if cached.expires_at > now => return Ok(cached.value.clone()),
             Some(_) => {
-                debug!(
-                    cache = "manifest",
-                    hit = false,
-                    expired = true,
-                    "manifest cache expired"
-                );
                 manifests.remove(manifest_address);
             }
-            None => {
-                debug!(cache = "manifest", hit = false, "manifest cache miss");
-            }
+            None => {}
         }
     }
 
@@ -299,14 +270,11 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
     Ok(manifest)
 }
 
-#[instrument(skip(state), fields(segment_address = %segment_address))]
 async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Vec<u8>, String> {
     loop {
         {
             let mut segments = state.cache.segments.lock().await;
             if let Some(data) = segments.get(segment_address) {
-                state.metrics.record_segment_cache_hit();
-                debug!(cache = "segment", hit = true, "segment cache hit");
                 return Ok(data);
             }
         }
@@ -314,22 +282,8 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<V
         let maybe_receiver = {
             let mut fetches = state.cache.segment_fetches.lock().await;
             if let Some(receiver) = fetches.get(segment_address) {
-                state.metrics.record_segment_fetch_coalesced();
-                debug!(
-                    cache = "segment",
-                    hit = false,
-                    coalesced = true,
-                    "joining in-flight segment fetch"
-                );
                 Some(receiver.clone())
             } else {
-                state.metrics.record_segment_cache_miss();
-                debug!(
-                    cache = "segment",
-                    hit = false,
-                    coalesced = false,
-                    "segment cache miss"
-                );
                 let (sender, receiver) = watch::channel(None);
                 fetches.insert(segment_address.to_string(), receiver);
                 drop(fetches);
@@ -361,7 +315,6 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<V
     }
 }
 
-#[instrument(skip(state), fields(segment_address = %segment_address))]
 async fn fetch_segment_data_uncached(
     state: &AppState,
     segment_address: &str,

@@ -1,4 +1,4 @@
-use std::{path::Path as FsPath, sync::Arc, time::Duration};
+use std::{path::Path as FsPath, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rand::RngCore;
@@ -8,15 +8,12 @@ use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncReadExt, time::sleep};
 use tokio_util::io::ReaderStream;
 
-use crate::{
-    config::duration_from_secs_f64, metrics::AdminMetrics, MIN_ANTD_SELF_ENCRYPTION_BYTES,
-};
+use crate::{config::duration_from_secs_f64, MIN_ANTD_SELF_ENCRYPTION_BYTES};
 
 #[derive(Clone)]
 pub(crate) struct AntdRestClient {
     base_url: String,
     client: reqwest::Client,
-    metrics: Arc<AdminMetrics>,
 }
 
 #[derive(Deserialize)]
@@ -53,18 +50,13 @@ pub(crate) struct AntdFilePutResponse {
 }
 
 impl AntdRestClient {
-    pub(crate) fn new(
-        base_url: &str,
-        timeout_seconds: f64,
-        metrics: Arc<AdminMetrics>,
-    ) -> anyhow::Result<Self> {
+    pub(crate) fn new(base_url: &str, timeout_seconds: f64) -> anyhow::Result<Self> {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(duration_from_secs_f64(timeout_seconds))
                 .build()?,
-            metrics,
         })
     }
 
@@ -179,29 +171,21 @@ impl AntdRestClient {
             "{}/v1/file/public?payment_mode={payment_mode}&verify={}",
             self.base_url, verify
         );
-        let started = std::time::Instant::now();
-        let result = async {
-            let response = self
-                .client
-                .post(url)
-                .header("content-type", "application/octet-stream")
-                .header("x-content-sha256", sha256)
-                .body(reqwest::Body::wrap_stream(stream))
-                .send()
-                .await?;
-            let status = response.status();
-            let text = response.text().await?;
-            if !status.is_success() {
-                anyhow::bail!("POST /v1/file/public failed: {} {}", status, text);
-            }
-            serde_json::from_str(&text).map_err(|err| {
-                anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err)
-            })
+        let response = self
+            .client
+            .post(url)
+            .header("content-type", "application/octet-stream")
+            .header("x-content-sha256", sha256)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await?;
+        let status = response.status();
+        let text = response.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("POST /v1/file/public failed: {} {}", status, text);
         }
-        .await;
-        self.metrics
-            .record_antd_request(started.elapsed(), result.is_ok());
-        result
+        serde_json::from_str(&text)
+            .map_err(|err| anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err))
     }
 
     async fn request_json<T>(
@@ -213,31 +197,19 @@ impl AntdRestClient {
     where
         T: for<'de> Deserialize<'de>,
     {
-        let started = std::time::Instant::now();
-        let result = async {
-            let url = format!("{}{}", self.base_url, path);
-            let mut request = self.client.request(method.clone(), url);
-            if let Some(body) = json_body {
-                request = request.json(&body);
-            }
-            let response = request.send().await?;
-            let status = response.status();
-            let text = response.text().await?;
-            if !status.is_success() {
-                anyhow::bail!("{} {} failed: {} {}", method, path, status, text);
-            }
-            serde_json::from_str(&text).map_err(|err| {
-                anyhow::anyhow!("{} {} returned invalid JSON: {}", method, path, err)
-            })
+        let url = format!("{}{}", self.base_url, path);
+        let mut request = self.client.request(method.clone(), url);
+        if let Some(body) = json_body {
+            request = request.json(&body);
         }
-        .await;
-        self.metrics
-            .record_antd_request(started.elapsed(), result.is_ok());
-        result
-    }
-
-    pub(crate) fn record_upload_retry(&self) {
-        self.metrics.record_upload_retry();
+        let response = request.send().await?;
+        let status = response.status();
+        let text = response.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("{} {} failed: {} {}", method, path, status, text);
+        }
+        serde_json::from_str(&text)
+            .map_err(|err| anyhow::anyhow!("{} {} returned invalid JSON: {}", method, path, err))
     }
 }
 

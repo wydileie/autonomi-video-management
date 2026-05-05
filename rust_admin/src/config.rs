@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration as StdDuration};
 
-use axum::http::{header, HeaderName, HeaderValue, Method};
+use axum::http::{header, HeaderValue, Method};
 use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -16,7 +16,6 @@ pub(crate) struct Config {
     pub(crate) admin_password: String,
     pub(crate) admin_auth_secret: String,
     pub(crate) admin_auth_ttl_hours: i64,
-    pub(crate) admin_auth_cookie_secure: bool,
     pub(crate) catalog_state_path: PathBuf,
     pub(crate) catalog_bootstrap_address: Option<String>,
     pub(crate) cors_allowed_origins: Vec<HeaderValue>,
@@ -75,8 +74,6 @@ impl Config {
         if admin_auth_ttl_hours <= 0 {
             anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
         }
-        let admin_auth_cookie_secure =
-            parse_bool_env("ADMIN_AUTH_COOKIE_SECURE", is_production_environment());
         validate_admin_auth_config(
             &admin_username,
             &admin_password,
@@ -216,7 +213,6 @@ impl Config {
             admin_password,
             admin_auth_secret,
             admin_auth_ttl_hours,
-            admin_auth_cookie_secure,
             catalog_state_path: PathBuf::from(
                 env::var("CATALOG_STATE_PATH")
                     .unwrap_or_else(|_| "/tmp/video_catalog/catalog.json".into()),
@@ -283,13 +279,9 @@ pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
         .allow_headers([
             header::ACCEPT,
             header::AUTHORIZATION,
-            header::COOKIE,
             header::CONTENT_TYPE,
             header::RANGE,
-            HeaderName::from_static("x-request-id"),
-        ])
-        .allow_credentials(true)
-        .expose_headers([HeaderName::from_static("x-request-id")]))
+        ]))
 }
 
 fn required_env(name: &str) -> anyhow::Result<String> {
@@ -334,12 +326,10 @@ fn parse_f64_env(name: &str, default_value: f64) -> anyhow::Result<f64> {
 fn parse_bool_env(name: &str, default_value: bool) -> bool {
     env::var(name)
         .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            if normalized.is_empty() {
-                default_value
-            } else {
-                !matches!(normalized.as_str(), "0" | "false" | "no")
-            }
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no"
+            )
         })
         .unwrap_or(default_value)
 }

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::Row;
 use tokio::time::sleep;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -736,7 +736,6 @@ async fn build_public_catalog_from_db(state: &AppState) -> Result<Value, ApiErro
     }))
 }
 
-#[instrument(skip(state), fields(reason = %reason))]
 pub(crate) async fn refresh_local_catalog_from_db(
     state: &AppState,
     reason: &str,
@@ -763,7 +762,6 @@ pub(crate) async fn refresh_local_catalog_from_db(
     Ok(epoch)
 }
 
-#[instrument(skip(state), fields(catalog_publish_epoch = epoch, reason = %reason))]
 pub(crate) async fn publish_current_catalog_to_network(
     state: &AppState,
     epoch: u64,

@@ -7,7 +7,6 @@ services:
     container_name: antd_daemon
     environment:
       AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY}"
-      AUTONOMI_WALLET_KEY_FILE: "${PROD_AUTONOMI_WALLET_KEY_FILE:-}"
       ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
       PROD_AUTONOMI_PEERS: "${PROD_AUTONOMI_PEERS:-}"
       ANT_PEERS: "${ANT_PEERS:-}"

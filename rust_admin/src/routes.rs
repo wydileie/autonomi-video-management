@@ -1,8 +1,8 @@
-use std::{fs, path::Path as FsPath, time::Duration as StdDuration};
+use std::{fs, path::Path as FsPath};
 
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
-    http::{header, HeaderMap, Request, Response, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, patch, post},
     Json, Router,
@@ -10,15 +10,10 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::Row;
-use tower_http::{
-    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    trace::TraceLayer,
-};
-use tracing::{info, info_span, Span};
 use uuid::Uuid;
 
 use crate::{
-    auth::{auth_me, login, logout, require_admin},
+    auth::{auth_me, login, require_admin},
     catalog::{
         apply_catalog_visibility, catalog_entry_to_video_out, db_video_to_out,
         ensure_video_manifest_address, get_db_video, load_catalog, load_json_from_autonomi,
@@ -43,12 +38,9 @@ use crate::{
 };
 
 pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
-    let service_metrics = state.metrics.clone();
     Ok(Router::new()
         .route("/health", get(health))
-        .route("/metrics", get(metrics))
         .route("/auth/login", post(login))
-        .route("/auth/logout", post(logout))
         .route("/auth/me", get(auth_me))
         .route("/catalog", get(get_catalog))
         .route("/videos/upload/quote", post(quote_video_upload))
@@ -73,46 +65,7 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         )
         .layer(DefaultBodyLimit::disable())
         .layer(cors_layer(config)?)
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &Request<_>| {
-                    let request_id = request
-                        .headers()
-                        .get("x-request-id")
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or("");
-                    info_span!(
-                        "http_request",
-                        service = "rust_admin",
-                        request_id = %request_id,
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        version = ?request.version(),
-                    )
-                })
-                .on_response(
-                    move |response: &Response<_>, latency: StdDuration, _span: &Span| {
-                        service_metrics
-                            .http
-                            .record_request(response.status().as_u16(), latency);
-                        info!(
-                            status = response.status().as_u16(),
-                            latency_ms = latency.as_millis(),
-                            "request completed"
-                        );
-                    },
-                ),
-        )
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state))
-}
-
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.render_prometheus(),
-    )
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
