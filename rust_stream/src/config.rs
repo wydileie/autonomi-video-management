@@ -36,6 +36,10 @@ pub(crate) fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
     autvid_common::parse_cors_allowed_origins(&raw_origins)
 }
 
+pub(crate) fn request_timeout_from_env() -> Duration {
+    duration_from_env("STREAM_REQUEST_TIMEOUT_SECONDS", 60)
+}
+
 fn duration_from_env(name: &str, default_seconds: u64) -> Duration {
     Duration::from_secs(u64_from_env(name, default_seconds))
 }

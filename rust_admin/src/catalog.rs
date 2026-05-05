@@ -7,6 +7,7 @@ use std::{
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 use tokio::time::sleep;
@@ -17,7 +18,11 @@ use crate::{
     config::Config,
     db::{db_error, parse_video_uuid, set_current_catalog_address},
     errors::ApiError,
-    models::{CatalogEntryInput, SegmentOut, VariantOut, VideoOut},
+    models::{
+        ManifestOriginalFile, ManifestSegment, ManifestVariant, PublicCatalogDocument,
+        PublicCatalogVariant, PublicCatalogVideo, SegmentOut, VariantOut, VideoManifestDocument,
+        VideoOut,
+    },
     state::AppState,
     storage::store_json_public,
     CATALOG_CONTENT_TYPE, STATUS_READY, VIDEO_MANIFEST_CONTENT_TYPE,
@@ -312,7 +317,8 @@ pub(crate) fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<
         variants: entry
             .get("variants")
             .and_then(Value::as_array)
-            .unwrap_or(&Vec::new())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
             .iter()
             .map(|variant| VariantOut {
                 id: format!(
@@ -406,7 +412,8 @@ pub(crate) fn manifest_to_video_out(
         variants: manifest
             .get("variants")
             .and_then(Value::as_array)
-            .unwrap_or(&Vec::new())
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
             .iter()
             .map(|variant| VariantOut {
                 id: format!("{video_id}:{}", string_field(variant, "resolution")),
@@ -424,7 +431,8 @@ pub(crate) fn manifest_to_video_out(
                     variant
                         .get("segments")
                         .and_then(Value::as_array)
-                        .unwrap_or(&Vec::new())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
                         .iter()
                         .map(|segment| SegmentOut {
                             segment_index: int_field(segment, "segment_index"),
@@ -464,29 +472,32 @@ pub(crate) fn apply_catalog_visibility(
     video.original_file_byte_size = None;
 }
 
-fn original_file_manifest_from_row(row: &sqlx::postgres::PgRow) -> Option<Value> {
+fn original_file_manifest_from_row(row: &sqlx::postgres::PgRow) -> Option<ManifestOriginalFile> {
     let address = row
         .try_get::<Option<String>, _>("original_file_address")
         .ok()
         .flatten()?;
-    Some(json!({
-        "autonomi_address": address,
-        "byte_size": row
+    Some(ManifestOriginalFile {
+        autonomi_address: address,
+        byte_size: row
             .try_get::<Option<i64>, _>("original_file_byte_size")
             .ok()
             .flatten(),
-        "autonomi_cost_atto": row
+        autonomi_cost_atto: row
             .try_get::<Option<String>, _>("original_file_autonomi_cost_atto")
             .ok()
             .flatten(),
-        "payment_mode": row
+        payment_mode: row
             .try_get::<Option<String>, _>("original_file_autonomi_payment_mode")
             .ok()
             .flatten(),
-    }))
+    })
 }
 
-async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Result<Value, ApiError> {
+async fn build_ready_manifest_from_db(
+    state: &AppState,
+    video_id: &str,
+) -> Result<VideoManifestDocument, ApiError> {
     let video_uuid = parse_video_uuid(video_id)?;
     let video_row = sqlx::query(
         r#"
@@ -544,57 +555,79 @@ async fn build_ready_manifest_from_db(state: &AppState, video_id: &str) -> Resul
                 "Video has not finished uploading all segment addresses",
             ));
         }
-        manifest_variants.push(json!({
-            "id": variant_id.to_string(),
-            "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
-            "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
-            "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
-            "video_bitrate": variant.try_get::<i32, _>("video_bitrate").unwrap_or_default(),
-            "audio_bitrate": variant.try_get::<i32, _>("audio_bitrate").unwrap_or_default(),
-            "segment_duration": variant.try_get::<f64, _>("segment_duration").unwrap_or_default(),
-            "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
-            "segment_count": uploaded_segments.len(),
-            "segments": uploaded_segments
-                .iter()
-                .map(|segment| {
-                    json!({
-                        "segment_index": segment.try_get::<i32, _>("segment_index").unwrap_or_default(),
-                        "autonomi_address": segment.try_get::<Option<String>, _>("autonomi_address").ok().flatten(),
-                        "duration": segment.try_get::<f64, _>("duration").unwrap_or_default(),
-                        "byte_size": segment.try_get::<Option<i64>, _>("byte_size").ok().flatten(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-        }));
+        let segment_count = uploaded_segments.len();
+        let segments = uploaded_segments
+            .iter()
+            .map(|segment| ManifestSegment {
+                segment_index: segment
+                    .try_get::<i32, _>("segment_index")
+                    .unwrap_or_default(),
+                autonomi_address: segment
+                    .try_get::<Option<String>, _>("autonomi_address")
+                    .ok()
+                    .flatten(),
+                duration: segment.try_get::<f64, _>("duration").unwrap_or_default(),
+                byte_size: segment
+                    .try_get::<Option<i64>, _>("byte_size")
+                    .ok()
+                    .flatten(),
+            })
+            .collect();
+        manifest_variants.push(ManifestVariant {
+            id: variant_id.to_string(),
+            resolution: variant
+                .try_get::<String, _>("resolution")
+                .unwrap_or_default(),
+            width: variant.try_get::<i32, _>("width").unwrap_or_default(),
+            height: variant.try_get::<i32, _>("height").unwrap_or_default(),
+            video_bitrate: variant
+                .try_get::<i32, _>("video_bitrate")
+                .unwrap_or_default(),
+            audio_bitrate: variant
+                .try_get::<i32, _>("audio_bitrate")
+                .unwrap_or_default(),
+            segment_duration: variant
+                .try_get::<f64, _>("segment_duration")
+                .unwrap_or_default(),
+            total_duration: variant
+                .try_get::<Option<f64>, _>("total_duration")
+                .ok()
+                .flatten(),
+            segment_count,
+            segments,
+        });
     }
 
-    Ok(json!({
-        "schema_version": 1,
-        "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
-        "id": video_id,
-        "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
-        "original_filename": Value::Null,
-        "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
-        "status": STATUS_READY,
-        "created_at": video_row
+    Ok(VideoManifestDocument {
+        schema_version: 1,
+        content_type: VIDEO_MANIFEST_CONTENT_TYPE.to_string(),
+        id: video_id.to_string(),
+        title: video_row.try_get::<String, _>("title").unwrap_or_default(),
+        original_filename: None,
+        description: video_row
+            .try_get::<Option<String>, _>("description")
+            .ok()
+            .flatten(),
+        status: STATUS_READY.to_string(),
+        created_at: video_row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
-        "updated_at": Utc::now().to_rfc3339(),
-        "show_original_filename": false,
-        "show_manifest_address": video_row
+        updated_at: Utc::now().to_rfc3339(),
+        show_original_filename: false,
+        show_manifest_address: video_row
             .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
-        "original_file": original_file_manifest_from_row(&video_row).unwrap_or(Value::Null),
-        "variants": manifest_variants,
-    }))
+        original_file: original_file_manifest_from_row(&video_row),
+        variants: manifest_variants,
+    })
 }
 
 async fn build_catalog_entry_from_db(
     state: &AppState,
     video_id: &str,
     manifest_address: String,
-) -> Result<Value, ApiError> {
+) -> Result<PublicCatalogVideo, ApiError> {
     let video_uuid = parse_video_uuid(video_id)?;
     let video_row = sqlx::query(
         r#"
@@ -623,48 +656,41 @@ async fn build_catalog_entry_from_db(
     .await
     .map_err(db_error)?;
 
-    let input = CatalogEntryInput {
-        video_id: video_id.to_string(),
+    Ok(PublicCatalogVideo {
+        id: video_id.to_string(),
         title: video_row.try_get("title").unwrap_or_default(),
+        original_filename: None,
         description: video_row.try_get("description").ok().flatten(),
+        status: STATUS_READY.to_string(),
         created_at: video_row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         updated_at: Utc::now().to_rfc3339(),
         manifest_address,
+        show_original_filename: false,
         show_manifest_address: video_row
             .try_get::<bool, _>("show_manifest_address")
             .unwrap_or(false),
         variants: variant_rows
             .iter()
-            .map(|variant| {
-                json!({
-                    "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
-                    "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
-                    "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
-                    "segment_count": variant.try_get::<Option<i32>, _>("segment_count").ok().flatten().unwrap_or(0),
-                    "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
-                })
+            .map(|variant| PublicCatalogVariant {
+                resolution: variant
+                    .try_get::<String, _>("resolution")
+                    .unwrap_or_default(),
+                width: variant.try_get::<i32, _>("width").unwrap_or_default(),
+                height: variant.try_get::<i32, _>("height").unwrap_or_default(),
+                segment_count: variant
+                    .try_get::<Option<i32>, _>("segment_count")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0),
+                total_duration: variant
+                    .try_get::<Option<f64>, _>("total_duration")
+                    .ok()
+                    .flatten(),
             })
             .collect(),
-    };
-    Ok(video_catalog_entry_from_input(input))
-}
-
-fn video_catalog_entry_from_input(input: CatalogEntryInput) -> Value {
-    json!({
-        "id": input.video_id,
-        "title": input.title,
-        "original_filename": Value::Null,
-        "description": input.description,
-        "status": STATUS_READY,
-        "created_at": input.created_at,
-        "updated_at": input.updated_at,
-        "manifest_address": input.manifest_address,
-        "show_original_filename": false,
-        "show_manifest_address": input.show_manifest_address,
-        "variants": input.variants,
     })
 }
 
@@ -697,7 +723,7 @@ pub(crate) async fn ensure_video_manifest_address(
     Ok(manifest_address)
 }
 
-async fn build_public_catalog_from_db(state: &AppState) -> Result<Value, ApiError> {
+async fn build_public_catalog_from_db(state: &AppState) -> Result<PublicCatalogDocument, ApiError> {
     let rows = sqlx::query(
         r#"
         SELECT id, manifest_address
@@ -728,12 +754,12 @@ async fn build_public_catalog_from_db(state: &AppState) -> Result<Value, ApiErro
         );
     }
 
-    Ok(json!({
-        "schema_version": 1,
-        "content_type": CATALOG_CONTENT_TYPE,
-        "updated_at": Utc::now().to_rfc3339(),
-        "videos": videos,
-    }))
+    Ok(PublicCatalogDocument {
+        schema_version: 1,
+        content_type: CATALOG_CONTENT_TYPE.to_string(),
+        updated_at: Utc::now().to_rfc3339(),
+        videos,
+    })
 }
 
 #[instrument(skip(state), fields(reason = %reason))]
@@ -742,11 +768,7 @@ pub(crate) async fn refresh_local_catalog_from_db(
     reason: &str,
 ) -> Result<u64, ApiError> {
     let catalog = build_public_catalog_from_db(state).await?;
-    let video_count = catalog
-        .get("videos")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+    let video_count = catalog.videos.len();
     let _guard = state.catalog_lock.lock().await;
     let epoch = state.catalog_publish_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let catalog_address = read_catalog_address(&state.config);
@@ -788,11 +810,7 @@ pub(crate) async fn publish_current_catalog_to_network(
     }
 
     let catalog = build_public_catalog_from_db(state).await?;
-    let video_count = catalog
-        .get("videos")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+    let video_count = catalog.videos.len();
     let start = Instant::now();
     let catalog_address = store_json_public(state, &catalog).await?;
 
@@ -818,10 +836,10 @@ pub(crate) async fn publish_current_catalog_to_network(
     Ok(())
 }
 
-pub(crate) fn write_catalog_state(
+pub(crate) fn write_catalog_state<T: Serialize + ?Sized>(
     config: &Config,
     address: Option<&str>,
-    catalog: Option<&Value>,
+    catalog: Option<&T>,
     publish_pending: bool,
 ) -> Result<(), ApiError> {
     if let Some(parent) = config.catalog_state_path.parent() {
@@ -840,7 +858,12 @@ pub(crate) fn write_catalog_state(
         "note": "Local catalog snapshot plus the latest network-hosted catalog address.",
     });
     if let Some(catalog) = catalog {
-        payload["catalog"] = catalog.clone();
+        payload["catalog"] = serde_json::to_value(catalog).map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not encode catalog state: {err}"),
+            )
+        })?;
     }
     fs::write(
         &tmp_path,

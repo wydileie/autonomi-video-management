@@ -1,5 +1,3 @@
-use std::env;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
@@ -13,9 +11,11 @@ use tower_http::{
 use tracing::{info, info_span, Span};
 
 use crate::client::{connect_client, init_logging};
+use crate::config::Config;
 use crate::state::AppState;
 
 mod client;
+mod config;
 mod error;
 mod routes;
 mod state;
@@ -24,18 +24,16 @@ mod state;
 async fn main() -> anyhow::Result<()> {
     init_logging();
 
-    let rest_addr = env::var("ANTD_REST_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".to_string());
-    let bind_addr: SocketAddr = rest_addr.parse()?;
-    let network = env::var("ANTD_NETWORK").unwrap_or_else(|_| "default".to_string());
+    let config = Config::from_env()?;
     let client = Arc::new(connect_client().await?);
 
     let state = AppState {
         client,
-        network,
+        network: config.network.clone(),
         metrics: Arc::new(HttpMetrics::default()),
     };
     let service_metrics = state.metrics.clone();
-    let app = routes::router(state)
+    let app = routes::router(state, &config)
         .layer(CorsLayer::permissive().expose_headers([HeaderName::from_static("x-request-id")]))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(
@@ -68,8 +66,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
 
-    info!("Autonomi 2.0 compatibility gateway listening on {bind_addr}");
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    info!(
+        request_timeout_seconds = config.request_timeout.as_secs(),
+        file_upload_request_timeout_seconds = config.file_upload_request_timeout.as_secs(),
+        "Autonomi 2.0 compatibility gateway listening on {}",
+        config.bind_addr,
+    );
+    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

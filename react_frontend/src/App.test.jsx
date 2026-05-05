@@ -216,6 +216,27 @@ test("logs in, stores the admin token, and sends bearer auth on admin requests",
   );
 });
 
+test("logs out through the backend and clears local admin auth", async () => {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setupGetRoutes();
+  axios.post.mockImplementation((url) => {
+    if (url === "/api/auth/logout") {
+      return Promise.resolve({ data: { ok: true } });
+    }
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+
+  await renderApp();
+  await click(findButton("Logout"));
+
+  await waitFor(() => {
+    expect(axios.post).toHaveBeenCalledWith("/api/auth/logout");
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
+    expect(text()).toContain("Login");
+  });
+  expect(text()).not.toContain("Logout");
+});
+
 test("shows an upload quote after local video metadata is available", async () => {
   vi.useFakeTimers();
   window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");

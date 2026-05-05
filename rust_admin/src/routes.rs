@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing::{info, info_span, Span};
@@ -25,7 +26,7 @@ use crate::{
         load_video_manifest_by_id, manifest_to_video_out, read_catalog_address,
         refresh_local_catalog_from_db,
     },
-    config::{cors_layer, Config},
+    config::{cors_layer, duration_from_secs_f64, Config},
     db::{db_error, parse_video_uuid, set_publication, set_status},
     errors::ApiError,
     jobs::{
@@ -44,6 +45,11 @@ use crate::{
 
 pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
     let service_metrics = state.metrics.clone();
+    let default_timeout =
+        TimeoutLayer::new(duration_from_secs_f64(config.admin_request_timeout_seconds));
+    let upload_timeout = TimeoutLayer::new(duration_from_secs_f64(
+        config.admin_upload_request_timeout_seconds,
+    ));
     Ok(Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
@@ -52,7 +58,6 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         .route("/auth/me", get(auth_me))
         .route("/catalog", get(get_catalog))
         .route("/videos/upload/quote", post(quote_video_upload))
-        .route("/videos/upload", post(upload_video))
         .route("/videos", get(list_videos))
         .route("/admin/videos", get(admin_list_videos))
         .route("/videos/:video_id", get(get_video).delete(delete_video))
@@ -71,6 +76,8 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
             "/admin/videos/:video_id/publication",
             patch(update_video_publication),
         )
+        .route_layer(default_timeout)
+        .route("/videos/upload", post(upload_video).layer(upload_timeout))
         .layer(DefaultBodyLimit::disable())
         .layer(cors_layer(config)?)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -199,7 +206,8 @@ async fn list_videos(State(state): State<AppState>) -> Result<Json<Vec<VideoOut>
     let videos = catalog
         .get("videos")
         .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
         .iter()
         .filter(|entry| {
             entry

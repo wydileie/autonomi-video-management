@@ -25,6 +25,22 @@ pub(crate) struct AntdHealthResponse {
     pub(crate) network: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct AntdWalletAddressResponse {
+    pub(crate) address: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AntdWalletBalanceResponse {
+    pub(crate) balance: String,
+    pub(crate) gas_balance: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AntdWalletApproveResponse {
+    pub(crate) approved: bool,
+}
+
 #[derive(Deserialize)]
 struct AntdPublicDataResponse {
     data: String,
@@ -73,7 +89,7 @@ impl AntdRestClient {
             .await
     }
 
-    pub(crate) async fn wallet_address(&self) -> anyhow::Result<Value> {
+    pub(crate) async fn wallet_address(&self) -> anyhow::Result<AntdWalletAddressResponse> {
         self.request_json(
             reqwest::Method::GET,
             "/v1/wallet/address",
@@ -82,7 +98,7 @@ impl AntdRestClient {
         .await
     }
 
-    pub(crate) async fn wallet_balance(&self) -> anyhow::Result<Value> {
+    pub(crate) async fn wallet_balance(&self) -> anyhow::Result<AntdWalletBalanceResponse> {
         self.request_json(
             reqwest::Method::GET,
             "/v1/wallet/balance",
@@ -91,7 +107,7 @@ impl AntdRestClient {
         .await
     }
 
-    pub(crate) async fn wallet_approve(&self) -> anyhow::Result<Value> {
+    pub(crate) async fn wallet_approve(&self) -> anyhow::Result<AntdWalletApproveResponse> {
         self.request_json(
             reqwest::Method::POST,
             "/v1/wallet/approve",

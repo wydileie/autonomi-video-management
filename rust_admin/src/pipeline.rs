@@ -23,7 +23,9 @@ use crate::{
     errors::ApiError,
     jobs::schedule_catalog_publish,
     media::{probe_duration, probe_video_dimensions, transcode_renditions},
-    models::QuoteValue,
+    models::{
+        ManifestOriginalFile, ManifestSegment, ManifestVariant, QuoteValue, VideoManifestDocument,
+    },
     quote::{parse_cost_u128, quote_data_size},
     state::AppState,
     storage::{put_public_verified_inner, put_public_verified_with_mode, store_json_public},
@@ -506,24 +508,13 @@ pub(crate) async fn upload_approved_video_inner(
     } else {
         None
     };
-    let mut manifest = json!({
-        "schema_version": 1,
-        "content_type": VIDEO_MANIFEST_CONTENT_TYPE,
-        "id": video_id,
-        "title": video_row.try_get::<String, _>("title").unwrap_or_default(),
-        "original_filename": Value::Null,
-        "description": video_row.try_get::<Option<String>, _>("description").ok().flatten(),
-        "status": STATUS_READY,
-        "created_at": video_row
-            .try_get::<DateTime<Utc>, _>("created_at")
-            .map(|value| value.to_rfc3339())
-            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
-        "updated_at": Utc::now().to_rfc3339(),
-        "show_original_filename": false,
-        "show_manifest_address": video_row.try_get::<bool, _>("show_manifest_address").unwrap_or(false),
-        "original_file": original_file.unwrap_or(Value::Null),
-        "variants": [],
-    });
+    let manifest_created_at = video_row
+        .try_get::<DateTime<Utc>, _>("created_at")
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|_| Utc::now().to_rfc3339());
+    let show_manifest_address = video_row
+        .try_get::<bool, _>("show_manifest_address")
+        .unwrap_or(false);
 
     let variants = sqlx::query(
         r#"
@@ -756,32 +747,67 @@ pub(crate) async fn upload_approved_video_inner(
         .await
         .map_err(db_error)?;
 
-        manifest_variants.push(json!({
-            "id": variant_id.to_string(),
-            "resolution": variant.try_get::<String, _>("resolution").unwrap_or_default(),
-            "width": variant.try_get::<i32, _>("width").unwrap_or_default(),
-            "height": variant.try_get::<i32, _>("height").unwrap_or_default(),
-            "video_bitrate": variant.try_get::<i32, _>("video_bitrate").unwrap_or_default(),
-            "audio_bitrate": variant.try_get::<i32, _>("audio_bitrate").unwrap_or_default(),
-            "segment_duration": variant.try_get::<f64, _>("segment_duration").unwrap_or_default(),
-            "total_duration": variant.try_get::<Option<f64>, _>("total_duration").ok().flatten(),
-            "segment_count": uploaded_segments.len(),
-            "segments": uploaded_segments
-                .iter()
-                .map(|segment| {
-                    json!({
-                        "segment_index": segment.try_get::<i32, _>("segment_index").unwrap_or_default(),
-                        "autonomi_address": segment.try_get::<Option<String>, _>("autonomi_address").ok().flatten(),
-                        "duration": segment.try_get::<f64, _>("duration").unwrap_or_default(),
-                        "byte_size": segment.try_get::<Option<i64>, _>("byte_size").ok().flatten(),
-                    })
-                })
-                .collect::<Vec<_>>(),
-        }));
+        let segment_count = uploaded_segments.len();
+        let segments = uploaded_segments
+            .iter()
+            .map(|segment| ManifestSegment {
+                segment_index: segment
+                    .try_get::<i32, _>("segment_index")
+                    .unwrap_or_default(),
+                autonomi_address: segment
+                    .try_get::<Option<String>, _>("autonomi_address")
+                    .ok()
+                    .flatten(),
+                duration: segment.try_get::<f64, _>("duration").unwrap_or_default(),
+                byte_size: segment
+                    .try_get::<Option<i64>, _>("byte_size")
+                    .ok()
+                    .flatten(),
+            })
+            .collect();
+        manifest_variants.push(ManifestVariant {
+            id: variant_id.to_string(),
+            resolution: variant
+                .try_get::<String, _>("resolution")
+                .unwrap_or_default(),
+            width: variant.try_get::<i32, _>("width").unwrap_or_default(),
+            height: variant.try_get::<i32, _>("height").unwrap_or_default(),
+            video_bitrate: variant
+                .try_get::<i32, _>("video_bitrate")
+                .unwrap_or_default(),
+            audio_bitrate: variant
+                .try_get::<i32, _>("audio_bitrate")
+                .unwrap_or_default(),
+            segment_duration: variant
+                .try_get::<f64, _>("segment_duration")
+                .unwrap_or_default(),
+            total_duration: variant
+                .try_get::<Option<f64>, _>("total_duration")
+                .ok()
+                .flatten(),
+            segment_count,
+            segments,
+        });
     }
 
-    manifest["updated_at"] = json!(Utc::now().to_rfc3339());
-    manifest["variants"] = json!(manifest_variants);
+    let manifest = VideoManifestDocument {
+        schema_version: 1,
+        content_type: VIDEO_MANIFEST_CONTENT_TYPE.to_string(),
+        id: video_id.to_string(),
+        title: video_row.try_get::<String, _>("title").unwrap_or_default(),
+        original_filename: None,
+        description: video_row
+            .try_get::<Option<String>, _>("description")
+            .ok()
+            .flatten(),
+        status: STATUS_READY.to_string(),
+        created_at: manifest_created_at,
+        updated_at: Utc::now().to_rfc3339(),
+        show_original_filename: false,
+        show_manifest_address,
+        original_file,
+        variants: manifest_variants,
+    };
     let manifest_address = store_json_public(state, &manifest).await?;
     let catalog_address = read_catalog_address(&state.config);
     set_ready(
@@ -821,27 +847,27 @@ async fn upload_original_file_if_needed(
     video_uuid: Uuid,
     video_id: &str,
     video_row: &sqlx::postgres::PgRow,
-) -> Result<Option<Value>, ApiError> {
+) -> Result<Option<ManifestOriginalFile>, ApiError> {
     if let Some(address) = video_row
         .try_get::<Option<String>, _>("original_file_address")
         .ok()
         .flatten()
     {
-        return Ok(Some(json!({
-            "autonomi_address": address,
-            "byte_size": video_row
+        return Ok(Some(ManifestOriginalFile {
+            autonomi_address: address,
+            byte_size: video_row
                 .try_get::<Option<i64>, _>("original_file_byte_size")
                 .ok()
                 .flatten(),
-            "autonomi_cost_atto": video_row
+            autonomi_cost_atto: video_row
                 .try_get::<Option<String>, _>("original_file_autonomi_cost_atto")
                 .ok()
                 .flatten(),
-            "payment_mode": video_row
+            payment_mode: video_row
                 .try_get::<Option<String>, _>("original_file_autonomi_payment_mode")
                 .ok()
                 .flatten(),
-        })));
+        }));
     }
 
     let source_path = video_row
@@ -946,10 +972,10 @@ async fn upload_original_file_if_needed(
     .await
     .map_err(db_error)?;
 
-    Ok(Some(json!({
-        "autonomi_address": address,
-        "byte_size": byte_size,
-        "autonomi_cost_atto": cost,
-        "payment_mode": payment_mode,
-    })))
+    Ok(Some(ManifestOriginalFile {
+        autonomi_address: address,
+        byte_size: Some(byte_size),
+        autonomi_cost_atto: cost,
+        payment_mode: Some(payment_mode),
+    }))
 }
