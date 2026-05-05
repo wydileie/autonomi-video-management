@@ -131,11 +131,22 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::{Duration, Instant},
+    };
 
     use axum::body::to_bytes;
+    use axum::body::Body;
     use axum::extract::{Path, State};
     use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
     use super::*;
     use crate::cache::{CachedValue, SegmentCache};
@@ -145,6 +156,10 @@ mod tests {
     const TEST_MANIFEST_ADDRESS: &str = "test-manifest";
 
     fn test_state(catalog_bootstrap_address: Option<&str>) -> AppState {
+        test_state_with_antd(catalog_bootstrap_address, "http://127.0.0.1:0")
+    }
+
+    fn test_state_with_antd(catalog_bootstrap_address: Option<&str>, antd_url: &str) -> AppState {
         let cache_config = CacheConfig {
             catalog_ttl: Duration::from_secs(60),
             manifest_ttl: Duration::from_secs(60),
@@ -153,7 +168,7 @@ mod tests {
         };
 
         AppState {
-            antd: AntdRestClient::new("http://127.0.0.1:0").unwrap(),
+            antd: AntdRestClient::new(antd_url).unwrap(),
             catalog_state_path: env::temp_dir().join(format!(
                 "rust_stream_missing_catalog_{}.json",
                 std::process::id()
@@ -215,6 +230,76 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct MockAntdState {
+        catalog_requests: Arc<AtomicUsize>,
+        manifest_requests: Arc<AtomicUsize>,
+        segment_requests: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_stream_mock_antd(state: MockAntdState) -> String {
+        let app = Router::new()
+            .route("/health", get(mock_health))
+            .route("/v1/data/public/:address", get(mock_data_get_public))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    async fn mock_health() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "status": "ok",
+            "network": "mocknet",
+        }))
+    }
+
+    async fn mock_data_get_public(
+        State(state): State<MockAntdState>,
+        Path(address): Path<String>,
+    ) -> axum::response::Response<Body> {
+        let bytes = match address.as_str() {
+            TEST_CATALOG_ADDRESS => {
+                state.catalog_requests.fetch_add(1, Ordering::Relaxed);
+                serde_json::to_vec(&serde_json::json!({
+                    "videos": [{
+                        "id": "video-1",
+                        "manifest_address": TEST_MANIFEST_ADDRESS
+                    }]
+                }))
+                .unwrap()
+            }
+            TEST_MANIFEST_ADDRESS => {
+                state.manifest_requests.fetch_add(1, Ordering::Relaxed);
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "video-1",
+                    "status": "ready",
+                    "variants": [{
+                        "resolution": "720p",
+                        "segment_duration": 4.0,
+                        "segments": [{
+                            "segment_index": 0,
+                            "autonomi_address": "segment-0",
+                            "duration": 3.0
+                        }]
+                    }]
+                }))
+                .unwrap()
+            }
+            "segment-0" => {
+                state.segment_requests.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                b"segment bytes".to_vec()
+            }
+            _ => return (StatusCode::NOT_FOUND, "unknown address").into_response(),
+        };
+
+        Json(serde_json::json!({ "data": BASE64.encode(bytes) })).into_response()
+    }
+
     #[test]
     fn segment_cache_evicts_least_recently_used_entries() {
         let mut cache = SegmentCache::new(6, Duration::from_secs(60));
@@ -273,6 +358,94 @@ mod tests {
             body.as_ref(),
             b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:3.200,\n/stream/video-1/720p/0.ts\n#EXTINF:4.400,\n/stream/video-1/720p/1.ts\n#EXT-X-ENDLIST\n"
         );
+    }
+
+    #[tokio::test]
+    async fn hls_routes_fetch_catalog_manifest_and_segment_from_mock_antd() {
+        let mock_state = MockAntdState::default();
+        let base_url = spawn_stream_mock_antd(mock_state.clone()).await;
+        let state = test_state_with_antd(Some(TEST_CATALOG_ADDRESS), &base_url);
+
+        let playlist = routes::hls_manifest(
+            State(state.clone()),
+            Path(("video-1".to_string(), "720p".to_string())),
+        )
+        .await;
+        assert_eq!(playlist.status(), StatusCode::OK);
+        let body = to_bytes(playlist.into_body(), usize::MAX).await.unwrap();
+        assert!(std::str::from_utf8(body.as_ref())
+            .unwrap()
+            .contains("/stream/video-1/720p/0.ts"));
+
+        let first_segment = routes::hls_segment(
+            State(state.clone()),
+            Path((
+                "video-1".to_string(),
+                "720p".to_string(),
+                "0.ts".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(first_segment.status(), StatusCode::OK);
+        let first_body = to_bytes(first_segment.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(first_body.as_ref(), b"segment bytes");
+
+        let cached_segment = routes::hls_segment(
+            State(state),
+            Path((
+                "video-1".to_string(),
+                "720p".to_string(),
+                "0.ts".to_string(),
+            )),
+        )
+        .await;
+        assert_eq!(cached_segment.status(), StatusCode::OK);
+
+        assert_eq!(mock_state.catalog_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(mock_state.manifest_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(mock_state.segment_requests.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_segment_misses_are_coalesced_against_mock_antd() {
+        let mock_state = MockAntdState::default();
+        let base_url = spawn_stream_mock_antd(mock_state.clone()).await;
+        let state = test_state_with_antd(Some(TEST_CATALOG_ADDRESS), &base_url);
+        cache_catalog_and_manifest(
+            &state,
+            TEST_CATALOG_ADDRESS,
+            TEST_MANIFEST_ADDRESS,
+            ready_manifest(),
+        )
+        .await;
+
+        let first = routes::hls_segment(
+            State(state.clone()),
+            Path((
+                "video-1".to_string(),
+                "720p".to_string(),
+                "0.ts".to_string(),
+            )),
+        );
+        let second = routes::hls_segment(
+            State(state.clone()),
+            Path((
+                "video-1".to_string(),
+                "720p".to_string(),
+                "0.ts".to_string(),
+            )),
+        );
+        let (first, second) = tokio::join!(first, second);
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(mock_state.segment_requests.load(Ordering::Relaxed), 1);
+        assert!(state
+            .metrics
+            .render_prometheus()
+            .contains("autvid_stream_segment_fetch_coalesced_total{service=\"rust_stream\"} 1"));
     }
 
     #[tokio::test]
