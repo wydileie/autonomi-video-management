@@ -51,9 +51,12 @@ pub(crate) fn router() -> Router<AppState> {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let segment_cache = state.cache.segments.lock().await.snapshot();
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.render_prometheus(),
+        state
+            .metrics
+            .render_prometheus_with_cache(Some(segment_cache)),
     )
 }
 

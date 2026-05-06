@@ -23,6 +23,10 @@ pub(crate) fn router(state: AppState, config: &Config) -> Router {
         .route("/v1/wallet/approve", post(wallet::wallet_approve))
         .route("/v1/data/cost", post(data::data_cost))
         .route("/v1/data/public", post(data::data_put_public))
+        .route(
+            "/v1/data/public/{address}/raw",
+            get(data::data_get_public_raw),
+        )
         .route("/v1/data/public/{address}", get(data::data_get_public))
         .route_layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

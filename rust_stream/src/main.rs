@@ -240,6 +240,10 @@ mod tests {
     async fn spawn_stream_mock_antd(state: MockAntdState) -> String {
         let app = Router::new()
             .route("/health", get(mock_health))
+            .route(
+                "/v1/data/public/:address/raw",
+                get(mock_data_get_public_raw),
+            )
             .route("/v1/data/public/:address", get(mock_data_get_public))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -261,7 +265,26 @@ mod tests {
         State(state): State<MockAntdState>,
         Path(address): Path<String>,
     ) -> axum::response::Response<Body> {
-        let bytes = match address.as_str() {
+        let Some(bytes) = mock_public_bytes(&state, &address).await else {
+            return (StatusCode::NOT_FOUND, "unknown address").into_response();
+        };
+
+        Json(serde_json::json!({ "data": BASE64.encode(bytes) })).into_response()
+    }
+
+    async fn mock_data_get_public_raw(
+        State(state): State<MockAntdState>,
+        Path(address): Path<String>,
+    ) -> axum::response::Response<Body> {
+        let Some(bytes) = mock_public_bytes(&state, &address).await else {
+            return (StatusCode::NOT_FOUND, "unknown address").into_response();
+        };
+
+        ([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response()
+    }
+
+    async fn mock_public_bytes(state: &MockAntdState, address: &str) -> Option<Vec<u8>> {
+        let bytes = match address {
             TEST_CATALOG_ADDRESS => {
                 state.catalog_requests.fetch_add(1, Ordering::Relaxed);
                 serde_json::to_vec(&serde_json::json!({
@@ -294,10 +317,10 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 b"segment bytes".to_vec()
             }
-            _ => return (StatusCode::NOT_FOUND, "unknown address").into_response(),
+            _ => return None,
         };
 
-        Json(serde_json::json!({ "data": BASE64.encode(bytes) })).into_response()
+        Some(bytes)
     }
 
     #[test]
@@ -313,6 +336,10 @@ mod tests {
         assert_eq!(cache.get("b"), None);
         assert_eq!(cache.get("a"), Some(vec![1, 2, 3]));
         assert_eq!(cache.get("c"), Some(vec![7, 8, 9]));
+        let snapshot = cache.snapshot();
+        assert_eq!(snapshot.evictions_total, 1);
+        assert_eq!(snapshot.bytes_resident, 6);
+        assert_eq!(snapshot.entries, 2);
     }
 
     #[test]
@@ -387,6 +414,10 @@ mod tests {
         )
         .await;
         assert_eq!(first_segment.status(), StatusCode::OK);
+        assert_eq!(
+            first_segment.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=60, immutable"
+        );
         let first_body = to_bytes(first_segment.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -444,7 +475,7 @@ mod tests {
         assert_eq!(mock_state.segment_requests.load(Ordering::Relaxed), 1);
         assert!(state
             .metrics
-            .render_prometheus()
+            .render_prometheus_with_cache(None)
             .contains("autvid_stream_segment_fetch_coalesced_total{service=\"rust_stream\"} 1"));
     }
 

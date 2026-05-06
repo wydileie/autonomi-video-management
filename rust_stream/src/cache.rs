@@ -27,11 +27,19 @@ pub(crate) struct SegmentCache {
     total_bytes: usize,
     max_bytes: usize,
     ttl: Duration,
+    evictions_total: u64,
 }
 
 struct CachedSegment {
     data: Vec<u8>,
     expires_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SegmentCacheSnapshot {
+    pub(crate) evictions_total: u64,
+    pub(crate) bytes_resident: usize,
+    pub(crate) entries: usize,
 }
 
 impl AppCache {
@@ -55,6 +63,7 @@ impl SegmentCache {
             total_bytes: 0,
             max_bytes,
             ttl,
+            evictions_total: 0,
         }
     }
 
@@ -70,7 +79,7 @@ impl SegmentCache {
                 Some(data)
             }
             Some(_) => {
-                self.remove(address);
+                self.evict_address(address);
                 None
             }
             None => None,
@@ -106,6 +115,13 @@ impl SegmentCache {
         }
     }
 
+    fn evict_address(&mut self, address: &str) {
+        if let Some(entry) = self.entries.remove(address) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
+            self.evictions_total = self.evictions_total.saturating_add(1);
+        }
+    }
+
     fn evict_expired(&mut self, now: Instant) {
         let expired_addresses = self
             .entries
@@ -115,7 +131,7 @@ impl SegmentCache {
             .collect::<Vec<_>>();
 
         for address in expired_addresses {
-            self.remove(&address);
+            self.evict_address(&address);
         }
     }
 
@@ -125,6 +141,15 @@ impl SegmentCache {
                 break;
             };
             self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
+            self.evictions_total = self.evictions_total.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> SegmentCacheSnapshot {
+        SegmentCacheSnapshot {
+            evictions_total: self.evictions_total,
+            bytes_resident: self.total_bytes,
+            entries: self.entries.len(),
         }
     }
 }

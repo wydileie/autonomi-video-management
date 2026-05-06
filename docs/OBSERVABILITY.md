@@ -1,8 +1,9 @@
 # Observability
 
-The Compose stack can run an optional Prometheus, Grafana, and Alertmanager
-overlay. It scrapes the metrics already exposed by the Rust services and does
-not require changing the application containers.
+The Compose stack can run optional Prometheus, Grafana, Alertmanager, Loki, and
+Promtail overlays. The metrics overlay scrapes the Rust services and `antd`
+gateway. The logging overlay tails Docker container logs into Loki for browsing
+from Grafana.
 
 ## Metrics Endpoints
 
@@ -43,6 +44,9 @@ Stream-specific counters:
 | `autvid_stream_segment_cache_hits_total` | Segment cache hits |
 | `autvid_stream_segment_cache_misses_total` | Segment cache misses |
 | `autvid_stream_segment_fetch_coalesced_total` | Requests joined to an in-flight segment fetch |
+| `autvid_stream_segment_cache_evictions_total` | Segment cache entries evicted while enforcing cache limits |
+| `autvid_stream_segment_cache_bytes_resident` | Current resident bytes in the segment cache |
+| `autvid_stream_segment_cache_entries` | Current number of segment cache entries |
 
 ## Running Locally
 
@@ -56,6 +60,17 @@ docker compose --env-file .env.local \
   up --build
 ```
 
+Start local monitoring plus log collection:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.monitoring.yml \
+  -f docker-compose.logging.yml \
+  up --build
+```
+
 Open:
 
 | Tool | URL | Default credentials |
@@ -63,6 +78,7 @@ Open:
 | Grafana | `http://localhost:3000` | `admin` / `admin` |
 | Prometheus | `http://localhost:9090` | none |
 | Alertmanager | `http://localhost:9093` | none |
+| Loki | `http://localhost:3100` | none |
 
 Override published monitoring ports when they conflict with local tools:
 
@@ -72,6 +88,8 @@ PROMETHEUS_HTTP_PORT=9091
 ALERTMANAGER_HTTP_PORT=9094
 GRAFANA_ADMIN_USER=admin
 GRAFANA_ADMIN_PASSWORD=<change-me>
+LOKI_HTTP_PORT=3101
+PROMTAIL_HTTP_PORT=9081
 ```
 
 ## Running in Production
@@ -86,21 +104,40 @@ docker compose --env-file .env.production \
   up --build -d
 ```
 
+Add the logging overlay when you want centralized container logs in Loki and a
+provisioned `Loki` datasource in Grafana. It can run by itself for logs-only
+inspection, or after the monitoring overlay for metrics and logs together:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  -f docker-compose.monitoring.yml \
+  -f docker-compose.logging.yml \
+  up --build -d
+```
+
 For internet-facing deployments, keep Grafana, Prometheus, and Alertmanager
 behind a private network, VPN, or authenticated reverse proxy. The overlay
-publishes their ports to the host for convenience; set host firewall rules or
+publishes their ports to the host for convenience. Loki and Promtail are also
+published only when the logging overlay is included. Set host firewall rules or
 port bindings that match your deployment model.
+
+Promtail uses the Docker socket to discover containers and read their logs.
+Treat access to `autvid_promtail` and the mounted socket as operationally
+privileged.
 
 ## Grafana Dashboards
 
-Grafana is provisioned with a Prometheus datasource named `Prometheus` and
-these dashboards in the `Autonomi Video Management` folder:
+Grafana is provisioned with a Prometheus datasource named `Prometheus`. When
+`docker-compose.logging.yml` is included, it also gets a `Loki` datasource.
+These dashboards are loaded in the `Autonomi Video Management` folder:
 
 | Dashboard | Coverage |
 |---|---|
 | `Autonomi Video - Service Requests` | Service scrape status, request rate, 5xx rate, average latency, and firing Autvid alerts |
 | `Autonomi Video - Admin Jobs and Uploads` | Job starts/successes/failures, approximate unfinished attempts, FFmpeg runtime, outbound `antd` calls, and upload retries |
-| `Autonomi Video - Stream Cache and Health` | Stream service scrape status, segment hit ratio, hit/miss/coalesced fetch rates, stream request rate, 5xx rate, and average latency |
+| `Autonomi Video - Stream Cache and Health` | Stream service scrape status, segment hit ratio, hit/miss/coalesced/eviction rates, resident cache bytes, cache entries, stream request rate, 5xx rate, and average latency |
 | `Autonomi Video - antd Health` | `antd` scrape status, gateway request/error/latency metrics, scrape duration, and admin-observed outbound `antd` latency/errors |
 
 The services currently emit counters rather than histograms. Dashboard latency
@@ -146,6 +183,7 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.monitoring.yml \
+  -f docker-compose.logging.yml \
   config
 ```
 
