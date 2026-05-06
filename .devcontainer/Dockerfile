@@ -7,9 +7,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/opt/venv/bin:${PATH}:/opt/mssql-tools18/bin:${CARGO_HOME}/bin"
 
 # Keep the Autonomi toolchain on a single ant-node/protocol line.
-ARG AUTONOMI_ANT_SDK_REF=v0.5.1
-ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.2.1
-ARG AUTONOMI_ANT_NODE_REF=v0.11.0
+ARG AUTONOMI_ANT_SDK_REF=v0.6.1
+ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.2.2
+ARG AUTONOMI_ANT_NODE_REF=v0.11.1
 
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \

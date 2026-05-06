@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-ant-core = "=0.2.2"
-ant-node = "=0.11.0"
+ant-core = "=0.2.3"
+ant-node = "=0.11.1"
 autvid_common = { path = "../common" }
 axum = "0.8"
 base64 = "0.22"
