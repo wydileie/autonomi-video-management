@@ -6,13 +6,17 @@ services:
       dockerfile: antd_service/Dockerfile
     container_name: antd_daemon
     environment:
-      AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY}"
+      # For production secret-file use, mount the file with an optional
+      # Compose override and set PROD_AUTONOMI_WALLET_KEY_FILE to its
+      # in-container path, for example /run/secrets/autonomi_wallet_key.
+      AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY:-}"
       AUTONOMI_WALLET_KEY_FILE: "${PROD_AUTONOMI_WALLET_KEY_FILE:-}"
       ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
       PROD_AUTONOMI_PEERS: "${PROD_AUTONOMI_PEERS:-}"
       ANT_PEERS: "${ANT_PEERS:-}"
       ANTD_REST_ADDR: "0.0.0.0:8082"
       ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
+      ANTD_JSON_BODY_LIMIT_BYTES: "${ANTD_JSON_BODY_LIMIT_BYTES:-33554432}"
       ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
       ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
       EVM_NETWORK: "${PROD_EVM_NETWORK:-arbitrum-one}"

@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config test-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config backup-production restore-production test-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -10,6 +10,7 @@ help:
 	@echo "  make test-rust-workspace Run all Rust cargo tests"
 	@echo "  make test-rust-stream Run Rust stream cargo tests"
 	@echo "  make test-rust-admin Run Rust admin cargo tests"
+	@echo "  make test-rust-db    Run rust_admin Postgres-backed integration tests"
 	@echo "  make test-antd       Run antd service cargo tests"
 	@echo "  make clippy-rust     Run all Rust clippy checks"
 	@echo "  make clippy-rust-workspace Run all Rust clippy checks"
@@ -18,6 +19,8 @@ help:
 	@echo "  make clippy-antd     Run antd service clippy checks"
 	@echo "  make fmt-rust        Check Rust formatting"
 	@echo "  make compose-config  Validate Compose render paths"
+	@echo "  make backup-production Create a timestamped production DB/catalog backup"
+	@echo "  make restore-production ARGS='--backup-dir backups/autvid-... --yes' Restore a production backup"
 	@echo "  make install-react   Install React frontend dependencies"
 	@echo "  make build-react     Build the React frontend"
 	@echo "  make test-react      Run React tests in CI mode"
@@ -41,6 +44,10 @@ test-rust-stream:
 
 test-rust-admin:
 	$(CARGO) test -p rust_admin
+
+test-rust-db:
+	@test -n "$$TEST_DATABASE_URL" || { echo "Set TEST_DATABASE_URL to a maintenance Postgres database"; exit 2; }
+	$(CARGO) test -p rust_admin --features db-tests db_tests -- --test-threads=1
 
 test-antd:
 	$(CARGO) test -p antd
@@ -66,6 +73,13 @@ compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
 	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
+
+backup-production:
+	scripts/backup-production.sh
+
+restore-production:
+	@test -n "$(ARGS)" || { echo "Usage: make restore-production ARGS='--backup-dir backups/autvid-YYYYMMDDTHHMMSSZ --yes'"; exit 2; }
+	scripts/restore-production.sh $(ARGS)
 
 install-react:
 	cd react_frontend && $(NPM) ci

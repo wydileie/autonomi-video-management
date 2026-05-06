@@ -1,4 +1,4 @@
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -28,6 +28,7 @@ pub(crate) fn router(state: AppState, config: &Config) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             config.request_timeout,
         ))
+        .layer(DefaultBodyLimit::max(config.json_body_limit_bytes))
         .route(
             "/v1/file/public",
             post(file::file_put_public).layer(TimeoutLayer::with_status_code(

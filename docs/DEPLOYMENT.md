@@ -122,7 +122,11 @@ APP_ENV=production
 ADMIN_USERNAME=autvid-admin
 ADMIN_PASSWORD=<long random admin password>
 ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
+# Choose one wallet source:
 PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
+# or:
+# PROD_AUTONOMI_WALLET_KEY=
+# PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key
 PROD_ANTD_NETWORK=default
 PROD_EVM_NETWORK=arbitrum-one
 ANTD_PAYMENT_MODE=auto
@@ -132,27 +136,54 @@ VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
 
 ### Wallet Secret Files
 
-For production, prefer mounting the wallet key as a Docker Secret or another
-root-readable file instead of storing it directly in `.env.production`.
-`PROD_AUTONOMI_WALLET_KEY_FILE` is passed through to the `antd` gateway as
-`AUTONOMI_WALLET_KEY_FILE`; when it is set, the gateway reads that file and
-ignores `PROD_AUTONOMI_WALLET_KEY`.
+For local development and quick private testing, `PROD_AUTONOMI_WALLET_KEY`
+can stay in the env file. For production, prefer mounting the wallet key as a
+Docker Secret or another root-readable file instead of storing the key directly
+in `.env.production`.
 
-Example with Docker Compose secrets:
+`PROD_AUTONOMI_WALLET_KEY_FILE` is an in-container file path. The production
+Compose file passes it through to the `antd` gateway as
+`AUTONOMI_WALLET_KEY_FILE`; when it is set, the gateway reads that file and
+uses it instead of `PROD_AUTONOMI_WALLET_KEY`.
+
+Keep the base `docker-compose.prod.yml` free of a required secret file so
+normal `docker compose config` checks work before a real key exists. Add a
+local, uncommitted overlay such as `docker-compose.prod.secrets.yml` only on
+hosts that have the wallet key file:
 
 ```yaml
 services:
   antd:
     secrets:
-      - autonomi_wallet_key
-    environment:
-      AUTONOMI_WALLET_KEY:
-      AUTONOMI_WALLET_KEY_FILE: /run/secrets/autonomi_wallet_key
+      - source: autonomi_wallet_key
+        target: autonomi_wallet_key
+        mode: 0400
 
 secrets:
   autonomi_wallet_key:
     file: ./secrets/autonomi_wallet_key.txt
 ```
+
+Then set these values in `.env.production`:
+
+```dotenv
+PROD_AUTONOMI_WALLET_KEY=
+PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key
+```
+
+Start production with the extra overlay:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  -f docker-compose.prod.secrets.yml \
+  up --build -d
+```
+
+Without the secrets overlay, keep `PROD_AUTONOMI_WALLET_KEY_FILE` blank and
+set `PROD_AUTONOMI_WALLET_KEY` directly. The local/dev compose paths remain
+env-based and do not require Docker Secrets.
 
 For public deployments, put TLS, auth, and domain routing in front of the stack
 with a host reverse proxy, cloud load balancer, Tailscale/Funnel, Caddy,
@@ -250,35 +281,31 @@ docker compose --env-file .env.production \
 These metrics are intentionally internal. Do not expose the `antd` service port
 publicly, and protect any external scrape path at your edge proxy.
 
-Backup Postgres:
+Create a timestamped production backup:
 
 ```bash
-mkdir -p ./backups
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  exec -T db sh -ceu 'pg_dump -U "$ADMIN_USER" "$ADMIN_DB"' \
-  > ./backups/autvid-$(date -u +%Y%m%dT%H%M%SZ).sql
+make backup-production
 ```
 
-Restore Postgres into a fresh stack:
+The backup helper writes a directory such as
+`backups/autvid-20260505T120000Z/` containing a custom-format
+`postgres.dump`, `manifest.env`, and `catalog.json` when the catalog bookmark
+exists.
+
+Restore Postgres and the catalog bookmark into a fresh stack:
 
 ```bash
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  exec -T db sh -ceu 'psql -U "$ADMIN_USER" "$ADMIN_DB"' \
-  < ./backups/autvid-YYYYMMDDTHHMMSSZ.sql
+make restore-production ARGS='--backup-dir backups/autvid-YYYYMMDDTHHMMSSZ --yes'
 ```
 
-Back up the catalog bookmark:
+The restore helper refuses to run without `--yes` because it uses
+`pg_restore --clean --if-exists` against `ADMIN_DB`. To restore only a database
+dump or to point at a different Compose env/file set, call the script directly:
 
 ```bash
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  exec -T rust_admin cat /catalog/catalog.json \
-  > ./backups/catalog.json
+COMPOSE_ENV_FILE=.env.production \
+COMPOSE_FILES='docker-compose.yml docker-compose.prod.yml' \
+scripts/restore-production.sh --db-file ./backups/autvid-.../postgres.dump --yes
 ```
 
 Stop without deleting data:

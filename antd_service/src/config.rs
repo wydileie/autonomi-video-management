@@ -5,6 +5,7 @@ pub(crate) struct Config {
     pub(crate) network: String,
     pub(crate) request_timeout: Duration,
     pub(crate) file_upload_request_timeout: Duration,
+    pub(crate) json_body_limit_bytes: usize,
 }
 
 impl Config {
@@ -18,8 +19,20 @@ impl Config {
                 "ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS",
                 3600,
             )?,
+            json_body_limit_bytes: usize_from_env("ANTD_JSON_BODY_LIMIT_BYTES", 32 * 1024 * 1024)?,
         })
     }
+}
+
+fn usize_from_env(name: &str, default_value: usize) -> anyhow::Result<usize> {
+    let value = env::var(name)
+        .unwrap_or_else(|_| default_value.to_string())
+        .parse::<usize>()
+        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))?;
+    if value == 0 {
+        anyhow::bail!("{name} must be greater than zero");
+    }
+    Ok(value)
 }
 
 fn duration_from_env(name: &str, default_seconds: u64) -> anyhow::Result<Duration> {

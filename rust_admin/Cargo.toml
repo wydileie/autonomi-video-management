@@ -3,6 +3,9 @@ name = "rust_admin"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+db-tests = []
+
 [dependencies]
 anyhow = "1"
 autvid_common = { path = "../common" }
