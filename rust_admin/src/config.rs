@@ -4,7 +4,35 @@ use axum::http::{header, HeaderName, HeaderValue, Method};
 use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{DEFAULT_API_PORT, MIN_ANTD_SELF_ENCRYPTION_BYTES};
+use crate::{
+    DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS, DEFAULT_API_PORT, MIN_ANTD_SELF_ENCRYPTION_BYTES,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthCookieSameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+impl AuthCookieSameSite {
+    pub(crate) fn as_cookie_value(self) -> &'static str {
+        match self {
+            Self::Strict => "Strict",
+            Self::Lax => "Lax",
+            Self::None => "None",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "strict" => Some(Self::Strict),
+            "lax" => Some(Self::Lax),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -79,6 +107,22 @@ impl Config {
         }
         let admin_auth_cookie_secure =
             parse_bool_env("ADMIN_AUTH_COOKIE_SECURE", is_production_environment());
+        let admin_refresh_token_ttl_hours = parse_i64_env(
+            "ADMIN_REFRESH_TOKEN_TTL_HOURS",
+            DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS,
+        )?;
+        if admin_refresh_token_ttl_hours <= 0 {
+            anyhow::bail!("ADMIN_REFRESH_TOKEN_TTL_HOURS must be greater than zero");
+        }
+        let admin_auth_cookie_same_site =
+            parse_cookie_same_site_env("ADMIN_AUTH_COOKIE_SAME_SITE", AuthCookieSameSite::Lax)?;
+        if matches!(admin_auth_cookie_same_site, AuthCookieSameSite::None)
+            && !admin_auth_cookie_secure
+        {
+            anyhow::bail!(
+                "ADMIN_AUTH_COOKIE_SAME_SITE=None requires ADMIN_AUTH_COOKIE_SECURE=true"
+            );
+        }
         let admin_request_timeout_seconds = parse_f64_env("ADMIN_REQUEST_TIMEOUT_SECONDS", 120.0)?;
         if admin_request_timeout_seconds <= 0.0 {
             anyhow::bail!("ADMIN_REQUEST_TIMEOUT_SECONDS must be greater than zero");
@@ -275,6 +319,23 @@ impl Config {
     }
 }
 
+impl Config {
+    pub(crate) fn admin_refresh_token_ttl_hours(&self) -> i64 {
+        parse_i64_env(
+            "ADMIN_REFRESH_TOKEN_TTL_HOURS",
+            DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS,
+        )
+        .ok()
+        .filter(|ttl_hours| *ttl_hours > 0)
+        .unwrap_or(DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS)
+    }
+
+    pub(crate) fn admin_auth_cookie_same_site(&self) -> AuthCookieSameSite {
+        parse_cookie_same_site_env("ADMIN_AUTH_COOKIE_SAME_SITE", AuthCookieSameSite::Lax)
+            .unwrap_or(AuthCookieSameSite::Lax)
+    }
+}
+
 pub(crate) fn duration_from_secs_f64(seconds: f64) -> StdDuration {
     StdDuration::from_millis((seconds.max(0.001) * 1000.0).ceil() as u64)
 }
@@ -355,6 +416,15 @@ fn parse_bool_env(name: &str, default_value: bool) -> bool {
             }
         })
         .unwrap_or(default_value)
+}
+
+fn parse_cookie_same_site_env(
+    name: &str,
+    default_value: AuthCookieSameSite,
+) -> anyhow::Result<AuthCookieSameSite> {
+    let raw = env::var(name).unwrap_or_else(|_| default_value.as_cookie_value().to_string());
+    AuthCookieSameSite::parse(&raw)
+        .ok_or_else(|| anyhow::anyhow!("{name} must be one of Strict, Lax, or None"))
 }
 
 fn is_production_environment() -> bool {

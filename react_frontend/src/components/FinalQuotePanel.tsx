@@ -1,6 +1,14 @@
 import { formatAttoTokens, formatBytes, formatDateTime, formatWei } from "../utils/format";
+import type { UploadQuote } from "../types";
 
-export default function FinalQuotePanel({ quote, expiresAt, onApprove, approving }) {
+interface FinalQuotePanelProps {
+  approving: boolean;
+  expiresAt?: string | null;
+  onApprove: () => void;
+  quote?: UploadQuote | null;
+}
+
+export default function FinalQuotePanel({ quote, expiresAt, onApprove, approving }: FinalQuotePanelProps) {
   if (!quote) {
     return <p className="muted">Preparing the final quote from transcoded segments...</p>;
   }
@@ -21,7 +29,7 @@ export default function FinalQuotePanel({ quote, expiresAt, onApprove, approving
       </div>
       <div className="quote-breakdown">
         <span>{formatWei(quote.estimated_gas_cost_wei)}</span>
-        <span>{formatBytes(quote.metadata_bytes)} metadata estimate</span>
+        <span>{formatBytes(quote.metadata_bytes || 0)} metadata estimate</span>
         {originalBytes > 0 && <span>{formatBytes(originalBytes)} original source</span>}
         <span>{quote.payment_mode} payment mode</span>
       </div>

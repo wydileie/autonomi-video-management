@@ -322,6 +322,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
+| `ADMIN_REFRESH_TOKEN_TTL_HOURS` | No | HttpOnly refresh-cookie session lifetime. Default: `720` |
+| `ADMIN_AUTH_COOKIE_SAME_SITE` | No | SameSite attribute for admin access and refresh cookies: `Strict`, `Lax`, or `None`. Default: `Lax`; `None` requires secure cookies |
 | `ADMIN_AUTH_COOKIE_SECURE` | No | Whether the HttpOnly admin cookie includes `Secure`. Defaults to `true` when `APP_ENV=production`, otherwise `false` |
 | `ADMIN_REQUEST_TIMEOUT_SECONDS` | No | Default `rust_admin` route timeout for non-upload requests. Default: `120` |
 | `ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `rust_admin` source upload route timeout. Default: `3600` |
@@ -379,6 +381,17 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `PROD_EVM_RPC_URL` | Production/custom | EVM JSON-RPC endpoint for custom payment networks |
 | `PROD_EVM_PAYMENT_TOKEN_ADDRESS` | Production/custom | Payment token contract for custom payment networks |
 | `PROD_EVM_PAYMENT_VAULT_ADDRESS` | Production/custom | Payment vault contract for custom payment networks |
+
+---
+
+## Optional Operations Overlays
+
+The base Compose files stay self-contained for local development. Optional
+production and operations overlays live in separate docs:
+
+- [Image publishing](docs/IMAGE_PUBLISHING.md) covers GHCR image builds and tags.
+- [Backup sidecar](docs/BACKUP_SIDECAR.md) covers scheduled Postgres/catalog backups.
+- [Observability](docs/OBSERVABILITY.md) covers Prometheus, Grafana, and Alertmanager.
 
 ---
 

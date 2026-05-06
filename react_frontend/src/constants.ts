@@ -1,9 +1,11 @@
+import type { ResolutionOption } from "./types";
+
 export const BRAND_IMAGE = "/autvid-brand.png";
 export const AUTH_STORAGE_KEY = "autvid_admin_token";
 export const PLAYER_CONTROLS_IDLE_MS = 2200;
 export const RESUME_DURATION_TOLERANCE_SECONDS = 0.25;
 
-export const RESOLUTION_OPTIONS = [
+export const RESOLUTION_OPTIONS: ResolutionOption[] = [
   { value: "8k", label: "8K", width: 7680, height: 4320, bitrate: "~45 Mbps", note: "maximum archive" },
   { value: "4k", label: "4K", width: 3840, height: 2160, bitrate: "~16 Mbps", note: "ultra HD" },
   { value: "1440p", label: "1440P", width: 2560, height: 1440, bitrate: "~8 Mbps", note: "quad HD" },

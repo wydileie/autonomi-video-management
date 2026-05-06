@@ -19,7 +19,7 @@ use tracing::{info, info_span, Span};
 use uuid::Uuid;
 
 use crate::{
-    auth::{auth_me, login, logout, require_admin},
+    auth::{auth_me, login, logout, refresh, require_admin},
     catalog::{
         apply_catalog_visibility, catalog_entry_to_video_out, db_video_to_out,
         ensure_video_manifest_address, get_db_video, load_catalog, load_json_from_autonomi,
@@ -55,6 +55,7 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/auth/login", post(login))
+        .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(auth_me))
         .route("/catalog", get(get_catalog))
@@ -750,6 +751,25 @@ mod db_tests {
         format!("http://{addr}")
     }
 
+    fn response_set_cookies(response: &reqwest::Response) -> Vec<String> {
+        response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn find_cookie_pair(set_cookies: &[String], name: &str) -> String {
+        let prefix = format!("{name}=");
+        set_cookies
+            .iter()
+            .find(|cookie| cookie.starts_with(&prefix))
+            .and_then(|cookie| cookie.split(';').next())
+            .expect("expected cookie")
+            .to_string()
+    }
+
     async fn login(client: &reqwest::Client, base_url: &str) -> String {
         let response: Value = client
             .post(format!("{base_url}/auth/login"))
@@ -763,6 +783,186 @@ mod db_tests {
             .await
             .unwrap();
         response["access_token"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn db_auth_refresh_rotates_and_logout_revokes_refresh_session() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        let base_url = spawn_admin(state.clone()).await;
+        let client = reqwest::Client::new();
+
+        let login_response = client
+            .post(format!("{base_url}/auth/login"))
+            .json(&json!({ "username": "admin", "password": "password" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login_response.status().as_u16(), StatusCode::OK.as_u16());
+        let login_cookies = response_set_cookies(&login_response);
+        assert!(login_cookies.iter().any(|cookie| {
+            cookie.starts_with("autvid_admin=")
+                && cookie.contains("HttpOnly")
+                && cookie.contains("SameSite=Lax")
+        }));
+        assert!(login_cookies.iter().any(|cookie| {
+            cookie.starts_with("autvid_admin_refresh=")
+                && cookie.contains("HttpOnly")
+                && cookie.contains("Path=/api/auth")
+        }));
+        let refresh_cookie = find_cookie_pair(&login_cookies, "autvid_admin_refresh");
+        let login_body: Value = login_response.json().await.unwrap();
+        let access_token = login_body["access_token"].as_str().unwrap();
+        assert_eq!(login_body["token_type"], "bearer");
+        assert!(login_body["refresh_token_expires_at"].as_str().is_some());
+
+        let me: Value = client
+            .get(format!("{base_url}/auth/me"))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(me["username"], "admin");
+
+        let active_sessions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM admin_refresh_sessions WHERE revoked_at IS NULL AND expires_at > NOW()",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(active_sessions, 1);
+
+        let refresh_response = client
+            .post(format!("{base_url}/auth/refresh"))
+            .header(reqwest::header::COOKIE, &refresh_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refresh_response.status().as_u16(), StatusCode::OK.as_u16());
+        let refresh_cookies = response_set_cookies(&refresh_response);
+        let rotated_refresh_cookie = find_cookie_pair(&refresh_cookies, "autvid_admin_refresh");
+        assert_ne!(rotated_refresh_cookie, refresh_cookie);
+        let refresh_body: Value = refresh_response.json().await.unwrap();
+        assert_eq!(refresh_body["token_type"], "bearer");
+        assert!(refresh_body["access_token"].as_str().is_some());
+
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE revoked_at IS NULL) AS active,
+                COUNT(*) FILTER (WHERE revoked_at IS NOT NULL) AS revoked
+            FROM admin_refresh_sessions
+            "#,
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.try_get::<i64, _>("active").unwrap(), 1);
+        assert_eq!(row.try_get::<i64, _>("revoked").unwrap(), 1);
+
+        let reused_refresh = client
+            .post(format!("{base_url}/auth/refresh"))
+            .header(reqwest::header::COOKIE, &refresh_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            reused_refresh.status().as_u16(),
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
+
+        let logout_response = client
+            .post(format!("{base_url}/auth/logout"))
+            .header(reqwest::header::COOKIE, &rotated_refresh_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            logout_response.status().as_u16(),
+            StatusCode::NO_CONTENT.as_u16()
+        );
+        let logout_cookies = response_set_cookies(&logout_response);
+        assert!(logout_cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("autvid_admin=") && cookie.contains("Max-Age=0")));
+        assert!(logout_cookies.iter().any(|cookie| {
+            cookie.starts_with("autvid_admin_refresh=") && cookie.contains("Max-Age=0")
+        }));
+
+        let active_sessions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM admin_refresh_sessions WHERE revoked_at IS NULL AND expires_at > NOW()",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(active_sessions, 0);
+
+        let after_logout_refresh = client
+            .post(format!("{base_url}/auth/refresh"))
+            .header(reqwest::header::COOKIE, &rotated_refresh_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            after_logout_refresh.status().as_u16(),
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_auth_refresh_rejects_expired_session() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        let base_url = spawn_admin(state.clone()).await;
+        let client = reqwest::Client::new();
+
+        let login_response = client
+            .post(format!("{base_url}/auth/login"))
+            .json(&json!({ "username": "admin", "password": "password" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(login_response.status().as_u16(), StatusCode::OK.as_u16());
+        let refresh_cookie = find_cookie_pair(
+            &response_set_cookies(&login_response),
+            "autvid_admin_refresh",
+        );
+        sqlx::query("UPDATE admin_refresh_sessions SET expires_at=NOW() - INTERVAL '1 second'")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let refresh_response = client
+            .post(format!("{base_url}/auth/refresh"))
+            .header(reqwest::header::COOKIE, refresh_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refresh_response.status().as_u16(),
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
+
+        let active_sessions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM admin_refresh_sessions WHERE revoked_at IS NULL AND expires_at > NOW()",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(active_sessions, 0);
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
     }
 
     async fn insert_ready_video(pool: &PgPool, root_dir: &Path) -> Uuid {

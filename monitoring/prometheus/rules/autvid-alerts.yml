@@ -1,0 +1,140 @@
+groups:
+  - name: autvid.service.rules
+    rules:
+      - alert: AutvidServiceDown
+        expr: up{job=~"rust_admin|rust_stream|antd"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} metrics endpoint is down"
+          description: "Prometheus has not been able to scrape {{ $labels.instance }} for 2 minutes."
+
+      - alert: AutvidElevatedHttp5xxRate
+        expr: |
+          (
+            sum by (service) (rate(autvid_http_request_errors_total[5m]))
+            /
+            clamp_min(sum by (service) (rate(autvid_http_requests_total[5m])), 0.001)
+          ) > 0.05
+          and
+          sum by (service) (rate(autvid_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} has elevated 5xx responses"
+          description: "More than 5% of HTTP requests handled by {{ $labels.service }} have returned 5xx for 10 minutes."
+
+      - alert: AutvidServiceAverageLatencyHigh
+        expr: |
+          (
+            sum by (service) (rate(autvid_http_request_latency_ms_total[5m]))
+            /
+            clamp_min(sum by (service) (rate(autvid_http_requests_total[5m])), 0.001)
+          ) > 2000
+          and
+          sum by (service) (rate(autvid_http_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} average request latency is high"
+          description: "{{ $labels.service }} average HTTP latency is above 2 seconds over the last 5 minutes."
+
+  - name: autvid.admin.rules
+    rules:
+      - alert: AutvidAdminJobsFailed
+        expr: increase(autvid_admin_jobs_failed_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin jobs are failing"
+          description: "{{ $value }} admin job attempts failed in the last 15 minutes."
+
+      - alert: AutvidAdminJobsLikelyStuck
+        expr: |
+          (
+            increase(autvid_admin_jobs_started_total[1h])
+            - increase(autvid_admin_jobs_succeeded_total[1h])
+            - increase(autvid_admin_jobs_failed_total[1h])
+          ) > 0
+          and
+          increase(autvid_admin_jobs_succeeded_total[30m]) == 0
+          and
+          increase(autvid_admin_jobs_failed_total[30m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin jobs may be stuck"
+          description: "Jobs started in the last hour, but no jobs have succeeded or failed in the last 30 minutes."
+
+      - alert: AutvidAdminAntdErrorRateHigh
+        expr: |
+          (
+            rate(autvid_admin_antd_request_errors_total[10m])
+            /
+            clamp_min(rate(autvid_admin_antd_requests_total[10m]), 0.001)
+          ) > 0.05
+          and
+          rate(autvid_admin_antd_requests_total[10m]) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin to antd request error rate is high"
+          description: "More than 5% of rust_admin outbound antd requests have failed for 10 minutes."
+
+      - alert: AutvidUploadRetriesHigh
+        expr: increase(autvid_admin_upload_retries_total[30m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Upload retry volume is high"
+          description: "{{ $value }} Autonomi upload retries were scheduled in the last 30 minutes."
+
+  - name: autvid.stream.rules
+    rules:
+      - alert: AutvidStreamCacheHitRatioLow
+        expr: |
+          (
+            sum(rate(autvid_stream_segment_cache_hits_total[15m]))
+            /
+            clamp_min(
+              sum(rate(autvid_stream_segment_cache_hits_total[15m]))
+              + sum(rate(autvid_stream_segment_cache_misses_total[15m])),
+              0.001
+            )
+          ) < 0.60
+          and
+          (
+            sum(rate(autvid_stream_segment_cache_hits_total[15m]))
+            + sum(rate(autvid_stream_segment_cache_misses_total[15m]))
+          ) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stream cache hit ratio is low"
+          description: "Segment cache hit ratio has been below 60% for 15 minutes while segment traffic is present."
+
+  - name: autvid.antd.rules
+    rules:
+      - alert: AutvidAntdAverageLatencyHigh
+        expr: |
+          (
+            rate(autvid_http_request_latency_ms_total{service="antd_service"}[5m])
+            /
+            clamp_min(rate(autvid_http_requests_total{service="antd_service"}[5m]), 0.001)
+          ) > 2000
+          and
+          rate(autvid_http_requests_total{service="antd_service"}[5m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "antd service average latency is high"
+          description: "antd_service average HTTP latency is above 2 seconds over the last 5 minutes."

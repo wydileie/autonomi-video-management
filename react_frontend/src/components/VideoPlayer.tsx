@@ -1,14 +1,35 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FocusEvent } from "react";
+import type Hls from "hls.js";
 
 import { PLAYER_CONTROLS_IDLE_MS, RESUME_DURATION_TOLERANCE_SECONDS } from "../constants";
 import { STREAM_BASE_URL } from "../runtimeConfig";
+import type { VideoVariant } from "../types";
 import { variantDisplayLabel } from "../utils/resolutions";
 
-export default function VideoPlayer({ videoId, manifestAddress, variants, resolution, onResolutionChange }) {
-  const videoRef = useRef(null);
-  const hlsRef = useRef(null);
-  const controlsIdleTimerRef = useRef(null);
-  const playbackStateRef = useRef({ currentTime: 0, shouldResume: false });
+interface PlaybackState {
+  currentTime: number;
+  shouldResume: boolean;
+}
+
+interface VideoPlayerProps {
+  manifestAddress?: string | null;
+  onResolutionChange: (resolution: string) => void;
+  resolution: string;
+  variants: VideoVariant[];
+  videoId: string;
+}
+
+export default function VideoPlayer({
+  videoId,
+  manifestAddress,
+  variants,
+  resolution,
+  onResolutionChange,
+}: VideoPlayerProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const controlsIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const playbackStateRef = useRef<PlaybackState>({ currentTime: 0, shouldResume: false });
   const [qualityOpen, setQualityOpen] = useState(false);
   const [controlsActive, setControlsActive] = useState(true);
   const [playbackError, setPlaybackError] = useState("");
@@ -58,7 +79,7 @@ export default function VideoPlayer({ videoId, manifestAddress, variants, resolu
     };
   }, []);
 
-  const handleResolutionChange = useCallback((nextResolution) => {
+  const handleResolutionChange = useCallback((nextResolution: string) => {
     capturePlaybackState();
     onResolutionChange(nextResolution);
   }, [capturePlaybackState, onResolutionChange]);
@@ -207,8 +228,9 @@ export default function VideoPlayer({ videoId, manifestAddress, variants, resolu
         <div
           className={`player-quality${qualityOpen ? " open" : ""}`}
           onMouseLeave={() => setQualityOpen(false)}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) setQualityOpen(false);
+          onBlur={(event: FocusEvent<HTMLDivElement>) => {
+            const nextTarget = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+            if (!event.currentTarget.contains(nextTarget)) setQualityOpen(false);
           }}
         >
           <button

@@ -138,6 +138,7 @@ function setupGetRoutes({
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
   Hls.isSupported.mockReturnValue(false);
   Hls.mockImplementation(() => ({
     attachMedia: vi.fn(),
@@ -216,6 +217,37 @@ test("logs in, stores the admin token, and sends bearer auth on admin requests",
   );
 });
 
+test("restores an admin session from the refresh cookie", async () => {
+  setupGetRoutes();
+  axios.post.mockImplementation((url, body, config) => {
+    if (url === "/api/auth/refresh") {
+      expect(body).toBeNull();
+      expect(config).toEqual({ withCredentials: true });
+      return Promise.resolve({
+        data: {
+          access_token: "fresh-token",
+          refresh_token_expires_at: "2026-05-27T12:00:00Z",
+          token_type: "bearer",
+          username: "admin",
+        },
+      });
+    }
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+
+  await renderApp();
+
+  await waitFor(() => {
+    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBe("fresh-token");
+    expect(text()).toContain("Manage");
+    expect(text()).toContain("Upload");
+  });
+  expect(axios.get).toHaveBeenCalledWith(
+    "/api/auth/me",
+    { headers: { Authorization: "Bearer fresh-token" } },
+  );
+});
+
 test("logs out through the backend and clears local admin auth", async () => {
   window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
   setupGetRoutes();
@@ -230,7 +262,7 @@ test("logs out through the backend and clears local admin auth", async () => {
   await click(findButton("Logout"));
 
   await waitFor(() => {
-    expect(axios.post).toHaveBeenCalledWith("/api/auth/logout");
+    expect(axios.post).toHaveBeenCalledWith("/api/auth/logout", null, { withCredentials: true });
     expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
     expect(text()).toContain("Login");
   });

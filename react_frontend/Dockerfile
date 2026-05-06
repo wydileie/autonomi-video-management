@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-COPY index.html vite.config.mjs ./
+COPY index.html tsconfig.json vite.config.mts ./
 COPY public ./public
 COPY src ./src
 

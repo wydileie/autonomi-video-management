@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type FormEvent,
+} from "react";
 
 import { isRequestCanceled, requestErrorMessage, requestUploadQuote, uploadVideo } from "../api/client";
 import { RESOLUTION_OPTIONS } from "../constants";
+import type { SourceVideoMeta, UploadQuote, UploadQuoteRequest, VideoSummary } from "../types";
 import { formatAttoTokens, formatBytes, formatWei } from "../utils/format";
 import {
   classifyResolution,
@@ -12,25 +20,36 @@ import {
   targetDimensionsForMeta,
 } from "../utils/resolutions";
 
-export default function UploadPanel({ token, onUploaded }) {
-  const fileInputRef = useRef(null);
-  const [file, setFile] = useState(null);
+interface QuoteState {
+  data: UploadQuote | null;
+  error: string;
+  loading: boolean;
+}
+
+interface UploadPanelProps {
+  onUploaded: (video: VideoSummary) => void;
+  token: string;
+}
+
+export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [showManifestAddress, setShowManifestAddress] = useState(false);
   const [uploadOriginal, setUploadOriginal] = useState(false);
   const [publishWhenReady, setPublishWhenReady] = useState(false);
-  const [selected, setSelected] = useState(["720p"]);
+  const [selected, setSelected] = useState<string[]>(["720p"]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [meta, setMeta] = useState(null);
-  const [quote, setQuote] = useState({ loading: false, error: "", data: null });
+  const [meta, setMeta] = useState<SourceVideoMeta | null>(null);
+  const [quote, setQuote] = useState<QuoteState>({ loading: false, error: "", data: null });
 
   const currentProfile = classifyResolution(meta?.width, meta?.height);
 
-  const inspectFile = useCallback((nextFile) => {
+  const inspectFile = useCallback((nextFile?: File) => {
     if (!nextFile) return;
     if (!nextFile.type.startsWith("video/")) {
       setError("Please choose a video file.");
@@ -67,7 +86,8 @@ export default function UploadPanel({ token, onUploaded }) {
   }, []);
 
   useEffect(() => {
-    if (!file || !meta?.duration || !selected.length) {
+    const duration = meta?.duration;
+    if (!file || !duration || !selected.length) {
       setQuote({ loading: false, error: "", data: null });
       return undefined;
     }
@@ -77,8 +97,8 @@ export default function UploadPanel({ token, onUploaded }) {
       const resolutions = orderedSelection(selected);
       setQuote({ loading: true, error: "", data: null });
       try {
-        const quoteRequest = {
-          duration_seconds: meta.duration,
+        const quoteRequest: UploadQuoteRequest = {
+          duration_seconds: duration,
           resolutions,
           source_width: meta.width,
           source_height: meta.height,
@@ -105,13 +125,13 @@ export default function UploadPanel({ token, onUploaded }) {
     };
   }, [file, meta?.duration, meta?.width, meta?.height, selected, token, uploadOriginal]);
 
-  const onDrop = (event) => {
+  const onDrop = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
     setDragging(false);
     inspectFile(event.dataTransfer.files?.[0]);
   };
 
-  const toggleRes = (resolution) => {
+  const toggleRes = (resolution: string) => {
     setSelected((prev) => (
       prev.includes(resolution)
         ? prev.filter((value) => value !== resolution)
@@ -127,7 +147,7 @@ export default function UploadPanel({ token, onUploaded }) {
     setSelected(suggestedSelection(meta));
   };
 
-  const submit = async (event) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!file) return setError("Drop or choose a video file first.");
     if (!title.trim()) return setError("Please enter a title.");
@@ -304,7 +324,7 @@ export default function UploadPanel({ token, onUploaded }) {
         <div className="resolution-grid">
           {RESOLUTION_OPTIONS.map((option) => {
             const isCurrent = currentProfile?.value === option.value;
-            const disabledBySource = file && !optionFitsSource(option, meta);
+            const disabledBySource = !!file && !optionFitsSource(option, meta);
             const targetDimensions = targetDimensionsForMeta(option, meta);
             return (
               <button

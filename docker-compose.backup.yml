@@ -1,0 +1,42 @@
+services:
+  backup_sidecar:
+    image: autonomi-video-management-backup-sidecar
+    build:
+      context: ./backup_sidecar
+    container_name: autvid_backup_sidecar
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: "${ADMIN_DB}"
+      POSTGRES_USER: "${ADMIN_USER}"
+      PGPASSWORD: "${ADMIN_PASS}"
+      BACKUP_DIR: /backups
+      BACKUP_PREFIX: "${BACKUP_PREFIX:-autvid}"
+      BACKUP_SCHEDULE: "${BACKUP_SCHEDULE:-daily@02:00}"
+      BACKUP_RUN_ON_START: "${BACKUP_RUN_ON_START:-false}"
+      BACKUP_RETENTION_DAYS: "${BACKUP_RETENTION_DAYS:-14}"
+      BACKUP_RETENTION_COUNT: "${BACKUP_RETENTION_COUNT:-0}"
+      BACKUP_CATALOG: "${BACKUP_CATALOG:-true}"
+      BACKUP_FILE_OWNER: "${BACKUP_FILE_OWNER:-}"
+      BACKUP_DB_WAIT_SECONDS: "${BACKUP_DB_WAIT_SECONDS:-120}"
+      CATALOG_PATH: /catalog/catalog.json
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - appnet
+    volumes:
+      - ${BACKUP_HOST_PATH:-./backups}:/backups
+      - catalog_state:/catalog:ro
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
 import {
   approveVideoUpload,
@@ -9,17 +10,31 @@ import {
   updateVideoPublication,
   updateVideoVisibility,
 } from "../api/client";
+import type { VideoDetail, VideoSummary, VisibilityUpdate } from "../types";
 import { isActiveStatus, statusLabel } from "../utils/status";
 import FinalQuotePanel from "./FinalQuotePanel";
 import VideoPlayer from "./VideoPlayer";
 
-export default function Library({ admin = false, token = "" }) {
-  const [videos, setVideos] = useState([]);
+interface LibraryProps {
+  admin?: boolean;
+  token?: string;
+}
+
+interface PlayingState {
+  resolution: string;
+  videoId: string;
+}
+
+export default function Library({ admin = false, token = "" }: LibraryProps) {
+  const navigate = useNavigate();
+  const { videoId: routeVideoId } = useParams<{ videoId?: string }>();
+  const detailBasePath = admin ? "/manage" : "/library";
+  const [videos, setVideos] = useState<VideoSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [playing, setPlaying] = useState(null);
-  const [detail, setDetail] = useState(null);
-  const [approving, setApproving] = useState(null);
-  const [publishing, setPublishing] = useState(null);
+  const [playing, setPlaying] = useState<PlayingState | null>(null);
+  const [detail, setDetail] = useState<VideoDetail | null>(null);
+  const [approving, setApproving] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
   const [detailError, setDetailError] = useState("");
   const [actionError, setActionError] = useState("");
@@ -38,9 +53,45 @@ export default function Library({ admin = false, token = "" }) {
     }
   }, [admin, token]);
 
+  const loadDetail = useCallback(async (videoId: string) => {
+    setDetailError("");
+    setActionError("");
+    try {
+      const data = await getVideoDetails({ admin, token, videoId });
+      setDetail(data);
+    } catch (err) {
+      setDetailError(requestErrorMessage(err, "Could not load video details."));
+    }
+  }, [admin, token]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!routeVideoId) {
+      setDetail(null);
+      return;
+    }
+
+    let active = true;
+    setDetailError("");
+    setActionError("");
+    getVideoDetails({ admin, token, videoId: routeVideoId })
+      .then((data) => {
+        if (active) setDetail(data);
+      })
+      .catch((err) => {
+        if (active) {
+          setDetail(null);
+          setDetailError(requestErrorMessage(err, "Could not load video details."));
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [admin, routeVideoId, token]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -65,36 +116,36 @@ export default function Library({ admin = false, token = "" }) {
     return () => clearInterval(interval);
   }, [activeDetailId, activeDetailStatus, admin, token]);
 
-  const openDetail = async (videoId) => {
-    if (detail?.id === videoId) {
-      setDetail(null);
+  const openDetail = async (videoId: string) => {
+    if (routeVideoId === videoId && detail?.id === videoId) {
+      navigate(detailBasePath);
       return;
     }
-    setDetailError("");
-    setActionError("");
-    try {
-      const data = await getVideoDetails({ admin, token, videoId });
-      setDetail(data);
-    } catch (err) {
-      setDetailError(requestErrorMessage(err, "Could not load video details."));
+    if (routeVideoId === videoId) {
+      await loadDetail(videoId);
+      return;
     }
+    navigate(`${detailBasePath}/${encodeURIComponent(videoId)}`);
   };
 
-  const deleteVideo = async (videoId, event) => {
+  const deleteVideo = async (videoId: string, event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
     setActionError("");
     try {
       await deleteVideoRecord(token, videoId);
       setVideos((prev) => prev.filter((video) => video.id !== videoId));
-      if (detail?.id === videoId) setDetail(null);
+      if (detail?.id === videoId) {
+        setDetail(null);
+        navigate(detailBasePath, { replace: true });
+      }
       if (playing?.videoId === videoId) setPlaying(null);
     } catch (err) {
       setActionError(requestErrorMessage(err, "Delete failed."));
     }
   };
 
-  const approveVideo = async (videoId) => {
+  const approveVideo = async (videoId: string) => {
     setApproving(videoId);
     setActionError("");
     try {
@@ -110,7 +161,7 @@ export default function Library({ admin = false, token = "" }) {
     }
   };
 
-  const updateVisibility = async (videoId, next) => {
+  const updateVisibility = async (videoId: string, next: VisibilityUpdate) => {
     setActionError("");
     try {
       const data = await updateVideoVisibility(token, videoId, next);
@@ -121,7 +172,7 @@ export default function Library({ admin = false, token = "" }) {
     }
   };
 
-  const updatePublication = async (videoId, isPublic) => {
+  const updatePublication = async (videoId: string, isPublic: boolean) => {
     setPublishing(videoId);
     setActionError("");
     try {

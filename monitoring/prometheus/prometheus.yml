@@ -1,0 +1,45 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    app: autonomi-video-management
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - prometheus:9090
+
+  - job_name: rust_admin
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - rust_admin:8000
+        labels:
+          component: admin
+
+  - job_name: rust_stream
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - rust_stream:8081
+        labels:
+          component: stream
+
+  - job_name: antd
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - antd:8082
+        labels:
+          component: autonomi-gateway

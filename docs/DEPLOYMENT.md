@@ -122,6 +122,8 @@ APP_ENV=production
 ADMIN_USERNAME=autvid-admin
 ADMIN_PASSWORD=<long random admin password>
 ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
+ADMIN_REFRESH_TOKEN_TTL_HOURS=720
+ADMIN_AUTH_COOKIE_SAME_SITE=Lax
 # Choose one wallet source:
 PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
 # or:
@@ -263,9 +265,10 @@ status, and latency; admin job logs add `video_id`, `job_id`, `resolution`,
 `segment_index`, and `catalog_publish_epoch` where applicable.
 
 Admin auth is still bearer-token compatible for scripts and older clients. The
-browser login route also sets an HttpOnly SameSite cookie. Keep
-`ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use `false` only for
-local HTTP testing.
+browser login route also sets HttpOnly SameSite access and refresh cookies.
+Keep `ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use `false` only
+for local HTTP testing. `ADMIN_AUTH_COOKIE_SAME_SITE=None` is rejected unless
+secure cookies are enabled.
 
 Metrics endpoints emit Prometheus text:
 

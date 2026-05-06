@@ -6,6 +6,7 @@ pub(crate) const STATUS_READY: &str = "ready";
 pub(crate) const STATUS_ERROR: &str = "error";
 pub(crate) const STATUS_EXPIRED: &str = "expired";
 pub(crate) const DEFAULT_API_PORT: u16 = 8000;
+pub(crate) const DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS: i64 = 24 * 30;
 pub(crate) const CATALOG_CONTENT_TYPE: &str = "application/vnd.autonomi.video.catalog+json;v=1";
 pub(crate) const VIDEO_MANIFEST_CONTENT_TYPE: &str =
     "application/vnd.autonomi.video.manifest+json;v=1";

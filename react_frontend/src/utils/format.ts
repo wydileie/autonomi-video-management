@@ -1,6 +1,5 @@
-/* global BigInt */
-export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes)) return "";
+export function formatBytes(bytes?: number | null): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "";
   const units = ["B", "KB", "MB", "GB"];
   let size = bytes;
   let unit = 0;
@@ -11,7 +10,7 @@ export function formatBytes(bytes) {
   return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-export function formatAttoTokens(value) {
+export function formatAttoTokens(value?: string | number | bigint | null): string {
   try {
     const atto = BigInt(value || "0");
     const sign = atto < 0n ? "-" : "";
@@ -32,7 +31,7 @@ export function formatAttoTokens(value) {
   }
 }
 
-export function formatWei(value) {
+export function formatWei(value?: string | number | bigint | null): string {
   try {
     return `${BigInt(value || "0").toLocaleString()} wei`;
   } catch {
@@ -40,7 +39,7 @@ export function formatWei(value) {
   }
 }
 
-export function formatDateTime(value) {
+export function formatDateTime(value?: string | null): string {
   if (!value) return "";
   return new Date(value).toLocaleString();
 }

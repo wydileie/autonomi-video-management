@@ -3,18 +3,36 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     Json,
 };
-use chrono::{Duration, Utc};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
+use uuid::Uuid;
 
-use crate::{config::constant_time_eq, errors::ApiError, AppState};
+use crate::{
+    config::{constant_time_eq, AuthCookieSameSite},
+    db::db_error,
+    errors::ApiError,
+    AppState,
+};
 
 const ADMIN_AUTH_COOKIE: &str = "autvid_admin";
+const ADMIN_REFRESH_COOKIE: &str = "autvid_admin_refresh";
+const ADMIN_AUTH_COOKIE_PATH: &str = "/api";
+const ADMIN_REFRESH_COOKIE_PATH: &str = "/api/auth";
+const REFRESH_TOKEN_BYTES: usize = 32;
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
     sub: String,
     exp: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    iat: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    jti: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,12 +46,25 @@ pub(crate) struct AuthTokenOut {
     access_token: String,
     token_type: &'static str,
     expires_at: String,
+    refresh_token_expires_at: String,
     username: String,
 }
 
 #[derive(Serialize)]
 pub(crate) struct AdminMeOut {
     username: String,
+}
+
+struct IssuedAccessToken {
+    token: String,
+    expires_at: DateTime<Utc>,
+}
+
+struct IssuedRefreshToken {
+    session_id: Uuid,
+    token: String,
+    token_hash: String,
+    expires_at: DateTime<Utc>,
 }
 
 pub(crate) async fn login(
@@ -49,33 +80,39 @@ pub(crate) async fn login(
         ));
     }
 
-    let expires_at = Utc::now() + Duration::hours(state.config.admin_auth_ttl_hours);
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &Claims {
-            sub: state.config.admin_username.clone(),
-            exp: expires_at.timestamp() as usize,
-        },
-        &EncodingKey::from_secret(state.config.admin_auth_secret.as_bytes()),
-    )
-    .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::SET_COOKIE,
-        auth_cookie_header(
-            &token,
-            state.config.admin_auth_ttl_hours.saturating_mul(3600),
-            state.config.admin_auth_cookie_secure,
-        )?,
-    );
+    let access = issue_access_token(&state)?;
+    let refresh = create_refresh_session(&state, &state.config.admin_username).await?;
+    let headers = auth_success_headers(&state, &access, &refresh)?;
 
     Ok((
         headers,
         Json(AuthTokenOut {
-            access_token: token,
+            access_token: access.token,
             token_type: "bearer",
-            expires_at: expires_at.to_rfc3339(),
+            expires_at: access.expires_at.to_rfc3339(),
+            refresh_token_expires_at: refresh.expires_at.to_rfc3339(),
+            username: state.config.admin_username.clone(),
+        }),
+    ))
+}
+
+pub(crate) async fn refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<(HeaderMap, Json<AuthTokenOut>), ApiError> {
+    let refresh_token = refresh_cookie_token(&headers)
+        .ok_or_else(|| ApiError::unauthorized("Refresh token required"))?;
+    let refresh = rotate_refresh_session(&state, refresh_token).await?;
+    let access = issue_access_token(&state)?;
+    let headers = auth_success_headers(&state, &access, &refresh)?;
+
+    Ok((
+        headers,
+        Json(AuthTokenOut {
+            access_token: access.token,
+            token_type: "bearer",
+            expires_at: access.expires_at.to_rfc3339(),
+            refresh_token_expires_at: refresh.expires_at.to_rfc3339(),
             username: state.config.admin_username.clone(),
         }),
     ))
@@ -91,13 +128,12 @@ pub(crate) async fn auth_me(
 
 pub(crate) async fn logout(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<(HeaderMap, StatusCode), ApiError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::SET_COOKIE,
-        expired_auth_cookie_header(state.config.admin_auth_cookie_secure)?,
-    );
-    Ok((headers, StatusCode::NO_CONTENT))
+    if let Some(refresh_token) = refresh_cookie_token(&headers) {
+        revoke_refresh_session(&state, refresh_token).await?;
+    }
+    Ok((expired_auth_cookie_headers(&state)?, StatusCode::NO_CONTENT))
 }
 
 pub(crate) fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
@@ -119,6 +155,158 @@ pub(crate) fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<Str
     Ok(claims.sub)
 }
 
+fn issue_access_token(state: &AppState) -> Result<IssuedAccessToken, ApiError> {
+    let issued_at = Utc::now();
+    let expires_at = issued_at + Duration::hours(state.config.admin_auth_ttl_hours);
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &Claims {
+            sub: state.config.admin_username.clone(),
+            exp: expires_at.timestamp() as usize,
+            iat: Some(issued_at.timestamp() as usize),
+            jti: Some(Uuid::new_v4().to_string()),
+        },
+        &EncodingKey::from_secret(state.config.admin_auth_secret.as_bytes()),
+    )
+    .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(IssuedAccessToken { token, expires_at })
+}
+
+async fn create_refresh_session(
+    state: &AppState,
+    username: &str,
+) -> Result<IssuedRefreshToken, ApiError> {
+    let refresh = new_refresh_token(state);
+    sqlx::query(
+        r#"
+        INSERT INTO admin_refresh_sessions (id, username, token_hash, expires_at)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(refresh.session_id)
+    .bind(username)
+    .bind(&refresh.token_hash)
+    .bind(refresh.expires_at)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(refresh)
+}
+
+async fn rotate_refresh_session(
+    state: &AppState,
+    token: &str,
+) -> Result<IssuedRefreshToken, ApiError> {
+    let token_hash = refresh_token_hash(token);
+    let refresh = new_refresh_token(state);
+    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let row = sqlx::query(
+        r#"
+        SELECT id, username
+        FROM admin_refresh_sessions
+        WHERE token_hash=$1
+            AND revoked_at IS NULL
+            AND expires_at > NOW()
+        FOR UPDATE
+        "#,
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(db_error)?;
+
+    let Some(row) = row else {
+        return Err(ApiError::unauthorized("Invalid or expired refresh token"));
+    };
+    let previous_session_id = row.try_get::<Uuid, _>("id").map_err(db_error)?;
+    let username = row.try_get::<String, _>("username").map_err(db_error)?;
+    if username != state.config.admin_username {
+        return Err(ApiError::unauthorized("Invalid or expired refresh token"));
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO admin_refresh_sessions (id, username, token_hash, expires_at)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(refresh.session_id)
+    .bind(&username)
+    .bind(&refresh.token_hash)
+    .bind(refresh.expires_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_error)?;
+    sqlx::query(
+        r#"
+        UPDATE admin_refresh_sessions
+        SET revoked_at=NOW(),
+            last_used_at=NOW(),
+            replaced_by_session_id=$2
+        WHERE id=$1
+        "#,
+    )
+    .bind(previous_session_id)
+    .bind(refresh.session_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(refresh)
+}
+
+async fn revoke_refresh_session(state: &AppState, token: &str) -> Result<(), ApiError> {
+    let token_hash = refresh_token_hash(token);
+    sqlx::query(
+        r#"
+        UPDATE admin_refresh_sessions
+        SET revoked_at=COALESCE(revoked_at, NOW()),
+            last_used_at=NOW()
+        WHERE token_hash=$1
+            AND revoked_at IS NULL
+        "#,
+    )
+    .bind(&token_hash)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+fn new_refresh_token(state: &AppState) -> IssuedRefreshToken {
+    let token = generate_refresh_token();
+    let token_hash = refresh_token_hash(&token);
+    let expires_at = Utc::now() + Duration::hours(state.config.admin_refresh_token_ttl_hours());
+    IssuedRefreshToken {
+        session_id: Uuid::new_v4(),
+        token,
+        token_hash,
+        expires_at,
+    }
+}
+
+fn generate_refresh_token() -> String {
+    let mut bytes = [0u8; REFRESH_TOKEN_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn refresh_token_hash(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex_lower(&hasher.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let auth = headers
         .get(header::AUTHORIZATION)
@@ -130,13 +318,25 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<&str> {
+    access_cookie_token(headers)
+}
+
+fn access_cookie_token(headers: &HeaderMap) -> Option<&str> {
+    named_cookie_token(headers, ADMIN_AUTH_COOKIE)
+}
+
+fn refresh_cookie_token(headers: &HeaderMap) -> Option<&str> {
+    named_cookie_token(headers, ADMIN_REFRESH_COOKIE)
+}
+
+fn named_cookie_token<'a>(headers: &'a HeaderMap, cookie_name: &str) -> Option<&'a str> {
     headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())?
         .split(';')
         .filter_map(|part| part.trim().split_once('='))
         .find_map(|(name, value)| {
-            if name.trim() == ADMIN_AUTH_COOKIE {
+            if name.trim() == cookie_name {
                 Some(value.trim())
             } else {
                 None
@@ -145,32 +345,105 @@ fn cookie_token(headers: &HeaderMap) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
+fn auth_success_headers(
+    state: &AppState,
+    access: &IssuedAccessToken,
+    refresh: &IssuedRefreshToken,
+) -> Result<HeaderMap, ApiError> {
+    let same_site = state.config.admin_auth_cookie_same_site();
+    let mut headers = HeaderMap::new();
+    headers.append(
+        header::SET_COOKIE,
+        auth_cookie_header(
+            ADMIN_AUTH_COOKIE,
+            &access.token,
+            ADMIN_AUTH_COOKIE_PATH,
+            cookie_max_age_seconds(access.expires_at),
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    headers.append(
+        header::SET_COOKIE,
+        auth_cookie_header(
+            ADMIN_REFRESH_COOKIE,
+            &refresh.token,
+            ADMIN_REFRESH_COOKIE_PATH,
+            cookie_max_age_seconds(refresh.expires_at),
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    Ok(headers)
+}
+
+fn expired_auth_cookie_headers(state: &AppState) -> Result<HeaderMap, ApiError> {
+    let same_site = state.config.admin_auth_cookie_same_site();
+    let mut headers = HeaderMap::new();
+    headers.append(
+        header::SET_COOKIE,
+        expired_auth_cookie_header(
+            ADMIN_AUTH_COOKIE,
+            ADMIN_AUTH_COOKIE_PATH,
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    headers.append(
+        header::SET_COOKIE,
+        expired_auth_cookie_header(
+            ADMIN_REFRESH_COOKIE,
+            ADMIN_REFRESH_COOKIE_PATH,
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    Ok(headers)
+}
+
+fn cookie_max_age_seconds(expires_at: DateTime<Utc>) -> i64 {
+    expires_at
+        .signed_duration_since(Utc::now())
+        .num_seconds()
+        .max(0)
+}
+
 fn auth_cookie_header(
+    cookie_name: &str,
     token: &str,
+    path: &str,
     max_age_seconds: i64,
     secure: bool,
+    same_site: AuthCookieSameSite,
 ) -> Result<HeaderValue, ApiError> {
     let secure_attribute = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{ADMIN_AUTH_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/api; Max-Age={max_age_seconds}{secure_attribute}"
+        "{cookie_name}={token}; HttpOnly; SameSite={}; Path={path}; Max-Age={max_age_seconds}{secure_attribute}",
+        same_site.as_cookie_value()
     ))
     .map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not create admin auth cookie: {err}"),
+            format!("Could not create {cookie_name} cookie: {err}"),
         )
     })
 }
 
-fn expired_auth_cookie_header(secure: bool) -> Result<HeaderValue, ApiError> {
+fn expired_auth_cookie_header(
+    cookie_name: &str,
+    path: &str,
+    secure: bool,
+    same_site: AuthCookieSameSite,
+) -> Result<HeaderValue, ApiError> {
     let secure_attribute = if secure { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{ADMIN_AUTH_COOKIE}=; HttpOnly; SameSite=Lax; Path=/api; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT{secure_attribute}"
+        "{cookie_name}=; HttpOnly; SameSite={}; Path={path}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT{secure_attribute}",
+        same_site.as_cookie_value()
     ))
     .map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not clear admin auth cookie: {err}"),
+            format!("Could not clear {cookie_name} cookie: {err}"),
         )
     })
 }
@@ -188,11 +461,14 @@ mod tests {
         );
         headers.insert(
             header::COOKIE,
-            HeaderValue::from_static("other=value; autvid_admin=cookie-token"),
+            HeaderValue::from_static(
+                "other=value; autvid_admin=cookie-token; autvid_admin_refresh=refresh-token",
+            ),
         );
 
         assert_eq!(bearer_token(&headers), Some("bearer-token"));
         assert_eq!(cookie_token(&headers), Some("cookie-token"));
+        assert_eq!(refresh_cookie_token(&headers), Some("refresh-token"));
         assert_eq!(
             bearer_token(&headers).or_else(|| cookie_token(&headers)),
             Some("bearer-token")
@@ -201,21 +477,65 @@ mod tests {
 
     #[test]
     fn auth_cookie_sets_httponly_samesite_and_optional_secure() {
-        let plain = auth_cookie_header("token", 3600, false).unwrap();
+        let plain = auth_cookie_header(
+            ADMIN_AUTH_COOKIE,
+            "token",
+            ADMIN_AUTH_COOKIE_PATH,
+            3600,
+            false,
+            AuthCookieSameSite::Lax,
+        )
+        .unwrap();
         assert_eq!(
             plain.to_str().unwrap(),
             "autvid_admin=token; HttpOnly; SameSite=Lax; Path=/api; Max-Age=3600"
         );
 
-        let secure = auth_cookie_header("token", 3600, true).unwrap();
+        let refresh = auth_cookie_header(
+            ADMIN_REFRESH_COOKIE,
+            "refresh-token",
+            ADMIN_REFRESH_COOKIE_PATH,
+            7200,
+            true,
+            AuthCookieSameSite::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            refresh.to_str().unwrap(),
+            "autvid_admin_refresh=refresh-token; HttpOnly; SameSite=Strict; Path=/api/auth; Max-Age=7200; Secure"
+        );
+
+        let secure = auth_cookie_header(
+            ADMIN_AUTH_COOKIE,
+            "token",
+            ADMIN_AUTH_COOKIE_PATH,
+            3600,
+            true,
+            AuthCookieSameSite::Lax,
+        )
+        .unwrap();
         assert!(secure.to_str().unwrap().ends_with("; Secure"));
     }
 
     #[test]
     fn expired_cookie_clears_admin_cookie() {
-        let expired = expired_auth_cookie_header(false).unwrap();
+        let expired = expired_auth_cookie_header(
+            ADMIN_AUTH_COOKIE,
+            ADMIN_AUTH_COOKIE_PATH,
+            false,
+            AuthCookieSameSite::Lax,
+        )
+        .unwrap();
         let value = expired.to_str().unwrap();
         assert!(value.contains("autvid_admin="));
         assert!(value.contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn refresh_token_hash_is_deterministic_and_not_plaintext() {
+        let hash = refresh_token_hash("refresh-token");
+        assert_eq!(hash, refresh_token_hash("refresh-token"));
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, "refresh-token");
     }
 }

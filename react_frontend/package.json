@@ -6,17 +6,22 @@
     "axios": "^1.7.2",
     "hls.js": "^1.5.13",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",
     "jsdom": "^24.1.1",
+    "typescript": "^6.0.3",
     "vite": "^6.4.2",
     "vitest": "^3.2.4"
   },
   "scripts": {
     "start": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
     "test": "vitest run"
   }
 }

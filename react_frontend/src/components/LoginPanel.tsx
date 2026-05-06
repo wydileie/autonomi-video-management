@@ -1,15 +1,20 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 
 import { loginAdmin, requestErrorMessage } from "../api/client";
 import { BRAND_IMAGE } from "../constants";
+import type { AuthState } from "../types";
 
-export default function LoginPanel({ onLogin }) {
+interface LoginPanelProps {
+  onLogin: (auth: AuthState) => void;
+}
+
+export default function LoginPanel({ onLogin }: LoginPanelProps) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const submit = async (event) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setError("");
