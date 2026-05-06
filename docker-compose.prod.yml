@@ -1,4 +1,14 @@
 services:
+  db:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
   antd:
     image: autonomi-video-management-antd-service
     build:
@@ -39,6 +49,14 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
     restart: unless-stopped
 
   rust_admin:
@@ -49,6 +67,14 @@ services:
       APP_ENV: "production"
       ANTD_URL: "http://antd:8082"
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
 
   rust_stream:
     depends_on:
@@ -56,3 +82,31 @@ services:
         condition: service_healthy
     environment:
       ANTD_URL: "http://antd:8082"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  react_frontend:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+
+  nginx:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M

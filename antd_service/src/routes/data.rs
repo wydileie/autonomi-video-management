@@ -1,4 +1,6 @@
 use axum::extract::{Path, State};
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -96,19 +98,35 @@ pub(super) async fn data_get_public(
     State(state): State<AppState>,
     Path(address): Path<String>,
 ) -> Result<Json<DataGetResponse>, ApiError> {
-    let address = hex_to_address(&address)?;
+    let content = fetch_public_bytes(&state, &address).await?;
+    Ok(Json(DataGetResponse {
+        data: BASE64.encode(content),
+    }))
+}
+
+pub(super) async fn data_get_public_raw(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let content = fetch_public_bytes(&state, &address).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        content,
+    ))
+}
+
+async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, ApiError> {
+    let address = hex_to_address(address)?;
     let data_map = state
         .client
         .data_map_fetch(&address)
         .await
         .map_err(|err| ApiError::from_message(err.to_string()))?;
-    let root_map = resolve_data_map(&state.client, data_map)?;
-    let content = state
+    let root_map = resolve_data_map(state.client.clone(), data_map).await?;
+    state
         .client
         .data_download(&root_map)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
-    Ok(Json(DataGetResponse {
-        data: BASE64.encode(content),
-    }))
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| ApiError::from_message(err.to_string()))
 }

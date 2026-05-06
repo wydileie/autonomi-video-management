@@ -1,0 +1,59 @@
+services:
+  loki:
+    image: "${LOKI_IMAGE:-grafana/loki:2.9.8}"
+    container_name: autvid_loki
+    command:
+      - "-config.file=/etc/loki/config.yml"
+    ports:
+      - "${LOKI_HTTP_PORT:-3100}:3100"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/loki:/etc/loki:ro
+      - loki_data:/loki
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  promtail:
+    image: "${PROMTAIL_IMAGE:-grafana/promtail:2.9.8}"
+    container_name: autvid_promtail
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+    depends_on:
+      - loki
+    ports:
+      - "${PROMTAIL_HTTP_PORT:-9080}:9080"
+    networks:
+      - appnet
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/promtail:/etc/promtail:ro
+      - promtail_positions:/run/promtail
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  grafana:
+    image: "${GRAFANA_IMAGE:-grafana/grafana:latest}"
+    container_name: autvid_grafana
+    depends_on:
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_AUTH_ANONYMOUS_ENABLED:-false}"
+    ports:
+      - "${GRAFANA_HTTP_PORT:-3000}:3000"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/loki/grafana-datasource.yml:/etc/grafana/provisioning/datasources/loki.yml:ro
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  grafana_data:
+  loki_data:
+  promtail_positions:
