@@ -128,6 +128,11 @@ workflow that runs the same service-level gates.
 make test-rust
 make test-rust-admin
 
+# Run Postgres-backed durable-job integration tests.
+# TEST_DATABASE_URL should point at a maintenance database where temporary
+# per-test databases can be created and dropped.
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres make test-rust-db
+
 # Install, build, and test the React frontend
 make install-react
 make build-react
@@ -145,10 +150,11 @@ make audit
 
 The Rust targets run from the root Cargo workspace and cover `rust_admin`,
 `rust_stream`, and `antd_service`. The React target runs the Vite/Vitest test
-command once. CI also runs non-blocking advisory scans with `cargo audit`,
-`npm audit --omit=dev`, and Trivy filesystem scanning. Optional scanner install
-failures are reported as warnings so findings can be triaged before those gates
-become blocking.
+command once. CI also runs a Postgres service for the feature-gated
+`rust_admin` durable-job integration tests. Non-blocking advisory scans run
+with `cargo audit`, `npm audit --omit=dev`, and Trivy filesystem scanning.
+Optional scanner install failures are reported as warnings so findings can be
+triaged before those gates become blocking.
 
 When the local devnet stack is already running, the smoke harness exercises the
 same browser-facing contracts a real upload uses: `/api` auth, quote, upload,
@@ -254,11 +260,44 @@ public Autonomi storage; data lives in local Docker volumes.
 
 ```bash
 cp .env.production.example .env.production
-# Fill in PROD_AUTONOMI_WALLET_KEY and any network/payment settings.
+# Fill in a wallet source and any network/payment settings.
 
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
+  up --build -d
+```
+
+For production wallet keys, the simple env path remains supported:
+`PROD_AUTONOMI_WALLET_KEY=0x...`. The preferred production path is to mount a
+Docker Secret or other read-only file and set
+`PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key` in
+`.env.production`; when that file variable is set, it wins over the direct env
+key.
+
+Keep the base production compose files usable without a real secret file by
+putting the secret mount in a local overlay such as:
+
+```yaml
+services:
+  antd:
+    secrets:
+      - source: autonomi_wallet_key
+        target: autonomi_wallet_key
+        mode: 0400
+
+secrets:
+  autonomi_wallet_key:
+    file: ./secrets/autonomi_wallet_key.txt
+```
+
+Run with that extra overlay only on hosts where the secret file exists:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  -f docker-compose.prod.secrets.yml \
   up --build -d
 ```
 
@@ -310,6 +349,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
 | `ANTD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway default route timeout for non-file-upload requests. Default: `60` |
 | `ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway streaming file upload route timeout. Default: `3600` |
+| `ANTD_JSON_BODY_LIMIT_BYTES` | No | `antd` gateway JSON body limit for quote/cost and legacy data routes. Default: `33554432` |
 | `ADMIN_JOB_WORKERS` | No | Number of durable `rust_admin` DB job workers. Default: `1` |
 | `ADMIN_JOB_POLL_INTERVAL_SECONDS` | No | Poll interval when no durable jobs are ready. Default: `2` |
 | `ADMIN_JOB_LEASE_SECONDS` | No | Lease duration for a running durable job before another worker may recover it. Default: `43200` |

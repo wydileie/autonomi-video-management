@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::Row;
 use tokio::{fs as tokio_fs, sync::Semaphore, task::JoinSet};
-use tracing::{info, instrument, warn};
+use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -918,13 +918,13 @@ async fn upload_original_file_if_needed(
         ),
         Err(err) if is_missing_file_upload_endpoint(&err) => {
             if metadata.len() as usize > state.config.antd_direct_upload_max_bytes {
-                warn!(
-                    label = %upload_label,
-                    byte_size = metadata.len(),
-                    direct_upload_max_bytes = state.config.antd_direct_upload_max_bytes,
-                    "Skipping optional original source upload because the Autonomi file upload endpoint is unavailable and legacy JSON upload would exceed the configured cap"
-                );
-                return Ok(None);
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "Autonomi file upload endpoint is unavailable and legacy JSON upload for original source {upload_label} would exceed ANTD_DIRECT_UPLOAD_MAX_BYTES ({})",
+                        state.config.antd_direct_upload_max_bytes
+                    ),
+                ));
             }
             let data = tokio_fs::read(&source_path).await.map_err(|err| {
                 ApiError::new(

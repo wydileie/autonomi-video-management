@@ -40,7 +40,8 @@ use crate::{
     quote::build_upload_quote,
     state::AppState,
     upload::accept_upload,
-    MIN_ANTD_SELF_ENCRYPTION_BYTES, STATUS_AWAITING_APPROVAL, STATUS_ERROR, STATUS_READY,
+    MIN_ANTD_SELF_ENCRYPTION_BYTES, STATUS_AWAITING_APPROVAL, STATUS_ERROR, STATUS_EXPIRED,
+    STATUS_READY,
 };
 
 pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
@@ -415,6 +416,12 @@ async fn approve_video(
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
 
     let status: String = row.try_get("status").unwrap_or_default();
+    if status == STATUS_EXPIRED {
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "Final quote approval window has expired",
+        ));
+    }
     if status != STATUS_AWAITING_APPROVAL {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
@@ -563,4 +570,367 @@ async fn delete_video(
         "deleted": video_id,
         "catalog_address": read_catalog_address(&state.config),
     })))
+}
+
+#[cfg(all(test, feature = "db-tests"))]
+mod db_tests {
+    use std::{
+        fs,
+        net::SocketAddr,
+        path::{Path, PathBuf},
+        sync::{atomic::AtomicU64, Arc},
+    };
+
+    use axum::http::{HeaderValue, StatusCode};
+    use chrono::{Duration, Utc};
+    use serde_json::{json, Value};
+    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use tokio::{net::TcpListener, sync::Mutex, sync::Semaphore};
+    use uuid::Uuid;
+
+    use super::router;
+    use crate::{
+        antd_client::AntdRestClient, config::Config, db::ensure_schema, metrics::AdminMetrics,
+        state::AppState, JOB_KIND_PUBLISH_CATALOG, JOB_STATUS_QUEUED, STATUS_AWAITING_APPROVAL,
+        STATUS_EXPIRED, STATUS_READY,
+    };
+
+    struct TestDb {
+        pool: PgPool,
+        maintenance_url: String,
+        database_name: String,
+    }
+
+    impl TestDb {
+        async fn new() -> Self {
+            let maintenance_url = std::env::var("TEST_DATABASE_URL")
+                .expect("TEST_DATABASE_URL must be set for db-tests");
+            let database_name = format!("autvid_test_{}", Uuid::new_v4().simple());
+            let test_url = database_url_for_name(&maintenance_url, &database_name);
+            let admin_pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&maintenance_url)
+                .await
+                .expect("connect maintenance database");
+            sqlx::query(&format!(r#"CREATE DATABASE "{database_name}""#))
+                .execute(&admin_pool)
+                .await
+                .expect("create test database");
+            admin_pool.close().await;
+
+            let pool = PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&test_url)
+                .await
+                .expect("connect test database");
+            ensure_schema(&pool).await.expect("run migrations");
+            Self {
+                pool,
+                maintenance_url,
+                database_name,
+            }
+        }
+
+        async fn cleanup(self) {
+            self.pool.close().await;
+            let admin_pool = PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&self.maintenance_url)
+                .await
+                .expect("connect maintenance database for cleanup");
+            let _ = sqlx::query(
+                r#"
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname=$1 AND pid <> pg_backend_pid()
+                "#,
+            )
+            .bind(&self.database_name)
+            .execute(&admin_pool)
+            .await;
+            let _ = sqlx::query(&format!(
+                r#"DROP DATABASE IF EXISTS "{}""#,
+                self.database_name
+            ))
+            .execute(&admin_pool)
+            .await;
+            admin_pool.close().await;
+        }
+    }
+
+    fn database_url_for_name(base_url: &str, database_name: &str) -> String {
+        let (without_query, query) = base_url
+            .split_once('?')
+            .map(|(base, query)| (base, Some(query)))
+            .unwrap_or((base_url, None));
+        let slash_index = without_query
+            .rfind('/')
+            .expect("database URL must include a database path");
+        let prefix = &without_query[..slash_index + 1];
+        match query {
+            Some(query) => format!("{prefix}{database_name}?{query}"),
+            None => format!("{prefix}{database_name}"),
+        }
+    }
+
+    fn test_config(catalog_state_path: PathBuf, upload_temp_dir: PathBuf) -> Config {
+        Config {
+            db_dsn: "postgresql://example".to_string(),
+            antd_url: "http://127.0.0.1:9".to_string(),
+            antd_payment_mode: "auto".to_string(),
+            antd_metadata_payment_mode: "merkle".to_string(),
+            admin_username: "admin".to_string(),
+            admin_password: "password".to_string(),
+            admin_auth_secret: "secret".to_string(),
+            admin_auth_ttl_hours: 12,
+            admin_auth_cookie_secure: false,
+            catalog_state_path,
+            catalog_bootstrap_address: None,
+            cors_allowed_origins: vec![HeaderValue::from_static("http://localhost")],
+            bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            admin_request_timeout_seconds: 120.0,
+            admin_upload_request_timeout_seconds: 3600.0,
+            upload_temp_dir,
+            upload_max_file_bytes: 20 * 1024 * 1024,
+            upload_min_free_bytes: 0,
+            upload_max_concurrent_saves: 1,
+            upload_ffprobe_timeout_seconds: 30.0,
+            hls_segment_duration: 1.0,
+            ffmpeg_threads: 1,
+            ffmpeg_filter_threads: 1,
+            ffmpeg_max_parallel_renditions: 1,
+            upload_max_duration_seconds: 3600.0,
+            upload_max_source_pixels: 1920 * 1080,
+            upload_max_source_long_edge: 1920,
+            upload_quote_transcoded_overhead: 1.08,
+            upload_quote_max_sample_bytes: 1024,
+            final_quote_approval_ttl_seconds: 3600,
+            approval_cleanup_interval_seconds: 300,
+            antd_upload_verify: false,
+            antd_upload_retries: 1,
+            antd_upload_timeout_seconds: 30.0,
+            antd_quote_concurrency: 1,
+            antd_upload_concurrency: 1,
+            antd_approve_on_startup: false,
+            antd_require_cost_ready: false,
+            antd_direct_upload_max_bytes: 1024,
+            admin_job_workers: 1,
+            admin_job_poll_interval_seconds: 1,
+            admin_job_lease_seconds: 60,
+            admin_job_max_attempts: 2,
+            catalog_publish_job_max_attempts: 2,
+        }
+    }
+
+    fn test_state(pool: PgPool, root_dir: &Path) -> AppState {
+        let metrics = Arc::new(AdminMetrics::default());
+        AppState {
+            config: Arc::new(test_config(
+                root_dir.join("catalog.json"),
+                root_dir.join("processing"),
+            )),
+            pool,
+            antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone()).unwrap(),
+            metrics,
+            catalog_lock: Arc::new(Mutex::new(())),
+            catalog_publish_lock: Arc::new(Mutex::new(())),
+            catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+            upload_save_semaphore: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    async fn spawn_admin(state: AppState) -> String {
+        let config = state.config.clone();
+        let app = router(&config, state).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    async fn login(client: &reqwest::Client, base_url: &str) -> String {
+        let response: Value = client
+            .post(format!("{base_url}/auth/login"))
+            .json(&json!({ "username": "admin", "password": "password" }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        response["access_token"].as_str().unwrap().to_string()
+    }
+
+    async fn insert_ready_video(pool: &PgPool, root_dir: &Path) -> Uuid {
+        let video_id = Uuid::new_v4();
+        let job_dir = root_dir.join(video_id.to_string());
+        fs::create_dir_all(&job_dir).unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO videos
+                (id, title, original_filename, status, manifest_address, job_dir)
+            VALUES ($1, 'Ready DB Test', 'source.mp4', $2, 'manifest-address', $3)
+            "#,
+        )
+        .bind(video_id)
+        .bind(STATUS_READY)
+        .bind(job_dir.to_string_lossy().as_ref())
+        .execute(pool)
+        .await
+        .unwrap();
+        video_id
+    }
+
+    async fn insert_expired_approval_video(pool: &PgPool, root_dir: &Path) -> (Uuid, PathBuf) {
+        let video_id = Uuid::new_v4();
+        let job_dir = root_dir.join(video_id.to_string());
+        fs::create_dir_all(&job_dir).unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO videos
+                (id, title, original_filename, status, job_dir, final_quote, approval_expires_at)
+            VALUES ($1, 'Expired DB Test', 'source.mp4', $2, $3, $4::jsonb, $5)
+            "#,
+        )
+        .bind(video_id)
+        .bind(STATUS_AWAITING_APPROVAL)
+        .bind(job_dir.to_string_lossy().as_ref())
+        .bind(json!({ "quote_type": "final" }))
+        .bind(Utc::now() - Duration::seconds(10))
+        .execute(pool)
+        .await
+        .unwrap();
+        (video_id, job_dir)
+    }
+
+    #[tokio::test]
+    async fn db_approval_route_expires_old_final_quotes() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        let (video_id, job_dir) = insert_expired_approval_video(&state.pool, &root_dir).await;
+        let base_url = spawn_admin(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = login(&client, &base_url).await;
+
+        let response = client
+            .post(format!("{base_url}/admin/videos/{video_id}/approve"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), StatusCode::GONE.as_u16());
+
+        let row = sqlx::query("SELECT status, error_message FROM videos WHERE id=$1")
+            .bind(video_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<String, _>("status").unwrap(), STATUS_EXPIRED);
+        assert!(row
+            .try_get::<String, _>("error_message")
+            .unwrap()
+            .contains("approval window expired"));
+        assert!(!job_dir.exists());
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_publication_and_delete_routes_update_catalog_and_jobs() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));
+        fs::create_dir_all(&root_dir).unwrap();
+        let state = test_state(db.pool.clone(), &root_dir);
+        let video_id = insert_ready_video(&state.pool, &root_dir).await;
+        let base_url = spawn_admin(state.clone()).await;
+        let client = reqwest::Client::new();
+        let token = login(&client, &base_url).await;
+
+        let published: Value = client
+            .patch(format!("{base_url}/admin/videos/{video_id}/publication"))
+            .bearer_auth(&token)
+            .json(&json!({ "is_public": true }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(published["is_public"], true);
+
+        let public_videos: Value = client
+            .get(format!("{base_url}/videos"))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(public_videos[0]["id"], video_id.to_string());
+
+        let catalog_state: Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(catalog_state["publish_pending"], true);
+        assert_eq!(
+            catalog_state["catalog"]["videos"][0]["id"],
+            video_id.to_string()
+        );
+
+        let publish_jobs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM video_jobs WHERE job_kind=$1 AND status=$2")
+                .bind(JOB_KIND_PUBLISH_CATALOG)
+                .bind(JOB_STATUS_QUEUED)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(publish_jobs, 1);
+
+        let unpublished: Value = client
+            .patch(format!("{base_url}/admin/videos/{video_id}/publication"))
+            .bearer_auth(&token)
+            .json(&json!({ "is_public": false }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(unpublished["is_public"], false);
+
+        let deleted: Value = client
+            .delete(format!("{base_url}/admin/videos/{video_id}"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(deleted["deleted"], video_id.to_string());
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM videos WHERE id=$1")
+            .bind(video_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0);
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
 }

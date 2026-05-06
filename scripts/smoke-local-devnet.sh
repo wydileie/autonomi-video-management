@@ -60,12 +60,16 @@ trim_trailing_slash() {
 
 json_get() {
   local key_path="$1"
-  python3 - "$key_path" <<'PY'
+  local payload_file
+  payload_file="$(mktemp "${TMP_DIR:-/tmp}/smoke-json.XXXXXX")"
+  cat > "$payload_file"
+  python3 - "$key_path" "$payload_file" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
-data = json.load(sys.stdin)
+with open(sys.argv[2], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
 current = data
 for part in [p for p in path.split(".") if p]:
     if isinstance(current, list):
@@ -84,22 +88,32 @@ elif isinstance(current, (dict, list)):
 else:
     print(current)
 PY
+  local status=$?
+  rm -f "$payload_file"
+  return "$status"
 }
 
 json_public_video_status() {
   local video_id="$1"
-  python3 - "$video_id" <<'PY'
+  local payload_file
+  payload_file="$(mktemp "${TMP_DIR:-/tmp}/smoke-json.XXXXXX")"
+  cat > "$payload_file"
+  python3 - "$video_id" "$payload_file" <<'PY'
 import json
 import sys
 
 video_id = sys.argv[1]
-videos = json.load(sys.stdin)
+with open(sys.argv[2], "r", encoding="utf-8") as handle:
+    videos = json.load(handle)
 for video in videos:
     if video.get("id") == video_id:
         print(video.get("status", ""))
         sys.exit(0)
 sys.exit(1)
 PY
+  local status=$?
+  rm -f "$payload_file"
+  return "$status"
 }
 
 request() {

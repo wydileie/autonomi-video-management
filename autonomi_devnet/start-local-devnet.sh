@@ -51,22 +51,21 @@ EVM_RPC="$(jq -r '.evm.rpc_url' "$MANIFEST")"
 EVM_TOKEN="$(jq -r '.evm.payment_token_address' "$MANIFEST")"
 EVM_VAULT="$(jq -r '.evm.payment_vault_address // .evm.data_payments_address' "$MANIFEST")"
 
-echo "[autonomi-devnet] starting antd"
+echo "[autonomi-devnet] starting autvid antd gateway"
 ANTD_PEERS="$PEERS" \
 AUTONOMI_WALLET_KEY="$WALLET_KEY" \
 EVM_RPC_URL="$EVM_RPC" \
 EVM_PAYMENT_TOKEN_ADDRESS="$EVM_TOKEN" \
 EVM_PAYMENT_VAULT_ADDRESS="$EVM_VAULT" \
-antd \
-  --network local \
-  --cors \
-  --log-level "${ANTD_LOG_LEVEL:-warn}" \
-  --quote-timeout-secs "$QUOTE_TIMEOUT_SECS" \
-  --store-timeout-secs "$STORE_TIMEOUT_SECS" \
+ANTD_NETWORK=local \
+ANTD_REST_ADDR="${ANTD_REST_ADDR:-0.0.0.0:8082}" \
+ANTD_QUOTE_TIMEOUT_SECS="$QUOTE_TIMEOUT_SECS" \
+ANTD_STORE_TIMEOUT_SECS="$STORE_TIMEOUT_SECS" \
+autvid-antd-gateway \
   > "$LOG_DIR/antd.log" 2>&1 &
 ANTD_PID=$!
 
-echo "[autonomi-devnet] waiting for antd health"
+echo "[autonomi-devnet] waiting for antd gateway health"
 for _ in $(seq 1 60); do
   if curl -sf --max-time 2 http://localhost:8082/health >/dev/null 2>&1; then
     echo "[autonomi-devnet] ready"

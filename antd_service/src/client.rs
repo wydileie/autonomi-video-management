@@ -31,16 +31,18 @@ pub(crate) fn init_logging() {
 
 pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
     let peers = bootstrap_peers()?;
+    let local_network = is_local_network();
     info!(
+        local_network,
         "connecting to Autonomi 2.0 with {} bootstrap peers",
-        peers.len()
+        peers.len(),
     );
 
     let mut builder = CoreNodeConfig::builder()
         .mode(NodeMode::Client)
         .port(0)
         .ipv6(false)
-        .local(false)
+        .local(local_network)
         .max_message_size(MAX_WIRE_MESSAGE_SIZE);
 
     for peer in peers {
@@ -55,6 +57,7 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
     let client_config = ClientConfig {
         quote_timeout_secs: env_u64("ANTD_QUOTE_TIMEOUT_SECS", 60),
         store_timeout_secs: env_u64("ANTD_STORE_TIMEOUT_SECS", 120),
+        allow_loopback: local_network,
         ipv6: false,
         ..ClientConfig::default()
     };
@@ -117,6 +120,20 @@ fn evm_network() -> evmlib::Network {
         }
         _ => evmlib::Network::ArbitrumOne,
     }
+}
+
+fn is_local_network() -> bool {
+    env::var("ANTD_NETWORK")
+        .ok()
+        .as_deref()
+        .is_some_and(is_local_network_name)
+}
+
+fn is_local_network_name(network: &str) -> bool {
+    matches!(
+        network.trim().to_ascii_lowercase().as_str(),
+        "local" | "devnet" | "development"
+    )
 }
 
 fn first_env(names: &[&str]) -> Option<String> {
@@ -208,5 +225,14 @@ mod tests {
             normalize_multiaddr("/ip4/127.0.0.1/udp/12000/quic"),
             "/ip4/127.0.0.1/udp/12000/quic"
         );
+    }
+
+    #[test]
+    fn detects_local_network_modes() {
+        assert!(is_local_network_name("local"));
+        assert!(is_local_network_name("devnet"));
+        assert!(is_local_network_name("development"));
+        assert!(!is_local_network_name("arbitrum-one"));
+        assert!(!is_local_network_name(""));
     }
 }

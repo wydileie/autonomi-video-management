@@ -27,6 +27,26 @@ RUN git clone https://github.com/WithAutonomi/ant-node.git ant-node && \
     cargo build --release --bin ant-devnet && \
     cp target/release/ant-devnet /usr/local/bin/ant-devnet
 
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY common/Cargo.toml common/Cargo.toml
+COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
+COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
+COPY antd_service/Cargo.toml antd_service/Cargo.toml
+RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src && \
+    echo "" > common/src/lib.rs && \
+    echo "fn main(){}" > rust_admin/src/main.rs && \
+    echo "fn main(){}" > rust_stream/src/main.rs && \
+    echo "fn main(){}" > antd_service/src/main.rs && \
+    cargo build --release -p antd
+
+COPY common/src common/src
+COPY antd_service/src antd_service/src
+RUN touch common/src/lib.rs antd_service/src/main.rs && \
+    cargo build --release -p antd && \
+    cp target/release/antd /usr/local/bin/autvid-antd-gateway
+
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
@@ -52,7 +72,8 @@ RUN ARCH="$(dpkg --print-architecture)" && \
 
 COPY --from=builder /usr/local/bin/antd /usr/local/bin/antd
 COPY --from=builder /usr/local/bin/ant-devnet /usr/local/bin/ant-devnet
-COPY start-local-devnet.sh /usr/local/bin/start-local-devnet.sh
+COPY --from=builder /usr/local/bin/autvid-antd-gateway /usr/local/bin/autvid-antd-gateway
+COPY autonomi_devnet/start-local-devnet.sh /usr/local/bin/start-local-devnet.sh
 
 RUN mkdir -p /data && \
     useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin appuser && \
