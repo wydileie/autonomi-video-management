@@ -78,7 +78,17 @@ pub(super) async fn resolve_data_map(
         self_encryption::get_root_data_map_parallel(data_map, &fetch)
     })
     .await
-    .map_err(|err| ApiError::from_message(format!("DataMap resolution task failed: {err}")))?
+    .map_err(|err| {
+        let detail = match err.try_into_panic() {
+            Ok(panic) => match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+                (Some(message), _) => format!("DataMap resolution task panicked: {message}"),
+                (_, Some(message)) => format!("DataMap resolution task panicked: {message}"),
+                _ => "DataMap resolution task panicked".to_string(),
+            },
+            Err(err) => format!("DataMap resolution task failed: {err}"),
+        };
+        ApiError::from_message(detail)
+    })?
     .map_err(|err| ApiError::from_message(format!("DataMap resolution failed: {err}")))
 }
 

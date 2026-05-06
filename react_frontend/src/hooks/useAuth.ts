@@ -78,7 +78,7 @@ export default function useAuth(onInvalid?: () => void) {
         if (active) {
           authRef.current = null;
           setAuth(null);
-          if (auth?.access_token) onInvalid?.();
+          if (auth?.access_token) onInvalidRef.current?.();
         }
       }
     }
@@ -88,7 +88,7 @@ export default function useAuth(onInvalid?: () => void) {
     return () => {
       active = false;
     };
-  }, [auth?.access_token, onInvalid]);
+  }, [auth?.access_token]);
 
   const login = useCallback((nextAuth: AuthState) => {
     authRef.current = nextAuth;

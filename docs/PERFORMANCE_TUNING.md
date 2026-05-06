@@ -35,6 +35,13 @@ Raise upload concurrency when peer count is healthy, upload retries are low,
 and `antd` latency is stable. Lower it when uploads time out, peer count drops,
 or `autvid_admin_upload_retries_total` climbs.
 
+## Frontend API Retries
+
+The React client retries idempotent reads and upload quote requests after
+transient network or 5xx failures with short backoffs of 150 ms and 350 ms.
+If production sits behind a slow cold-starting load balancer, tune the client
+delay constants alongside load balancer health-check and warm-up behavior.
+
 ## Stream Cache
 
 The segment cache trades memory for fewer Autonomi reads:

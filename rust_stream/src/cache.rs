@@ -137,11 +137,10 @@ impl SegmentCache {
 
     fn evict_to_limit(&mut self) {
         while self.total_bytes > self.max_bytes {
-            let Some((_address, entry)) = self.entries.pop_front() else {
+            let Some(address) = self.entries.front().map(|(address, _)| address.clone()) else {
                 break;
             };
-            self.total_bytes = self.total_bytes.saturating_sub(entry.data.len());
-            self.evictions_total = self.evictions_total.saturating_add(1);
+            self.evict_address(&address);
         }
     }
 

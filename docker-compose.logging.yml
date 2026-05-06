@@ -1,4 +1,6 @@
 services:
+  # This overlay is intended to be layered with docker-compose.monitoring.yml so
+  # Grafana gets both the Prometheus dashboards and the Loki datasource.
   loki:
     image: "${LOKI_IMAGE:-grafana/loki:2.9.8}"
     container_name: autvid_loki
@@ -35,7 +37,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: "${GRAFANA_IMAGE:-grafana/grafana:latest}"
+    image: "${GRAFANA_IMAGE:-grafana/grafana:11.3.0}"
     container_name: autvid_grafana
     depends_on:
       - loki

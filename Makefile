@@ -7,9 +7,10 @@ LOCAL_ENV ?= .env.local
 PROD_ENV ?= .env.production
 LOCAL_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.local.yml
 LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f docker-compose.monitoring.yml
+LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f docker-compose.logging.yml
 PROD_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.prod.yml
 CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend db
-MONITORING_LOG_SERVICES = prometheus alertmanager grafana
+MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki promtail
 
 help:
 	@echo "Available targets:"
@@ -27,7 +28,7 @@ help:
 	@echo "  make fmt-rust        Check Rust formatting"
 	@echo "  make compose-config  Validate Compose render paths"
 	@echo "  make up-local        Start local devnet stack in the background"
-	@echo "  make up-local-full   Start local devnet stack with monitoring"
+	@echo "  make up-local-full   Start local devnet stack with monitoring and logging"
 	@echo "  make up-prod         Start production/default-network stack"
 	@echo "  make down-local      Stop local devnet stack without deleting volumes"
 	@echo "  make down-prod       Stop production stack without deleting volumes"
@@ -87,6 +88,7 @@ fmt-rust:
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
 	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
+	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_FULL_COMPOSE_FILES) config >/tmp/autvid-compose-local-full.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.monitoring.yml -f docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
 
@@ -94,13 +96,13 @@ up-local:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) up --build -d
 
 up-local-full:
-	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_MONITORING_COMPOSE_FILES) up --build -d
+	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_FULL_COMPOSE_FILES) up --build -d
 
 up-prod:
 	$(DOCKER_COMPOSE) --env-file $(PROD_ENV) $(PROD_COMPOSE_FILES) up --build -d
 
 down-local:
-	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) down
+	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_FULL_COMPOSE_FILES) down --remove-orphans
 
 down-prod:
 	$(DOCKER_COMPOSE) --env-file $(PROD_ENV) $(PROD_COMPOSE_FILES) down
@@ -112,7 +114,7 @@ logs-prod:
 	$(DOCKER_COMPOSE) --env-file $(PROD_ENV) $(PROD_COMPOSE_FILES) logs -f $(CORE_LOG_SERVICES)
 
 logs-monitoring:
-	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_MONITORING_COMPOSE_FILES) logs -f $(MONITORING_LOG_SERVICES)
+	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_FULL_COMPOSE_FILES) logs -f $(MONITORING_LOG_SERVICES)
 
 backup-production:
 	scripts/backup-production.sh
