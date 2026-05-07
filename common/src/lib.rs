@@ -1,16 +1,92 @@
 use std::{
+    env,
     fmt::Write as _,
-    sync::atomic::{AtomicU64, Ordering},
+    fs,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::Duration,
 };
 
 use http::HeaderValue;
+use subtle::ConstantTimeEq;
+
+const DEFAULT_LATENCY_BUCKETS_MS: &[u64] = &[
+    5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000,
+];
+
+#[derive(Clone, Debug)]
+pub struct HistogramSnapshot {
+    pub buckets_ms: Vec<u64>,
+    pub counts: Vec<u64>,
+    pub count: u64,
+    pub sum_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct LatencyHistogram {
+    buckets_ms: &'static [u64],
+    inner: Mutex<HistogramState>,
+}
+
+#[derive(Debug)]
+struct HistogramState {
+    counts: Vec<u64>,
+    count: u64,
+    sum_ms: u64,
+}
+
+impl Default for LatencyHistogram {
+    fn default() -> Self {
+        Self::new(DEFAULT_LATENCY_BUCKETS_MS)
+    }
+}
+
+impl LatencyHistogram {
+    pub fn new(buckets_ms: &'static [u64]) -> Self {
+        Self {
+            buckets_ms,
+            inner: Mutex::new(HistogramState {
+                counts: vec![0; buckets_ms.len()],
+                count: 0,
+                sum_ms: 0,
+            }),
+        }
+    }
+
+    pub fn record_duration(&self, duration: Duration) {
+        self.record_ms(duration.as_millis().min(u128::from(u64::MAX)) as u64);
+    }
+
+    pub fn record_ms(&self, millis: u64) {
+        let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        guard.count = guard.count.saturating_add(1);
+        guard.sum_ms = guard.sum_ms.saturating_add(millis);
+        for (index, bucket_ms) in self.buckets_ms.iter().enumerate() {
+            if millis <= *bucket_ms {
+                guard.counts[index] = guard.counts[index].saturating_add(1);
+            }
+        }
+    }
+
+    pub fn snapshot(&self) -> HistogramSnapshot {
+        let guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        HistogramSnapshot {
+            buckets_ms: self.buckets_ms.to_vec(),
+            counts: guard.counts.clone(),
+            count: guard.count,
+            sum_ms: guard.sum_ms,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct HttpMetrics {
     request_total: AtomicU64,
     request_error_total: AtomicU64,
     request_latency_ms_total: AtomicU64,
+    request_latency: LatencyHistogram,
 }
 
 impl HttpMetrics {
@@ -20,6 +96,7 @@ impl HttpMetrics {
             latency.as_millis().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
+        self.request_latency.record_duration(latency);
         if status >= 500 {
             self.request_error_total.fetch_add(1, Ordering::Relaxed);
         }
@@ -48,8 +125,40 @@ impl HttpMetrics {
             service,
             self.request_latency_ms_total.load(Ordering::Relaxed),
         );
+        push_histogram(
+            &mut output,
+            "autvid_http_request_latency_ms",
+            "HTTP response latency in milliseconds.",
+            service,
+            &[],
+            &self.request_latency.snapshot(),
+        );
         output
     }
+}
+
+pub fn constant_time_eq(left: &str, right: &str) -> bool {
+    left.as_bytes().ct_eq(right.as_bytes()).into()
+}
+
+pub fn non_empty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn secret_env(name: &str, file_name: &str) -> anyhow::Result<Option<String>> {
+    if let Some(path) = non_empty_env(file_name) {
+        let value = fs::read_to_string(&path)
+            .map_err(|err| anyhow::anyhow!("could not read {file_name} at {path}: {err}"))?
+            .trim()
+            .to_string();
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
+    Ok(non_empty_env(name))
 }
 
 pub fn push_counter(output: &mut String, name: &str, help: &str, service: &str, value: u64) {
@@ -62,6 +171,63 @@ pub fn push_gauge(output: &mut String, name: &str, help: &str, service: &str, va
     let _ = writeln!(output, "# HELP {name} {help}");
     let _ = writeln!(output, "# TYPE {name} gauge");
     let _ = writeln!(output, "{name}{{service=\"{service}\"}} {value}");
+}
+
+pub fn push_histogram(
+    output: &mut String,
+    name: &str,
+    help: &str,
+    service: &str,
+    extra_labels: &[(&str, &str)],
+    snapshot: &HistogramSnapshot,
+) {
+    let _ = writeln!(output, "# HELP {name} {help}");
+    let _ = writeln!(output, "# TYPE {name} histogram");
+    push_histogram_samples(output, name, service, extra_labels, snapshot);
+}
+
+pub fn push_histogram_header(output: &mut String, name: &str, help: &str) {
+    let _ = writeln!(output, "# HELP {name} {help}");
+    let _ = writeln!(output, "# TYPE {name} histogram");
+}
+
+pub fn push_histogram_samples(
+    output: &mut String,
+    name: &str,
+    service: &str,
+    extra_labels: &[(&str, &str)],
+    snapshot: &HistogramSnapshot,
+) {
+    for (bucket_ms, count) in snapshot.buckets_ms.iter().zip(snapshot.counts.iter()) {
+        let labels = prometheus_labels(service, extra_labels, Some(*bucket_ms));
+        let _ = writeln!(output, "{name}_bucket{{{labels}}} {count}");
+    }
+    let labels = prometheus_labels(service, extra_labels, None);
+    let _ = writeln!(
+        output,
+        "{name}_bucket{{{labels},le=\"+Inf\"}} {}",
+        snapshot.count
+    );
+    let _ = writeln!(output, "{name}_sum{{{labels}}} {}", snapshot.sum_ms);
+    let _ = writeln!(output, "{name}_count{{{labels}}} {}", snapshot.count);
+}
+
+fn prometheus_labels(service: &str, extra_labels: &[(&str, &str)], le: Option<u64>) -> String {
+    let mut labels = format!("service=\"{}\"", escape_label_value(service));
+    for (name, value) in extra_labels {
+        let _ = write!(labels, ",{name}=\"{}\"", escape_label_value(value));
+    }
+    if let Some(le) = le {
+        let _ = write!(labels, ",le=\"{le}\"");
+    }
+    labels
+}
+
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', r"\\")
+        .replace('"', r#"\""#)
+        .replace('\n', r"\n")
 }
 
 pub fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
@@ -142,5 +308,17 @@ mod tests {
         assert!(
             rendered.contains("autvid_http_request_latency_ms_total{service=\"test_service\"} 100")
         );
+        assert!(rendered.contains(
+            "autvid_http_request_latency_ms_bucket{service=\"test_service\",le=\"25\"} 1"
+        ));
+        assert!(
+            rendered.contains("autvid_http_request_latency_ms_count{service=\"test_service\"} 2")
+        );
+    }
+
+    #[test]
+    fn constant_time_comparison_matches_string_equality() {
+        assert!(constant_time_eq("same", "same"));
+        assert!(!constant_time_eq("same", "different"));
     }
 }

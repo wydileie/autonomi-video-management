@@ -1,10 +1,15 @@
 use std::{
     fs,
+    future::Future,
     path::{Path as FsPath, PathBuf},
 };
 
 use axum::{
-    extract::Multipart,
+    body::Bytes,
+    extract::{
+        multipart::{Field, MultipartError},
+        Multipart,
+    },
     http::{header, HeaderMap, StatusCode},
 };
 use serde_json::json;
@@ -14,6 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     catalog::get_db_video,
+    config::duration_from_secs_f64,
     db::db_error,
     errors::ApiError,
     media::{
@@ -104,12 +110,7 @@ pub(crate) async fn accept_upload(
     let mut source_path: Option<PathBuf> = None;
     let mut upload_metadata: Option<UploadMediaMetadata> = None;
 
-    while let Some(mut field) = multipart.next_field().await.map_err(|err| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            format!("Invalid multipart upload: {err}"),
-        )
-    })? {
+    while let Some(mut field) = multipart_next_field(state, &mut multipart).await? {
         let Some(name) = field.name().map(str::to_string) else {
             continue;
         };
@@ -137,12 +138,7 @@ pub(crate) async fn accept_upload(
                 )
             })?;
             let mut bytes_written = 0_u64;
-            while let Some(chunk) = field.chunk().await.map_err(|err| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("Could not read upload: {err}"),
-                )
-            })? {
+            while let Some(chunk) = multipart_field_chunk(state, &mut field).await? {
                 let next_size = bytes_written + chunk.len() as u64;
                 if next_size > state.config.upload_max_file_bytes {
                     let _ = tokio_fs::remove_file(&tmp_src_path).await;
@@ -200,12 +196,7 @@ pub(crate) async fn accept_upload(
             source_path = Some(src_path);
             upload_metadata = Some(metadata);
         } else {
-            let text = field.text().await.map_err(|err| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid form field {name}: {err}"),
-                )
-            })?;
+            let text = multipart_field_text(state, field, &name).await?;
             match name.as_str() {
                 "title" => title = Some(text.trim().to_string()),
                 "description" => description = text.trim().to_string(),
@@ -283,6 +274,47 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
+}
+
+async fn multipart_next_field<'a>(
+    state: &AppState,
+    multipart: &'a mut Multipart,
+) -> Result<Option<Field<'a>>, ApiError> {
+    timeout_multipart_read(state, multipart.next_field(), "reading multipart upload").await
+}
+
+async fn multipart_field_chunk(
+    state: &AppState,
+    field: &mut Field<'_>,
+) -> Result<Option<Bytes>, ApiError> {
+    timeout_multipart_read(state, field.chunk(), "reading upload file").await
+}
+
+async fn multipart_field_text(
+    state: &AppState,
+    field: Field<'_>,
+    name: &str,
+) -> Result<String, ApiError> {
+    timeout_multipart_read(state, field.text(), &format!("reading form field {name}")).await
+}
+
+async fn timeout_multipart_read<T>(
+    state: &AppState,
+    future: impl Future<Output = Result<T, MultipartError>>,
+    action: &str,
+) -> Result<T, ApiError> {
+    tokio::time::timeout(
+        duration_from_secs_f64(state.config.upload_read_idle_timeout_seconds),
+        future,
+    )
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            format!("Timed out while {action}"),
+        )
+    })?
+    .map_err(|err| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid upload: {err}")))
 }
 
 fn parse_form_bool(value: &str) -> bool {

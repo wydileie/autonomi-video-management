@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -15,6 +16,8 @@ pub(crate) struct AppState {
     pub(crate) network: String,
     pub(crate) metrics: Arc<HttpMetrics>,
     pub(crate) cost_cache: Arc<CostCache>,
+    pub(crate) upload_temp_dir: PathBuf,
+    pub(crate) file_upload_max_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

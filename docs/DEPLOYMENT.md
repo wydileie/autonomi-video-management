@@ -105,6 +105,12 @@ state across restarts for a short-lived demo.
 Use this mode when you want `antd` to connect to the configured Autonomi
 network and pay with a real wallet.
 
+For hardened deployments, pin image references by digest in a local production
+overlay after publishing tested images. The current Dockerfiles still use
+runtime images with shells and package managers where needed; a follow-up
+hardening pass should evaluate distroless or similarly minimized runtime
+images for services that no longer need shell tooling at runtime.
+
 ```bash
 cp .env.production.example .env.production
 # Edit .env.production before starting.
@@ -124,11 +130,6 @@ ADMIN_PASSWORD=<long random admin password>
 ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
 ADMIN_REFRESH_TOKEN_TTL_HOURS=720
 ADMIN_AUTH_COOKIE_SAME_SITE=Lax
-# Choose one wallet source:
-PROD_AUTONOMI_WALLET_KEY=0x<your_wallet_private_key>
-# or:
-# PROD_AUTONOMI_WALLET_KEY=
-# PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key
 PROD_ANTD_NETWORK=default
 PROD_EVM_NETWORK=arbitrum-one
 ANTD_PAYMENT_MODE=auto
@@ -136,56 +137,40 @@ ANTD_APPROVE_ON_STARTUP=true
 VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
 ```
 
-### Wallet Secret Files
+### Production Secrets
 
-For local development and quick private testing, `PROD_AUTONOMI_WALLET_KEY`
-can stay in the env file. For production, prefer mounting the wallet key as a
-Docker Secret or another root-readable file instead of storing the key directly
-in `.env.production`.
+The production overlay mounts Postgres, admin-login, auth-signing, internal
+service-token, backup-role, and wallet values as Docker Compose file-backed
+secrets under `/run/secrets`. The service containers receive only `_FILE`
+environment variables for those values.
 
-`PROD_AUTONOMI_WALLET_KEY_FILE` is an in-container file path. The production
-Compose file passes it through to the `antd` gateway as
-`AUTONOMI_WALLET_KEY_FILE`; when it is set, the gateway reads that file and
-uses it instead of `PROD_AUTONOMI_WALLET_KEY`.
+Create the files referenced by `.env.production` before starting production:
 
-Keep the base `docker-compose.prod.yml` free of a required secret file so
-normal `docker compose config` checks work before a real key exists. Add a
-local, uncommitted overlay such as `docker-compose.prod.secrets.yml` only on
-hosts that have the wallet key file:
-
-```yaml
-services:
-  antd:
-    secrets:
-      - source: autonomi_wallet_key
-        target: autonomi_wallet_key
-        mode: 0400
-
-secrets:
-  autonomi_wallet_key:
-    file: ./secrets/autonomi_wallet_key.txt
+```bash
+install -d -m 0700 secrets
+printf '%s\n' '<postgres root password>' > secrets/postgres_root_password
+printf '%s\n' '<admin database password>' > secrets/admin_db_password
+printf '%s\n' '<backup read-only database password>' > secrets/backup_db_password
+printf '%s\n' '<admin login password>' > secrets/admin_login_password
+printf '%s\n' '<long auth signing secret>' > secrets/admin_auth_secret
+printf '%s\n' '<internal bearer token>' > secrets/antd_internal_token
+printf '%s\n' '0x<your_wallet_private_key>' > secrets/autonomi_wallet_key
+chmod 0600 secrets/*
 ```
 
-Then set these values in `.env.production`:
+The `*_SECRET_FILE` variables in `.env.production` can point at a host secret
+manager mount instead of `./secrets/...`. Keep direct secret values blank or as
+throwaway placeholders in production; the overlay resets them before container
+startup.
 
-```dotenv
-PROD_AUTONOMI_WALLET_KEY=
-PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key
-```
-
-Start production with the extra overlay:
+Start production:
 
 ```bash
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  -f docker-compose.prod.secrets.yml \
   up --build -d
 ```
-
-Without the secrets overlay, keep `PROD_AUTONOMI_WALLET_KEY_FILE` blank and
-set `PROD_AUTONOMI_WALLET_KEY` directly. The local/dev compose paths remain
-env-based and do not require Docker Secrets.
 
 For public deployments, put TLS, auth, and domain routing in front of the stack
 with a host reverse proxy, cloud load balancer, Tailscale/Funnel, Caddy,
@@ -264,12 +249,21 @@ services generate one. Request logs include request ID, service, method, URI,
 status, and latency; admin job logs add `video_id`, `job_id`, `resolution`,
 `segment_index`, and `catalog_publish_epoch` where applicable.
 
+The public Nginx gateway rate-limits login, refresh, upload quote, and stream
+requests by client address. It also rewrites forwarded headers from sanitized
+proxy-side values before traffic reaches the Rust services.
+
 Admin auth is cookie-only for browser and smoke-test flows. Login and refresh
 set HttpOnly SameSite access/refresh cookies plus a non-HttpOnly `autvid_csrf`
 cookie; unsafe authenticated requests must echo that value in
 `X-CSRF-Token`. Keep `ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use
 `false` only for local HTTP testing. `ADMIN_AUTH_COOKIE_SAME_SITE=None` is
 rejected unless secure cookies are enabled.
+
+The Rust admin service does not infer cookie security from client-supplied
+forwarded headers; `ADMIN_AUTH_COOKIE_SECURE` controls the `Secure` attribute.
+Only expose the app through Nginx or a trusted upstream that overwrites
+`X-Forwarded-*` before requests enter the Compose network.
 
 Metrics endpoints emit Prometheus text on the internal Compose network. The
 public Nginx proxy intentionally blocks `/api/metrics` and `/stream/metrics`.
@@ -291,6 +285,22 @@ docker compose --env-file .env.production \
 
 These metrics are intentionally internal. Do not expose the `antd` service port
 publicly, and protect any external scrape path at your edge proxy.
+
+To enable host and backup textfile metrics, include the monitoring override and
+the backup override with a shared `BACKUP_TEXTFILE_HOST_PATH`:
+
+```bash
+BACKUP_TEXTFILE_HOST_PATH=/srv/autonomi-video-management/textfile \
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  -f docker-compose.monitoring.yml \
+  -f docker-compose.backup.yml \
+  up --build -d
+```
+
+The backup sidecar writes `autvid_backup.prom` after each attempt, node-exporter
+exports it, and Prometheus evaluates backup freshness and failure alerts.
 
 Create a timestamped production backup:
 

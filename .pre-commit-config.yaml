@@ -1,0 +1,34 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-json
+      - id: check-yaml
+        args: [--unsafe]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        files: ^backup_sidecar/.*\.sh$
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: frontend lint
+        entry: npm --prefix react_frontend run lint
+        language: system
+        pass_filenames: false
+        files: ^react_frontend/.*\.(ts|tsx|js|jsx|mjs|mts|css)$
+      - id: frontend-typecheck
+        name: frontend typecheck
+        entry: bash -c 'cd react_frontend && npx tsc --noEmit'
+        language: system
+        pass_filenames: false
+        files: ^react_frontend/.*\.(ts|tsx|mts)$
+      - id: rust-fmt
+        name: rust fmt
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        files: ^(common|antd_service|rust_admin|rust_stream)/.*\.rs$|^Cargo\.toml$|^Cargo\.lock$

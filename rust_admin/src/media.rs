@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs, io,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
     time::Instant,
@@ -41,7 +41,7 @@ pub(crate) async fn run_command_output(
             .map_err(|_| {
                 ApiError::new(
                     StatusCode::BAD_REQUEST,
-                    "Could not validate uploaded media before timeout",
+                    "Media tool exceeded the configured runtime limit",
                 )
             })?
     } else {
@@ -65,6 +65,7 @@ pub(crate) async fn probe_upload_media(
     state: &AppState,
     src: &FsPath,
 ) -> Result<UploadMediaMetadata, ApiError> {
+    let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new("ffprobe");
     command
         .arg("-v")
@@ -73,7 +74,7 @@ pub(crate) async fn probe_upload_media(
         .arg("-show_format")
         .arg("-of")
         .arg("json")
-        .arg(src);
+        .arg(&src);
     let output =
         run_command_output(command, Some(state.config.upload_ffprobe_timeout_seconds)).await?;
     if output.status_code != Some(0) {
@@ -147,7 +148,11 @@ pub(crate) async fn probe_upload_media(
     })
 }
 
-pub(crate) async fn probe_duration(src: &FsPath) -> Result<Option<f64>, ApiError> {
+pub(crate) async fn probe_duration(
+    state: &AppState,
+    src: &FsPath,
+) -> Result<Option<f64>, ApiError> {
+    let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new("ffprobe");
     command
         .arg("-v")
@@ -156,7 +161,7 @@ pub(crate) async fn probe_duration(src: &FsPath) -> Result<Option<f64>, ApiError
         .arg("format=duration")
         .arg("-of")
         .arg("default=noprint_wrappers=1:nokey=1")
-        .arg(src);
+        .arg(&src);
     let output = run_command_output(command, None).await?;
     if output.status_code != Some(0) {
         return Ok(None);
@@ -169,7 +174,11 @@ pub(crate) async fn probe_duration(src: &FsPath) -> Result<Option<f64>, ApiError
         .filter(|value| value.is_finite() && *value > 0.0))
 }
 
-pub(crate) async fn probe_video_dimensions(src: &FsPath) -> Result<Option<(i32, i32)>, ApiError> {
+pub(crate) async fn probe_video_dimensions(
+    state: &AppState,
+    src: &FsPath,
+) -> Result<Option<(i32, i32)>, ApiError> {
+    let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new("ffprobe");
     command
         .arg("-v")
@@ -179,7 +188,7 @@ pub(crate) async fn probe_video_dimensions(src: &FsPath) -> Result<Option<(i32, 
         .arg("-show_streams")
         .arg("-of")
         .arg("json")
-        .arg(src);
+        .arg(&src);
     let output = run_command_output(command, None).await?;
     if output.status_code != Some(0) {
         return Ok(None);
@@ -224,7 +233,10 @@ async fn run_ffmpeg(
     video_kbps: i32,
     audio_kbps: i32,
 ) -> Result<(), ApiError> {
-    let segment_pattern = seg_dir.join("seg_%05d.ts");
+    let src = assert_under(src, &state.config.upload_temp_dir)?;
+    let seg_dir = assert_under(seg_dir, &state.config.upload_temp_dir)?;
+    let segment_pattern =
+        assert_under(&seg_dir.join("seg_%05d.ts"), &state.config.upload_temp_dir)?;
     let segment_time = format!("{}", F64Format(state.config.hls_segment_duration));
     let mut command = Command::new("ffmpeg");
     command
@@ -236,7 +248,7 @@ async fn run_ffmpeg(
         .arg("-filter_threads")
         .arg(state.config.ffmpeg_filter_threads.to_string())
         .arg("-i")
-        .arg(src)
+        .arg(&src)
         .arg("-map")
         .arg("0:v:0")
         .arg("-map")
@@ -283,7 +295,8 @@ async fn run_ffmpeg(
         .arg("-reset_timestamps")
         .arg("1")
         .arg(segment_pattern);
-    let output = run_command_output(command, None).await?;
+    let output =
+        run_command_output(command, Some(state.config.ffmpeg_rendition_timeout_seconds)).await?;
     if output.status_code != Some(0) {
         let mut detail = stderr_tail(&output.stderr, 2000);
         if output.status_code == Some(137) {
@@ -324,6 +337,55 @@ fn stderr_tail(stderr: &[u8], limit: usize) -> String {
     let text = String::from_utf8_lossy(stderr);
     let start = text.len().saturating_sub(limit);
     text[start..].trim().to_string()
+}
+
+pub(crate) fn assert_under(path: &FsPath, root: &FsPath) -> Result<PathBuf, ApiError> {
+    let root = fs::canonicalize(root).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not inspect upload temp directory: {err}"),
+        )
+    })?;
+
+    let target = match fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            let parent = path.parent().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Media path has no parent directory",
+                )
+            })?;
+            let parent = fs::canonicalize(parent).map_err(|err| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not inspect media path parent: {err}"),
+                )
+            })?;
+            let file_name = path.file_name().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Media path has no file name",
+                )
+            })?;
+            parent.join(file_name)
+        }
+        Err(err) => {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not inspect media path: {err}"),
+            ));
+        }
+    };
+
+    if !target.starts_with(&root) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Media path is outside the configured upload workspace",
+        ));
+    }
+
+    Ok(target)
 }
 
 fn stream_rotation_degrees(stream: &Value) -> i32 {
@@ -501,7 +563,7 @@ async fn transcode_one_rendition(
     .await;
     state
         .metrics
-        .record_ffmpeg_duration(ffmpeg_started.elapsed());
+        .record_ffmpeg_duration(&resolution, ffmpeg_started.elapsed());
     ffmpeg_result?;
 
     let ts_files = collect_segment_files(&seg_dir)?;
@@ -514,7 +576,7 @@ async fn transcode_one_rendition(
 
     let mut segments = Vec::with_capacity(ts_files.len());
     for (idx, ts_path) in ts_files.into_iter().enumerate() {
-        let duration = probe_duration(&ts_path)
+        let duration = probe_duration(state, &ts_path)
             .await?
             .unwrap_or(state.config.hls_segment_duration);
         let byte_size = fs::metadata(&ts_path)

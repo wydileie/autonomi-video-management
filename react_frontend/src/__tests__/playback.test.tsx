@@ -55,6 +55,8 @@ test("shows a playback error when HLS segment loading fails", async () => {
     destroy: vi.fn(),
     loadSource: vi.fn(),
     on: vi.fn(),
+    recoverMediaError: vi.fn(),
+    startLoad: vi.fn(),
   };
   Hls.mockImplementation(() => hlsInstance);
   const publicVideo = {
@@ -87,6 +89,60 @@ test("shows a playback error when HLS segment loading fails", async () => {
   });
 
   expect(text()).toContain("Playback failed because the video segments could not be loaded.");
+});
+
+test("configures hls.js retries and recovers fatal network and media errors", async () => {
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstance = {
+    attachMedia: vi.fn(),
+    destroy: vi.fn(),
+    loadSource: vi.fn(),
+    on: vi.fn(),
+    recoverMediaError: vi.fn(),
+    startLoad: vi.fn(),
+  };
+  Hls.mockImplementation(() => hlsInstance);
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-retry",
+    original_filename: "",
+    status: "ready",
+    title: "Retry stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-retry": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [{ id: "variant-1", resolution: "720p", segment_count: 4 }],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Retry stream"));
+  await click(findButton("Retry stream"));
+
+  expect(Hls).toHaveBeenCalledWith(expect.objectContaining({
+    fragLoadingMaxRetry: 4,
+    levelLoadingMaxRetry: 4,
+    manifestLoadingMaxRetry: 4,
+  }));
+
+  const errorHandler = hlsInstance.on.mock.calls
+    .find(([eventName]) => eventName === Hls.Events.ERROR)[1];
+  await act(async () => {
+    errorHandler(Hls.Events.ERROR, { fatal: true, type: Hls.ErrorTypes.NETWORK_ERROR });
+  });
+  await act(async () => {
+    errorHandler(Hls.Events.ERROR, { fatal: true, type: Hls.ErrorTypes.MEDIA_ERROR });
+  });
+
+  expect(hlsInstance.startLoad).toHaveBeenCalled();
+  expect(hlsInstance.recoverMediaError).toHaveBeenCalled();
+  expect(text()).not.toContain("Playback failed because the video segments could not be loaded.");
 });
 
 test("passes the current playback position to hls.js when changing resolution", async () => {

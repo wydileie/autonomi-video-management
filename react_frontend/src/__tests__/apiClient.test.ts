@@ -225,3 +225,21 @@ test("does not retry file upload, approve, or delete requests after 5xx errors",
   expect(axiosMock.post).not.toHaveBeenCalled();
   expect(axiosMock.request).not.toHaveBeenCalled();
 });
+
+test("surfaces request IDs from error responses", async () => {
+  const { client } = await loadClient();
+
+  expect(client.requestErrorMessage({
+    response: {
+      data: { detail: "Quote failed" },
+      headers: { "x-request-id": "req-123" },
+    },
+  }, "Fallback")).toBe("Quote failed (request req-123)");
+
+  expect(client.requestErrorMessage({
+    response: {
+      data: { detail: "Upload failed", request_id: "req-456" },
+      headers: { "x-request-id": "req-ignored" },
+    },
+  }, "Fallback")).toBe("Upload failed (request req-456)");
+});

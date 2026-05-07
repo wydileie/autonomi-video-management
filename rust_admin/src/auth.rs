@@ -12,12 +12,9 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::{
-    config::{constant_time_eq, AuthCookieSameSite},
-    db::db_error,
-    errors::ApiError,
-    AppState,
-};
+use autvid_common::constant_time_eq;
+
+use crate::{config::AuthCookieSameSite, db::db_error, errors::ApiError, AppState};
 
 const ADMIN_AUTH_COOKIE: &str = "autvid_admin";
 const ADMIN_REFRESH_COOKIE: &str = "autvid_admin_refresh";

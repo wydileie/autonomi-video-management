@@ -28,6 +28,8 @@ struct AutonomiHealth {
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .route("/livez", get(livez))
+        .route("/stream/livez", get(livez))
         .route("/health", get(health))
         .route("/stream/health", get(health))
         .route("/metrics", get(metrics))
@@ -58,6 +60,10 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             .metrics
             .render_prometheus_with_cache(Some(segment_cache)),
     )
+}
+
+async fn livez() -> impl IntoResponse {
+    StatusCode::OK
 }
 
 async fn health(State(state): State<AppState>) -> impl IntoResponse {

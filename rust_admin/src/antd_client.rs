@@ -1,6 +1,15 @@
-use std::{fmt, path::Path as FsPath, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    path::Path as FsPath,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,6 +27,7 @@ pub(crate) struct AntdRestClient {
     client: reqwest::Client,
     metrics: Arc<AdminMetrics>,
     internal_token: Option<String>,
+    circuit: Arc<CircuitBreaker>,
 }
 
 #[derive(Debug)]
@@ -39,6 +49,56 @@ impl fmt::Display for AntdHttpStatusError {
 }
 
 impl std::error::Error for AntdHttpStatusError {}
+
+#[derive(Debug, Default)]
+struct CircuitBreaker {
+    consecutive_failures: AtomicUsize,
+    opened_until_epoch_ms: AtomicU64,
+}
+
+impl CircuitBreaker {
+    const FAILURE_THRESHOLD: usize = 5;
+    const OPEN_DURATION: Duration = Duration::from_secs(30);
+
+    fn check(&self) -> anyhow::Result<()> {
+        let now = epoch_millis();
+        let opened_until = self.opened_until_epoch_ms.load(Ordering::Relaxed);
+        if opened_until > now {
+            anyhow::bail!(
+                "Autonomi request circuit is open for {}ms",
+                opened_until.saturating_sub(now)
+            );
+        }
+        Ok(())
+    }
+
+    fn record_result<T>(&self, result: &anyhow::Result<T>) {
+        if result.is_ok() {
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            self.opened_until_epoch_ms.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        let Some(err) = result.as_ref().err() else {
+            return;
+        };
+        if !is_retryable_antd_error(err) {
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        let failures = self
+            .consecutive_failures
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if failures >= Self::FAILURE_THRESHOLD {
+            let opened_until = epoch_millis()
+                .saturating_add(Self::OPEN_DURATION.as_millis().min(u128::from(u64::MAX)) as u64);
+            self.opened_until_epoch_ms
+                .store(opened_until, Ordering::Relaxed);
+        }
+    }
+}
 
 #[derive(Deserialize)]
 pub(crate) struct AntdHealthResponse {
@@ -104,6 +164,7 @@ impl AntdRestClient {
                 .build()?,
             metrics,
             internal_token,
+            circuit: Arc::new(CircuitBreaker::default()),
         })
     }
 
@@ -180,7 +241,7 @@ impl AntdRestClient {
                     last_error = Some(err);
                     if attempt < 3 {
                         self.record_upload_retry();
-                        sleep(Duration::from_millis(100 * attempt as u64)).await;
+                        sleep(jitter_duration(Duration::from_millis(100 * attempt as u64))).await;
                     }
                 }
             }
@@ -227,18 +288,20 @@ impl AntdRestClient {
             {
                 Ok(result) => return Ok(result),
                 Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
-                    let delay = 2_u64.pow((attempt - 1).min(4) as u32);
+                    let delay = jitter_duration(Duration::from_secs(
+                        2_u64.pow((attempt - 1).min(4) as u32),
+                    ));
                     warn!(
-                        "Autonomi file upload failed on attempt {}/{} for {}: {}; retrying in {}s",
+                        "Autonomi file upload failed on attempt {}/{} for {}: {}; retrying in {}ms",
                         attempt,
                         attempts,
                         path.display(),
                         err,
-                        delay
+                        delay.as_millis()
                     );
                     self.record_upload_retry();
                     last_error = Some(err);
-                    sleep(Duration::from_secs(delay)).await;
+                    sleep(delay).await;
                 }
                 Err(err) => return Err(err),
             }
@@ -260,6 +323,7 @@ impl AntdRestClient {
         verify: bool,
         sha256: &str,
     ) -> anyhow::Result<AntdFilePutResponse> {
+        self.circuit.check()?;
         let file = tokio_fs::File::open(path).await?;
         let stream = ReaderStream::new(file);
         let url = format!(
@@ -290,8 +354,9 @@ impl AntdRestClient {
             })
         }
         .await;
+        self.circuit.record_result(&result);
         self.metrics
-            .record_antd_request(started.elapsed(), result.is_ok());
+            .record_antd_request("/v1/file/public", started.elapsed(), result.is_ok());
         result
     }
 
@@ -304,6 +369,8 @@ impl AntdRestClient {
     where
         T: for<'de> Deserialize<'de>,
     {
+        self.circuit.check()?;
+        let metric_path = metrics_path(path);
         let started = std::time::Instant::now();
         let result = async {
             let url = format!("{}{}", self.base_url, path);
@@ -328,8 +395,9 @@ impl AntdRestClient {
             })
         }
         .await;
+        self.circuit.record_result(&result);
         self.metrics
-            .record_antd_request(started.elapsed(), result.is_ok());
+            .record_antd_request(&metric_path, started.elapsed(), result.is_ok());
         result
     }
 
@@ -343,6 +411,31 @@ impl AntdRestClient {
             None => request,
         }
     }
+}
+
+pub(crate) fn jitter_duration(base: Duration) -> Duration {
+    if base.is_zero() {
+        return base;
+    }
+    let factor = rand::thread_rng().gen_range(0.8..=1.2);
+    let millis = (base.as_millis() as f64 * factor).round().max(1.0) as u64;
+    Duration::from_millis(millis)
+}
+
+fn metrics_path(path: &str) -> String {
+    if path.starts_with("/v1/data/public/") {
+        "/v1/data/public/:address".to_string()
+    } else {
+        path.to_string()
+    }
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 pub(crate) fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {

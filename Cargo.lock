@@ -1325,6 +1325,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "http",
+ "subtle",
 ]
 
 [[package]]
@@ -5267,7 +5268,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
- "subtle",
  "tokio",
  "tokio-util",
  "tower-http 0.5.2",
@@ -5286,6 +5286,7 @@ dependencies = [
  "base64",
  "bytes",
  "linked-hash-map",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 http = "1"
+subtle = "2"

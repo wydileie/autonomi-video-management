@@ -35,6 +35,10 @@ pub(super) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
     )
 }
 
+pub(super) async fn livez() -> impl IntoResponse {
+    StatusCode::OK
+}
+
 async fn load_job_metrics(state: &AppState) -> Option<JobMetricsSnapshot> {
     let cache = JOB_METRICS_CACHE.get_or_init(|| Mutex::new(None));
     let now = Instant::now();

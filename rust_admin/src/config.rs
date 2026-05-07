@@ -1,7 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration as StdDuration};
 
+use autvid_common::{constant_time_eq, secret_env};
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use subtle::ConstantTimeEq;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::{
@@ -56,11 +56,13 @@ pub(crate) struct Config {
     pub(crate) upload_max_file_bytes: u64,
     pub(crate) upload_min_free_bytes: u64,
     pub(crate) upload_max_concurrent_saves: usize,
+    pub(crate) upload_read_idle_timeout_seconds: f64,
     pub(crate) upload_ffprobe_timeout_seconds: f64,
     pub(crate) hls_segment_duration: f64,
     pub(crate) ffmpeg_threads: usize,
     pub(crate) ffmpeg_filter_threads: usize,
     pub(crate) ffmpeg_max_parallel_renditions: usize,
+    pub(crate) ffmpeg_rendition_timeout_seconds: f64,
     pub(crate) upload_max_duration_seconds: f64,
     pub(crate) upload_max_source_pixels: i64,
     pub(crate) upload_max_source_long_edge: i64,
@@ -86,7 +88,7 @@ pub(crate) struct Config {
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Self> {
         let db_user = required_env("ADMIN_DB_USER")?;
-        let db_pass = required_env("ADMIN_DB_PASS")?;
+        let db_pass = required_secret_env("ADMIN_DB_PASS", "ADMIN_DB_PASS_FILE")?;
         let db_host = required_env("ADMIN_DB_HOST")?;
         let db_name = required_env("ADMIN_DB_NAME")?;
         let db_port = env::var("ADMIN_DB_PORT").unwrap_or_else(|_| "5432".into());
@@ -99,9 +101,10 @@ impl Config {
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
 
         let admin_username = env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
-        let admin_password = env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "admin".into());
-        let admin_auth_secret =
-            env::var("ADMIN_AUTH_SECRET").unwrap_or_else(|_| admin_password.clone());
+        let admin_password = optional_secret_env("ADMIN_PASSWORD", "ADMIN_PASSWORD_FILE")?
+            .unwrap_or_else(|| "admin".into());
+        let admin_auth_secret = optional_secret_env("ADMIN_AUTH_SECRET", "ADMIN_AUTH_SECRET_FILE")?
+            .unwrap_or_else(|| admin_password.clone());
         let admin_auth_ttl_hours = parse_i64_env("ADMIN_AUTH_TTL_HOURS", 12)?;
         if admin_auth_ttl_hours <= 0 {
             anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
@@ -170,6 +173,11 @@ impl Config {
         if ffmpeg_max_parallel_renditions < 1 {
             anyhow::bail!("FFMPEG_MAX_PARALLEL_RENDITIONS must be at least 1");
         }
+        let ffmpeg_rendition_timeout_seconds =
+            parse_f64_env("FFMPEG_RENDITION_TIMEOUT_SECONDS", 6.0 * 60.0 * 60.0)?;
+        if ffmpeg_rendition_timeout_seconds <= 0.0 {
+            anyhow::bail!("FFMPEG_RENDITION_TIMEOUT_SECONDS must be greater than zero");
+        }
 
         let upload_quote_transcoded_overhead =
             parse_f64_env("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", 1.08)?;
@@ -192,6 +200,11 @@ impl Config {
         let upload_max_concurrent_saves = parse_usize_env("UPLOAD_MAX_CONCURRENT_SAVES", 2)?;
         if upload_max_concurrent_saves < 1 {
             anyhow::bail!("UPLOAD_MAX_CONCURRENT_SAVES must be at least 1");
+        }
+        let upload_read_idle_timeout_seconds =
+            parse_f64_env("UPLOAD_READ_IDLE_TIMEOUT_SECONDS", 30.0)?;
+        if upload_read_idle_timeout_seconds <= 0.0 {
+            anyhow::bail!("UPLOAD_READ_IDLE_TIMEOUT_SECONDS must be greater than zero");
         }
         let upload_ffprobe_timeout_seconds = parse_f64_env("UPLOAD_FFPROBE_TIMEOUT_SECONDS", 30.0)?;
         if upload_ffprobe_timeout_seconds <= 0.0 {
@@ -266,7 +279,10 @@ impl Config {
         Ok(Self {
             db_dsn,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
-            antd_internal_token: non_empty_env("ANTD_INTERNAL_TOKEN"),
+            antd_internal_token: optional_secret_env(
+                "ANTD_INTERNAL_TOKEN",
+                "ANTD_INTERNAL_TOKEN_FILE",
+            )?,
             antd_payment_mode,
             antd_metadata_payment_mode,
             admin_username,
@@ -289,11 +305,13 @@ impl Config {
             upload_max_file_bytes,
             upload_min_free_bytes,
             upload_max_concurrent_saves,
+            upload_read_idle_timeout_seconds,
             upload_ffprobe_timeout_seconds,
             hls_segment_duration,
             ffmpeg_threads,
             ffmpeg_filter_threads,
             ffmpeg_max_parallel_renditions,
+            ffmpeg_rendition_timeout_seconds,
             upload_max_duration_seconds,
             upload_max_source_pixels,
             upload_max_source_long_edge,
@@ -339,10 +357,6 @@ pub(crate) fn duration_from_secs_f64(seconds: f64) -> StdDuration {
     StdDuration::from_millis((seconds.max(0.001) * 1000.0).ceil() as u64)
 }
 
-pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
-    left.as_bytes().ct_eq(right.as_bytes()).into()
-}
-
 pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
     Ok(CorsLayer::new()
         .allow_origin(AllowOrigin::list(config.cors_allowed_origins.clone()))
@@ -368,6 +382,14 @@ pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
 
 fn required_env(name: &str) -> anyhow::Result<String> {
     env::var(name).map_err(|_| anyhow::anyhow!("{name} is required"))
+}
+
+fn required_secret_env(name: &str, file_name: &str) -> anyhow::Result<String> {
+    optional_secret_env(name, file_name)?.ok_or_else(|| anyhow::anyhow!("{name} is required"))
+}
+
+fn optional_secret_env(name: &str, file_name: &str) -> anyhow::Result<Option<String>> {
+    secret_env(name, file_name)
 }
 
 fn parse_i64_env(name: &str, default_value: i64) -> anyhow::Result<i64> {

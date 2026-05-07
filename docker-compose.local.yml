@@ -37,6 +37,10 @@ services:
       ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
       ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
       ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
+      ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
+      ANTD_CORS_ALLOWED_ORIGINS: "${ANTD_CORS_ALLOWED_ORIGINS:-}"
+      ANTD_FILE_UPLOAD_MAX_BYTES: "${ANTD_FILE_UPLOAD_MAX_BYTES:-21474836480}"
+      ANTD_UPLOAD_TEMP_DIR: "${ANTD_UPLOAD_TEMP_DIR:-/tmp}"
     ports:
       - "${ANTD_REST_PORT:-8082}:8082"
       - "${ANTD_GRPC_PORT:-50051}:50051"
@@ -45,7 +49,7 @@ services:
     volumes:
       - autonomi_devnet_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/livez"]
       interval: 10s
       timeout: 5s
       retries: 24

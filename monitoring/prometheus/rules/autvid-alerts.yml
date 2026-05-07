@@ -2,7 +2,7 @@ groups:
   - name: autvid.service.rules
     rules:
       - alert: AutvidServiceDown
-        expr: up{job=~"rust_admin|rust_stream|antd"} == 0
+        expr: up{job=~"rust_admin|rust_stream|antd|node_exporter"} == 0
         for: 2m
         labels:
           severity: critical
@@ -26,12 +26,11 @@ groups:
           summary: "{{ $labels.service }} has elevated 5xx responses"
           description: "More than 5% of HTTP requests handled by {{ $labels.service }} have returned 5xx for 10 minutes."
 
-      - alert: AutvidServiceAverageLatencyHigh
+      - alert: AutvidServiceP95LatencyHigh
         expr: |
-          (
-            sum by (service) (rate(autvid_http_request_latency_ms_total[5m]))
-            /
-            clamp_min(sum by (service) (rate(autvid_http_requests_total[5m])), 0.001)
+          histogram_quantile(
+            0.95,
+            sum by (service, le) (rate(autvid_http_request_latency_ms_bucket[5m]))
           ) > 2000
           and
           sum by (service) (rate(autvid_http_requests_total[5m])) > 0.05
@@ -39,8 +38,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.service }} average request latency is high"
-          description: "{{ $labels.service }} average HTTP latency is above 2 seconds over the last 5 minutes."
+          summary: "{{ $labels.service }} p95 request latency is high"
+          description: "{{ $labels.service }} p95 HTTP latency is above 2 seconds over the last 5 minutes."
 
   - name: autvid.admin.rules
     rules:
@@ -87,6 +86,32 @@ groups:
           summary: "Upload retry volume is high"
           description: "{{ $value }} Autonomi upload retries were scheduled in the last 30 minutes."
 
+      - alert: AutvidAdminAntdP95LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (endpoint, le) (rate(autvid_admin_antd_request_latency_ms_bucket[10m]))
+          ) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin to antd p95 latency is high"
+          description: "rust_admin outbound antd p95 latency for {{ $labels.endpoint }} is above 10 seconds."
+
+      - alert: AutvidAdminJobPickupLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(autvid_admin_job_pickup_latency_ms_bucket[10m]))
+          ) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admin job pickup latency is high"
+          description: "Queued admin jobs are waiting more than 10 seconds at p95 before workers pick them up."
+
   - name: autvid.stream.rules
     rules:
       - alert: AutvidStreamCacheHitRatioLow
@@ -112,20 +137,61 @@ groups:
           summary: "Stream cache hit ratio is low"
           description: "Segment cache hit ratio has been below 60% for 15 minutes while segment traffic is present."
 
-  - name: autvid.antd.rules
-    rules:
-      - alert: AutvidAntdAverageLatencyHigh
+      - alert: AutvidStreamSegmentFetchP95LatencyHigh
         expr: |
-          (
-            rate(autvid_http_request_latency_ms_total{service="antd_service"}[5m])
-            /
-            clamp_min(rate(autvid_http_requests_total{service="antd_service"}[5m]), 0.001)
+          histogram_quantile(
+            0.95,
+            sum by (cache_state, le) (rate(autvid_stream_segment_fetch_latency_ms_bucket[10m]))
           ) > 2000
-          and
-          rate(autvid_http_requests_total{service="antd_service"}[5m]) > 0.05
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "antd service average latency is high"
-          description: "antd_service average HTTP latency is above 2 seconds over the last 5 minutes."
+          summary: "Stream segment fetch p95 latency is high"
+          description: "rust_stream segment fetch p95 latency for {{ $labels.cache_state }} is above 2 seconds."
+
+  - name: autvid.antd.rules
+    rules:
+      - alert: AutvidAntdP95LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(autvid_http_request_latency_ms_bucket{service="antd_service"}[5m]))
+          ) > 2000
+          and on()
+          sum(rate(autvid_http_requests_total{service="antd_service"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "antd service p95 latency is high"
+          description: "antd_service p95 HTTP latency is above 2 seconds over the last 5 minutes."
+
+  - name: autvid.backup.rules
+    rules:
+      - alert: AutvidBackupMissing
+        expr: absent(autvid_backup_last_success_timestamp_seconds)
+        for: 26h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup metrics are missing"
+          description: "No backup textfile metric has been scraped for 26 hours. Confirm backup_sidecar and node_exporter share BACKUP_TEXTFILE_HOST_PATH."
+
+      - alert: AutvidBackupFailed
+        expr: autvid_backup_last_status{status="failure"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Last backup failed"
+          description: "The most recent backup_sidecar run failed. Check backup_sidecar logs and Postgres connectivity."
+
+      - alert: AutvidBackupStale
+        expr: time() - autvid_backup_last_success_timestamp_seconds > 93600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Successful backup is stale"
+          description: "The last successful backup is more than 26 hours old."

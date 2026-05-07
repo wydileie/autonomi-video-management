@@ -32,6 +32,7 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         config.admin_upload_request_timeout_seconds,
     ));
     Ok(Router::new()
+        .route("/livez", get(health::livez))
         .route("/health", get(health::health))
         .route("/metrics", get(health::metrics))
         .route("/auth/login", post(login))
@@ -229,11 +230,13 @@ mod db_tests {
             upload_max_file_bytes: 20 * 1024 * 1024,
             upload_min_free_bytes: 0,
             upload_max_concurrent_saves: 1,
+            upload_read_idle_timeout_seconds: 30.0,
             upload_ffprobe_timeout_seconds: 30.0,
             hls_segment_duration: 1.0,
             ffmpeg_threads: 1,
             ffmpeg_filter_threads: 1,
             ffmpeg_max_parallel_renditions: 1,
+            ffmpeg_rendition_timeout_seconds: 3600.0,
             upload_max_duration_seconds: 3600.0,
             upload_max_source_pixels: 1920 * 1080,
             upload_max_source_long_edge: 1920,
@@ -271,6 +274,7 @@ mod db_tests {
             catalog_publish_lock: Arc::new(Mutex::new(())),
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
+            shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
 

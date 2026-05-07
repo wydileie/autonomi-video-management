@@ -424,12 +424,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(autvid_admin_ffmpeg_duration_ms_total[$__rate_interval]) / clamp_min(rate(autvid_admin_ffmpeg_runs_total[$__rate_interval]), 0.001)",
-          "legendFormat": "avg runtime",
+          "expr": "histogram_quantile(0.95, sum by (resolution, le) (rate(autvid_admin_ffmpeg_duration_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{resolution}} p95",
           "refId": "A"
         }
       ],
-      "title": "FFmpeg Average Runtime",
+      "title": "FFmpeg P95 Runtime",
       "type": "timeseries"
     },
     {
@@ -584,12 +584,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(autvid_admin_antd_request_latency_ms_total[$__rate_interval]) / clamp_min(rate(autvid_admin_antd_requests_total[$__rate_interval]), 0.001)",
-          "legendFormat": "avg outbound latency",
+          "expr": "histogram_quantile(0.95, sum by (endpoint, le) (rate(autvid_admin_antd_request_latency_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{endpoint}} p95",
           "refId": "A"
         }
       ],
-      "title": "Admin to antd Average Latency",
+      "title": "Admin to antd P95 Latency",
       "type": "timeseries"
     }
   ],
