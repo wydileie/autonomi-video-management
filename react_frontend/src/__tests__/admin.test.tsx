@@ -1,4 +1,5 @@
 import { act } from "react";
+import { vi } from "vitest";
 import {
   AUTH_STORAGE_KEY,
   axios,

@@ -158,6 +158,7 @@ export function setupGetRoutes({
   });
 }
 
+// Importing this module registers shared app test setup and teardown hooks.
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
