@@ -39,6 +39,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let antd_url = env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into());
+    let antd_internal_token = env::var("ANTD_INTERNAL_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let catalog_state_path = env::var("CATALOG_STATE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/video_catalog/catalog.json"));
@@ -49,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let cache_config = CacheConfig::from_env();
     let request_timeout = request_timeout_from_env();
 
-    let antd = AntdRestClient::new(&antd_url)?;
+    let antd = AntdRestClient::new(&antd_url, antd_internal_token)?;
 
     let state = AppState {
         antd,
@@ -168,7 +172,7 @@ mod tests {
         };
 
         AppState {
-            antd: AntdRestClient::new(antd_url).unwrap(),
+            antd: AntdRestClient::new(antd_url, None).unwrap(),
             catalog_state_path: env::temp_dir().join(format!(
                 "rust_stream_missing_catalog_{}.json",
                 std::process::id()
@@ -327,15 +331,15 @@ mod tests {
     fn segment_cache_evicts_least_recently_used_entries() {
         let mut cache = SegmentCache::new(6, Duration::from_secs(60));
 
-        cache.insert("a".to_string(), vec![1, 2, 3]);
-        cache.insert("b".to_string(), vec![4, 5, 6]);
-        assert_eq!(cache.get("a"), Some(vec![1, 2, 3]));
+        cache.insert("a".to_string(), bytes::Bytes::from_static(&[1, 2, 3]));
+        cache.insert("b".to_string(), bytes::Bytes::from_static(&[4, 5, 6]));
+        assert_eq!(cache.get("a"), Some(bytes::Bytes::from_static(&[1, 2, 3])));
 
-        cache.insert("c".to_string(), vec![7, 8, 9]);
+        cache.insert("c".to_string(), bytes::Bytes::from_static(&[7, 8, 9]));
 
         assert_eq!(cache.get("b"), None);
-        assert_eq!(cache.get("a"), Some(vec![1, 2, 3]));
-        assert_eq!(cache.get("c"), Some(vec![7, 8, 9]));
+        assert_eq!(cache.get("a"), Some(bytes::Bytes::from_static(&[1, 2, 3])));
+        assert_eq!(cache.get("c"), Some(bytes::Bytes::from_static(&[7, 8, 9])));
         let snapshot = cache.snapshot();
         assert_eq!(snapshot.evictions_total, 1);
         assert_eq!(snapshot.bytes_resident, 6);
@@ -345,11 +349,14 @@ mod tests {
     #[test]
     fn segment_cache_skips_oversized_and_disabled_entries() {
         let mut cache = SegmentCache::new(3, Duration::from_secs(60));
-        cache.insert("too-large".to_string(), vec![1, 2, 3, 4]);
+        cache.insert(
+            "too-large".to_string(),
+            bytes::Bytes::from_static(&[1, 2, 3, 4]),
+        );
         assert_eq!(cache.get("too-large"), None);
 
         let mut disabled = SegmentCache::new(0, Duration::from_secs(60));
-        disabled.insert("off".to_string(), vec![1]);
+        disabled.insert("off".to_string(), bytes::Bytes::from_static(&[1]));
         assert_eq!(disabled.get("off"), None);
     }
 

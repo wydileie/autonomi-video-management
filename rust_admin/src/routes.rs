@@ -211,6 +211,7 @@ mod db_tests {
         Config {
             db_dsn: "postgresql://example".to_string(),
             antd_url: "http://127.0.0.1:9".to_string(),
+            antd_internal_token: None,
             antd_payment_mode: "auto".to_string(),
             antd_metadata_payment_mode: "merkle".to_string(),
             admin_username: "admin".to_string(),
@@ -264,7 +265,7 @@ mod db_tests {
                 root_dir.join("processing"),
             )),
             pool,
-            antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone()).unwrap(),
+            antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone(), None).unwrap(),
             metrics,
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),
@@ -303,19 +304,34 @@ mod db_tests {
             .to_string()
     }
 
-    async fn login(client: &reqwest::Client, base_url: &str) -> String {
-        let response: Value = client
+    fn cookie_value(cookie_pair: &str) -> String {
+        cookie_pair
+            .split_once('=')
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default()
+    }
+
+    struct TestAuth {
+        cookie_header: String,
+        csrf_token: String,
+    }
+
+    async fn login(client: &reqwest::Client, base_url: &str) -> TestAuth {
+        let response = client
             .post(format!("{base_url}/auth/login"))
             .json(&json!({ "username": "admin", "password": "password" }))
             .send()
             .await
             .unwrap()
             .error_for_status()
-            .unwrap()
-            .json()
-            .await
             .unwrap();
-        response["access_token"].as_str().unwrap().to_string()
+        let cookies = response_set_cookies(&response);
+        let auth_cookie = find_cookie_pair(&cookies, "autvid_admin");
+        let csrf_cookie = find_cookie_pair(&cookies, "autvid_csrf");
+        TestAuth {
+            cookie_header: format!("{auth_cookie}; {csrf_cookie}"),
+            csrf_token: cookie_value(&csrf_cookie),
+        }
     }
 
     #[tokio::test]
@@ -344,15 +360,25 @@ mod db_tests {
                 && cookie.contains("HttpOnly")
                 && cookie.contains("Path=/api/auth")
         }));
+        assert!(login_cookies.iter().any(|cookie| {
+            cookie.starts_with("autvid_csrf=")
+                && !cookie.contains("HttpOnly")
+                && cookie.contains("Path=/")
+        }));
+        let auth_cookie = find_cookie_pair(&login_cookies, "autvid_admin");
+        let csrf_cookie = find_cookie_pair(&login_cookies, "autvid_csrf");
         let refresh_cookie = find_cookie_pair(&login_cookies, "autvid_admin_refresh");
         let login_body: Value = login_response.json().await.unwrap();
-        let access_token = login_body["access_token"].as_str().unwrap();
-        assert_eq!(login_body["token_type"], "bearer");
+        assert!(login_body["access_token"].is_null());
+        assert!(login_body["token_type"].is_null());
         assert!(login_body["refresh_token_expires_at"].as_str().is_some());
 
         let me: Value = client
             .get(format!("{base_url}/auth/me"))
-            .bearer_auth(access_token)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{auth_cookie}; {csrf_cookie}"),
+            )
             .send()
             .await
             .unwrap()
@@ -380,10 +406,12 @@ mod db_tests {
         assert_eq!(refresh_response.status().as_u16(), StatusCode::OK.as_u16());
         let refresh_cookies = response_set_cookies(&refresh_response);
         let rotated_refresh_cookie = find_cookie_pair(&refresh_cookies, "autvid_admin_refresh");
+        let rotated_csrf_cookie = find_cookie_pair(&refresh_cookies, "autvid_csrf");
+        let rotated_csrf_token = cookie_value(&rotated_csrf_cookie);
         assert_ne!(rotated_refresh_cookie, refresh_cookie);
         let refresh_body: Value = refresh_response.json().await.unwrap();
-        assert_eq!(refresh_body["token_type"], "bearer");
-        assert!(refresh_body["access_token"].as_str().is_some());
+        assert!(refresh_body["token_type"].is_null());
+        assert!(refresh_body["access_token"].is_null());
 
         let row = sqlx::query(
             r#"
@@ -412,7 +440,11 @@ mod db_tests {
 
         let logout_response = client
             .post(format!("{base_url}/auth/logout"))
-            .header(reqwest::header::COOKIE, &rotated_refresh_cookie)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{rotated_refresh_cookie}; {rotated_csrf_cookie}"),
+            )
+            .header("x-csrf-token", rotated_csrf_token)
             .send()
             .await
             .unwrap();
@@ -427,6 +459,9 @@ mod db_tests {
         assert!(logout_cookies.iter().any(|cookie| {
             cookie.starts_with("autvid_admin_refresh=") && cookie.contains("Max-Age=0")
         }));
+        assert!(logout_cookies
+            .iter()
+            .any(|cookie| cookie.starts_with("autvid_csrf=") && cookie.contains("Max-Age=0")));
 
         let active_sessions: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM admin_refresh_sessions WHERE revoked_at IS NULL AND expires_at > NOW()",
@@ -569,11 +604,12 @@ mod db_tests {
         let (video_id, job_dir) = insert_expired_approval_video(&state.pool, &root_dir).await;
         let base_url = spawn_admin(state.clone()).await;
         let client = reqwest::Client::new();
-        let token = login(&client, &base_url).await;
+        let auth = login(&client, &base_url).await;
 
         let response = client
             .post(format!("{base_url}/admin/videos/{video_id}/approve"))
-            .bearer_auth(token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .send()
             .await
             .unwrap();
@@ -603,11 +639,12 @@ mod db_tests {
         let video_id = insert_approval_video_without_final_quote(&state.pool, &root_dir).await;
         let base_url = spawn_admin(state.clone()).await;
         let client = reqwest::Client::new();
-        let token = login(&client, &base_url).await;
+        let auth = login(&client, &base_url).await;
 
         let response = client
             .post(format!("{base_url}/admin/videos/{video_id}/approve"))
-            .bearer_auth(token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .send()
             .await
             .unwrap();
@@ -633,11 +670,12 @@ mod db_tests {
         let video_id = insert_ready_video(&state.pool, &root_dir).await;
         let base_url = spawn_admin(state.clone()).await;
         let client = reqwest::Client::new();
-        let token = login(&client, &base_url).await;
+        let auth = login(&client, &base_url).await;
 
         let published: Value = client
             .patch(format!("{base_url}/admin/videos/{video_id}/publication"))
-            .bearer_auth(&token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .json(&json!({ "is_public": true }))
             .send()
             .await
@@ -681,7 +719,8 @@ mod db_tests {
 
         let republished: Value = client
             .patch(format!("{base_url}/admin/videos/{video_id}/publication"))
-            .bearer_auth(&token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .json(&json!({ "is_public": true }))
             .send()
             .await
@@ -704,7 +743,8 @@ mod db_tests {
 
         let unpublished: Value = client
             .patch(format!("{base_url}/admin/videos/{video_id}/publication"))
-            .bearer_auth(&token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .json(&json!({ "is_public": false }))
             .send()
             .await
@@ -718,7 +758,8 @@ mod db_tests {
 
         let deleted: Value = client
             .delete(format!("{base_url}/admin/videos/{video_id}"))
-            .bearer_auth(&token)
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
             .send()
             .await
             .unwrap()

@@ -182,6 +182,7 @@ mod db_tests {
         Config {
             db_dsn: "postgresql://example".to_string(),
             antd_url: "http://127.0.0.1:9".to_string(),
+            antd_internal_token: None,
             antd_payment_mode: "auto".to_string(),
             antd_metadata_payment_mode: "merkle".to_string(),
             admin_username: "admin".to_string(),
@@ -235,7 +236,7 @@ mod db_tests {
                 root_dir.join("processing"),
             )),
             pool,
-            antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone()).unwrap(),
+            antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone(), None).unwrap(),
             metrics,
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),

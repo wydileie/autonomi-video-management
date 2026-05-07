@@ -1,7 +1,6 @@
 import type { ResolutionOption } from "./types";
 
 export const BRAND_IMAGE = "/autvid-brand.png";
-export const AUTH_STORAGE_KEY = "autvid_admin_token";
 export const PLAYER_CONTROLS_IDLE_MS = 2200;
 export const RESUME_DURATION_TOLERANCE_SECONDS = 0.25;
 

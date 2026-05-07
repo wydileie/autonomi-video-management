@@ -1,7 +1,6 @@
 import { act } from "react";
 import { vi } from "vitest";
 import {
-  AUTH_STORAGE_KEY,
   axios,
   click,
   container,
@@ -9,13 +8,14 @@ import {
   flushPromises,
   Hls,
   renderApp,
+  setAuthenticatedCookies,
   setupGetRoutes,
   text,
   waitFor,
 } from "./testUtils";
 
 test("approves an awaiting upload and deletes the video through admin controls", async () => {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   const adminVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Needs operator review",
@@ -46,10 +46,12 @@ test("approves an awaiting upload and deletes the video through admin controls",
   });
 
   let resolveApproval;
-  axios.post.mockImplementation((url, body, config) => {
-    if (url === "/api/admin/videos/vid-approval/approve") {
+  axios.post.mockImplementation((url, body) => {
+    if (url === "/auth/refresh") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/admin/videos/vid-approval/approve") {
       expect(body).toBeNull();
-      expect(config.headers).toEqual({ Authorization: "Bearer stored-token" });
       return new Promise((resolve) => {
         resolveApproval = resolve;
       });
@@ -88,24 +90,29 @@ test("approves an awaiting upload and deletes the video through admin controls",
     "Delete this video record and remove it from the network catalog?",
   );
   expect(axios.delete).toHaveBeenCalledWith(
-    "/api/admin/videos/vid-approval",
-    { headers: { Authorization: "Bearer stored-token" } },
+    "/admin/videos/vid-approval",
   );
   expect(text()).not.toContain("Needs approval");
 });
 
 test("polls the admin library while videos are actively processing", async () => {
   vi.useFakeTimers();
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   let adminListCalls = 0;
-  axios.get.mockImplementation((url) => {
-    if (url === "/api/auth/me") {
+  axios.post.mockImplementation((url) => {
+    if (url === "/auth/refresh") {
       return Promise.resolve({ data: { username: "admin" } });
     }
-    if (url === "/api/videos") {
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+  axios.get.mockImplementation((url) => {
+    if (url === "/auth/me") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/videos") {
       return Promise.resolve({ data: [] });
     }
-    if (url === "/api/admin/videos") {
+    if (url === "/admin/videos") {
       adminListCalls += 1;
       return Promise.resolve({
         data: [{
@@ -133,7 +140,7 @@ test("polls the admin library while videos are actively processing", async () =>
 });
 
 test("uses the manifest-address stream route for admin preview before publishing", async () => {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   Hls.isSupported.mockReturnValue(true);
   const hlsInstance = {
     attachMedia: vi.fn(),
@@ -175,7 +182,7 @@ test("uses the manifest-address stream route for admin preview before publishing
 });
 
 test("publishes and unpublishes ready videos from admin controls", async () => {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   const adminVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Operators only",
@@ -197,9 +204,8 @@ test("publishes and unpublishes ready videos from admin controls", async () => {
     adminVideos: [adminVideo],
     details: { "/api/admin/videos/admin-publication": detail },
   });
-  axios.patch.mockImplementation((url, body, config) => {
-    if (url === "/api/admin/videos/admin-publication/publication") {
-      expect(config.headers).toEqual({ Authorization: "Bearer stored-token" });
+  axios.patch.mockImplementation((url, body) => {
+    if (url === "/admin/videos/admin-publication/publication") {
       detail = { ...detail, is_public: body.is_public };
       return Promise.resolve({ data: detail });
     }
@@ -213,23 +219,21 @@ test("publishes and unpublishes ready videos from admin controls", async () => {
 
   await click(findButton(/^Publish$/));
   expect(axios.patch).toHaveBeenCalledWith(
-    "/api/admin/videos/admin-publication/publication",
+    "/admin/videos/admin-publication/publication",
     { is_public: true },
-    { headers: { Authorization: "Bearer stored-token" } },
   );
   expect(text()).toContain("Unpublish");
 
   await click(findButton("Unpublish"));
   expect(axios.patch).toHaveBeenCalledWith(
-    "/api/admin/videos/admin-publication/publication",
+    "/admin/videos/admin-publication/publication",
     { is_public: false },
-    { headers: { Authorization: "Bearer stored-token" } },
   );
   expect(text()).toContain("Publish");
 });
 
 test("shows detail, delete, and visibility failures without removing the current row", async () => {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   const adminVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Operators only",
@@ -247,17 +251,23 @@ test("shows detail, delete, and visibility failures without removing the current
   };
   let detailFails = true;
 
-  axios.get.mockImplementation((url) => {
-    if (url === "/api/auth/me") {
+  axios.post.mockImplementation((url) => {
+    if (url === "/auth/refresh") {
       return Promise.resolve({ data: { username: "admin" } });
     }
-    if (url === "/api/admin/videos") {
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+  axios.get.mockImplementation((url) => {
+    if (url === "/auth/me") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/admin/videos") {
       return Promise.resolve({ data: [adminVideo] });
     }
-    if (url === "/api/videos") {
+    if (url === "/videos") {
       return Promise.resolve({ data: [] });
     }
-    if (url === "/api/admin/videos/admin-1") {
+    if (url === "/admin/videos/admin-1") {
       if (detailFails) return Promise.reject(new Error("Detail timed out"));
       return Promise.resolve({ data: detail });
     }

@@ -1,5 +1,6 @@
-FROM nginx:1.27-alpine
+FROM nginx:1.29-alpine
 
 COPY conf.d/default.conf /etc/nginx/conf.d/default.conf
 
-RUN chown -R nginx:nginx /etc/nginx/conf.d /var/cache/nginx /var/run
+RUN apk upgrade --no-cache && \
+    chown -R nginx:nginx /etc/nginx/conf.d /var/cache/nginx /run /var/run

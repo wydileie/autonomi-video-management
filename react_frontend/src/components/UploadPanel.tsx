@@ -28,10 +28,9 @@ interface QuoteState {
 
 interface UploadPanelProps {
   onUploaded: (video: VideoSummary) => void;
-  token: string;
 }
 
-export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
+export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
@@ -107,7 +106,7 @@ export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
           quoteRequest.upload_original = true;
           quoteRequest.source_size_bytes = file.size;
         }
-        const data = await requestUploadQuote(token, quoteRequest, controller.signal);
+        const data = await requestUploadQuote(quoteRequest, controller.signal);
         setQuote({ loading: false, error: "", data });
       } catch (err) {
         if (isRequestCanceled(err)) return;
@@ -123,7 +122,7 @@ export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [file, meta?.duration, meta?.width, meta?.height, selected, token, uploadOriginal]);
+  }, [file, meta?.duration, meta?.width, meta?.height, selected, uploadOriginal]);
 
   const onDrop = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -173,7 +172,7 @@ export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
     fd.append("publish_when_ready", publishWhenReady ? "true" : "false");
 
     try {
-      const data = await uploadVideo(token, fd, (progressEvent) => {
+      const data = await uploadVideo(fd, (progressEvent) => {
         if (progressEvent.total) {
           setProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
         }
@@ -377,7 +376,7 @@ export default function UploadPanel({ token, onUploaded }: UploadPanelProps) {
               <span>{progress < 100 ? `Uploading source file ${progress}%` : "Transcoding and preparing final quote..."}</span>
               <span>{selected.map((value) => resolutionByValue(value)?.label || value).join(", ")}</span>
             </div>
-            <div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
+            <progress className="progress-track" value={progress} max={100} aria-label="Upload progress" />
           </div>
         )}
 

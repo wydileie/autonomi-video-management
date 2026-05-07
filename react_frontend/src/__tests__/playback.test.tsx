@@ -4,7 +4,6 @@ import {
   click,
   container,
   findButton,
-  flushPromises,
   Hls,
   mouseLeave,
   renderApp,

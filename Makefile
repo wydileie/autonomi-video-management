@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring backup-production restore-production test-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring backup-production restore-production lint-react test-react coverage-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -38,6 +38,7 @@ help:
 	@echo "  make backup-production Create a timestamped production DB/catalog backup"
 	@echo "  make restore-production ARGS='--backup-dir backups/autvid-... --yes' Restore a production backup"
 	@echo "  make install-react   Install React frontend dependencies"
+	@echo "  make lint-react      Run React ESLint checks"
 	@echo "  make build-react     Build the React frontend"
 	@echo "  make test-react      Run React tests in CI mode"
 	@echo "  make smoke-local     Run an end-to-end local devnet smoke test"
@@ -129,8 +130,14 @@ install-react:
 build-react:
 	cd react_frontend && $(NPM) run build
 
+lint-react:
+	cd react_frontend && $(NPM) run lint
+
 test-react:
 	cd react_frontend && CI=true $(NPM) test
+
+coverage-react:
+	cd react_frontend && CI=true $(NPM) run test:coverage
 
 smoke-local:
 	scripts/smoke-local-devnet.sh
@@ -162,4 +169,4 @@ audit: audit-rust audit-react audit-trivy
 
 test: test-rust test-react
 
-ci: fmt-rust test-rust clippy-rust install-react build-react test-react compose-config
+ci: fmt-rust test-rust clippy-rust install-react lint-react build-react test-react compose-config

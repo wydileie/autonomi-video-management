@@ -264,17 +264,25 @@ services generate one. Request logs include request ID, service, method, URI,
 status, and latency; admin job logs add `video_id`, `job_id`, `resolution`,
 `segment_index`, and `catalog_publish_epoch` where applicable.
 
-Admin auth is still bearer-token compatible for scripts and older clients. The
-browser login route also sets HttpOnly SameSite access and refresh cookies.
-Keep `ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use `false` only
-for local HTTP testing. `ADMIN_AUTH_COOKIE_SAME_SITE=None` is rejected unless
-secure cookies are enabled.
+Admin auth is cookie-only for browser and smoke-test flows. Login and refresh
+set HttpOnly SameSite access/refresh cookies plus a non-HttpOnly `autvid_csrf`
+cookie; unsafe authenticated requests must echo that value in
+`X-CSRF-Token`. Keep `ADMIN_AUTH_COOKIE_SECURE=true` for HTTPS deployments; use
+`false` only for local HTTP testing. `ADMIN_AUTH_COOKIE_SAME_SITE=None` is
+rejected unless secure cookies are enabled.
 
-Metrics endpoints emit Prometheus text:
+Metrics endpoints emit Prometheus text on the internal Compose network. The
+public Nginx proxy intentionally blocks `/api/metrics` and `/stream/metrics`.
 
 ```bash
-curl http://localhost/api/metrics
-curl http://localhost/stream/metrics
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec rust_admin curl -fsS http://127.0.0.1:8000/metrics
+docker compose --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml \
+  exec rust_stream curl -fsS http://127.0.0.1:8081/metrics
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \

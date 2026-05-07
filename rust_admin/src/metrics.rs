@@ -3,7 +3,16 @@ use std::{
     time::Duration,
 };
 
-use autvid_common::{push_counter, HttpMetrics};
+use autvid_common::{push_counter, push_gauge, HttpMetrics};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct JobMetricsSnapshot {
+    pub(crate) queued: u64,
+    pub(crate) running: u64,
+    pub(crate) failed: u64,
+    pub(crate) succeeded: u64,
+    pub(crate) oldest_queued_age_seconds: u64,
+}
 
 pub(crate) struct AdminMetrics {
     pub(crate) http: HttpMetrics,
@@ -72,7 +81,12 @@ impl AdminMetrics {
         self.upload_retries_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     pub(crate) fn render_prometheus(&self) -> String {
+        self.render_prometheus_with_jobs(None)
+    }
+
+    pub(crate) fn render_prometheus_with_jobs(&self, jobs: Option<JobMetricsSnapshot>) -> String {
         let service = "rust_admin";
         let mut output = self.http.render_prometheus(service);
         push_counter(
@@ -134,10 +148,47 @@ impl AdminMetrics {
         push_counter(
             &mut output,
             "autvid_admin_upload_retries_total",
-            "Total Autonomi upload retries scheduled by rust_admin.",
+            "Total retry attempts scheduled for Autonomi uploads and cost quotes by rust_admin.",
             service,
             self.upload_retries_total.load(Ordering::Relaxed),
         );
+        if let Some(jobs) = jobs {
+            push_gauge(
+                &mut output,
+                "autvid_admin_jobs_queued",
+                "Current queued durable admin jobs.",
+                service,
+                jobs.queued,
+            );
+            push_gauge(
+                &mut output,
+                "autvid_admin_jobs_running",
+                "Current running durable admin jobs.",
+                service,
+                jobs.running,
+            );
+            push_gauge(
+                &mut output,
+                "autvid_admin_jobs_failed",
+                "Current failed durable admin jobs.",
+                service,
+                jobs.failed,
+            );
+            push_gauge(
+                &mut output,
+                "autvid_admin_jobs_succeeded",
+                "Current succeeded durable admin jobs.",
+                service,
+                jobs.succeeded,
+            );
+            push_gauge(
+                &mut output,
+                "autvid_admin_oldest_queued_job_age_seconds",
+                "Age in seconds of the oldest queued durable admin job.",
+                service,
+                jobs.oldest_queued_age_seconds,
+            );
+        }
         output
     }
 }

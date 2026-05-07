@@ -2,6 +2,7 @@ use std::fs;
 use std::time::Instant;
 
 use axum::http::{header, HeaderMap, HeaderValue};
+use bytes::Bytes;
 use tokio::sync::watch;
 use tracing::{debug, instrument};
 
@@ -124,7 +125,7 @@ pub(crate) async fn fetch_segment(
     video_id: &str,
     resolution: &str,
     seg_index: i32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Bytes, String> {
     let manifest = load_video_manifest(state, video_id).await?;
     let segment_address = manifest
         .variants
@@ -148,7 +149,7 @@ pub(crate) async fn fetch_segment_from_address(
     manifest_address: &str,
     resolution: &str,
     seg_index: i32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Bytes, String> {
     let manifest = load_manifest(state, manifest_address).await?;
     let segment_address = manifest
         .variants
@@ -309,7 +310,7 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
 }
 
 #[instrument(skip(state), fields(segment_address = %segment_address))]
-async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Vec<u8>, String> {
+async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Bytes, String> {
     loop {
         {
             let mut segments = state.cache.segments.lock().await;
@@ -374,7 +375,7 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<V
 async fn fetch_segment_data_uncached(
     state: &AppState,
     segment_address: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Bytes, String> {
     let data = state
         .antd
         .data_get_public(segment_address)

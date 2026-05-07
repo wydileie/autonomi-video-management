@@ -321,16 +321,30 @@
 }
 
 .progress-track {
+  appearance: none;
+  -webkit-appearance: none;
   background: rgba(34, 40, 49, 0.12);
+  border: 0;
   border-radius: 999px;
+  display: block;
   height: 10px;
   overflow: hidden;
+  width: 100%;
 }
 
-.progress-track div {
+.progress-track::-webkit-progress-bar {
+  background: rgba(34, 40, 49, 0.12);
+  border-radius: 999px;
+}
+
+.progress-track::-webkit-progress-value {
   background: linear-gradient(90deg, var(--orange), var(--gold));
-  height: 100%;
   transition: width 220ms ease;
+}
+
+.progress-track::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--orange), var(--gold));
+  border-radius: 999px;
 }
 
 .error-box {

@@ -5284,6 +5284,7 @@ dependencies = [
  "autvid_common",
  "axum 0.7.9",
  "base64",
+ "bytes",
  "linked-hash-map",
  "reqwest 0.12.28",
  "serde",

@@ -6,7 +6,7 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::{
-    antd_client::{AntdDataPutResponse, AntdRestClient},
+    antd_client::{is_retryable_antd_error, AntdDataPutResponse, AntdRestClient},
     errors::ApiError,
     state::AppState,
     upload::format_bytes,
@@ -96,7 +96,13 @@ pub(crate) async fn put_public_verified_inner(
                     return Ok(result);
                 }
             }
-            Err(err) => last_error = Some(err.to_string()),
+            Err(err) => {
+                let retryable = is_retryable_antd_error(&err);
+                last_error = Some(err.to_string());
+                if !retryable {
+                    break;
+                }
+            }
         }
 
         if attempt < upload_retries {

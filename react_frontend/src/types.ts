@@ -1,8 +1,6 @@
 export interface AuthState {
-  access_token: string;
   expires_at?: string;
   refresh_token_expires_at?: string;
-  token_type?: "bearer";
   username?: string;
 }
 

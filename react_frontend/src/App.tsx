@@ -38,8 +38,8 @@ function AppRoutes() {
   const handleAuthInvalid = useCallback(() => navigate("/library", { replace: true }), [navigate]);
   const { auth, login, logout: clearAuth } = useAuth(handleAuthInvalid);
 
-  const handleLogin = (nextAuth: AuthState) => {
-    login(nextAuth);
+  const handleLogin = async (nextAuth: AuthState) => {
+    await login(nextAuth);
     navigate("/manage");
   };
 
@@ -87,15 +87,15 @@ function AppRoutes() {
           <Route path="/videos/:videoId" element={<VideoDetailRedirect />} />
           <Route
             path="/manage"
-            element={auth ? <Library key={`admin-${refreshKey}`} admin token={auth.access_token} /> : <Navigate to="/login" replace />}
+            element={auth ? <Library key={`admin-${refreshKey}`} admin /> : <Navigate to="/login" replace />}
           />
           <Route
             path="/manage/:videoId"
-            element={auth ? <Library key={`admin-${refreshKey}`} admin token={auth.access_token} /> : <Navigate to="/login" replace />}
+            element={auth ? <Library key={`admin-${refreshKey}`} admin /> : <Navigate to="/login" replace />}
           />
           <Route
             path="/upload"
-            element={auth ? <UploadPanel token={auth.access_token} onUploaded={handleUploaded} /> : <Navigate to="/login" replace />}
+            element={auth ? <UploadPanel onUploaded={handleUploaded} /> : <Navigate to="/login" replace />}
           />
           <Route
             path="/login"

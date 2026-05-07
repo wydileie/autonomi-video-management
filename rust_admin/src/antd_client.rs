@@ -1,12 +1,12 @@
-use std::{path::Path as FsPath, sync::Arc, time::Duration};
+use std::{fmt, path::Path as FsPath, sync::Arc, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncReadExt, time::sleep};
 use tokio_util::io::ReaderStream;
+use tracing::warn;
 
 use crate::{
     config::duration_from_secs_f64, metrics::AdminMetrics, MIN_ANTD_SELF_ENCRYPTION_BYTES,
@@ -17,7 +17,28 @@ pub(crate) struct AntdRestClient {
     base_url: String,
     client: reqwest::Client,
     metrics: Arc<AdminMetrics>,
+    internal_token: Option<String>,
 }
+
+#[derive(Debug)]
+struct AntdHttpStatusError {
+    method: reqwest::Method,
+    path: String,
+    status: reqwest::StatusCode,
+    body: String,
+}
+
+impl fmt::Display for AntdHttpStatusError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} {} failed: {} {}",
+            self.method, self.path, self.status, self.body
+        )
+    }
+}
+
+impl std::error::Error for AntdHttpStatusError {}
 
 #[derive(Deserialize)]
 pub(crate) struct AntdHealthResponse {
@@ -73,6 +94,7 @@ impl AntdRestClient {
         base_url: &str,
         timeout_seconds: f64,
         metrics: Arc<AdminMetrics>,
+        internal_token: Option<String>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -81,6 +103,7 @@ impl AntdRestClient {
                 .timeout(duration_from_secs_f64(timeout_seconds))
                 .build()?,
             metrics,
+            internal_token,
         })
     }
 
@@ -143,15 +166,20 @@ impl AntdRestClient {
         byte_size: usize,
     ) -> anyhow::Result<AntdDataCostResponse> {
         let quote_size = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES);
-        let mut data = vec![0_u8; quote_size];
-        rand::thread_rng().fill_bytes(&mut data);
+        let data = vec![0_u8; quote_size];
         let mut last_error = None;
         for attempt in 1..=3 {
             match self.data_cost(&data).await {
                 Ok(estimate) => return Ok(estimate),
                 Err(err) => {
+                    if !is_retryable_antd_error(&err) {
+                        return Err(anyhow::anyhow!(
+                            "Autonomi cost estimate failed for {quote_size} quote bytes: {err}"
+                        ));
+                    }
                     last_error = Some(err);
                     if attempt < 3 {
+                        self.record_upload_retry();
                         sleep(Duration::from_millis(100 * attempt as u64)).await;
                     }
                 }
@@ -187,8 +215,51 @@ impl AntdRestClient {
         path: &FsPath,
         payment_mode: &str,
         verify: bool,
+        upload_retries: usize,
     ) -> anyhow::Result<AntdFilePutResponse> {
         let (_, sha256) = sha256_file_async(path).await?;
+        let attempts = upload_retries.max(1);
+        let mut last_error = None;
+        for attempt in 1..=attempts {
+            match self
+                .file_put_public_once(path, payment_mode, verify, &sha256)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
+                    let delay = 2_u64.pow((attempt - 1).min(4) as u32);
+                    warn!(
+                        "Autonomi file upload failed on attempt {}/{} for {}: {}; retrying in {}s",
+                        attempt,
+                        attempts,
+                        path.display(),
+                        err,
+                        delay
+                    );
+                    self.record_upload_retry();
+                    last_error = Some(err);
+                    sleep(Duration::from_secs(delay)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(last_error
+            .map(|err| {
+                anyhow::anyhow!("Autonomi file upload failed after {attempts} attempt(s): {err}")
+            })
+            .unwrap_or_else(|| {
+                anyhow::anyhow!("Autonomi file upload failed after {attempts} attempt(s)")
+            }))
+    }
+
+    async fn file_put_public_once(
+        &self,
+        path: &FsPath,
+        payment_mode: &str,
+        verify: bool,
+        sha256: &str,
+    ) -> anyhow::Result<AntdFilePutResponse> {
         let file = tokio_fs::File::open(path).await?;
         let stream = ReaderStream::new(file);
         let url = format!(
@@ -197,18 +268,22 @@ impl AntdRestClient {
         );
         let started = std::time::Instant::now();
         let result = async {
-            let response = self
-                .client
-                .post(url)
+            let request = self
+                .apply_internal_auth(self.client.post(url))
                 .header("content-type", "application/octet-stream")
                 .header("x-content-sha256", sha256)
-                .body(reqwest::Body::wrap_stream(stream))
-                .send()
-                .await?;
+                .body(reqwest::Body::wrap_stream(stream));
+            let response = request.send().await?;
             let status = response.status();
             let text = response.text().await?;
             if !status.is_success() {
-                anyhow::bail!("POST /v1/file/public failed: {} {}", status, text);
+                return Err(AntdHttpStatusError {
+                    method: reqwest::Method::POST,
+                    path: "/v1/file/public".to_string(),
+                    status,
+                    body: text,
+                }
+                .into());
             }
             serde_json::from_str(&text).map_err(|err| {
                 anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err)
@@ -232,7 +307,7 @@ impl AntdRestClient {
         let started = std::time::Instant::now();
         let result = async {
             let url = format!("{}{}", self.base_url, path);
-            let mut request = self.client.request(method.clone(), url);
+            let mut request = self.apply_internal_auth(self.client.request(method.clone(), url));
             if let Some(body) = json_body {
                 request = request.json(&body);
             }
@@ -240,7 +315,13 @@ impl AntdRestClient {
             let status = response.status();
             let text = response.text().await?;
             if !status.is_success() {
-                anyhow::bail!("{} {} failed: {} {}", method, path, status, text);
+                return Err(AntdHttpStatusError {
+                    method: method.clone(),
+                    path: path.to_string(),
+                    status,
+                    body: text,
+                }
+                .into());
             }
             serde_json::from_str(&text).map_err(|err| {
                 anyhow::anyhow!("{} {} returned invalid JSON: {}", method, path, err)
@@ -255,24 +336,46 @@ impl AntdRestClient {
     pub(crate) fn record_upload_retry(&self) {
         self.metrics.record_upload_retry();
     }
+
+    fn apply_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.internal_token.as_deref() {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    }
 }
 
 pub(crate) fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    if message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 ") {
-        return true;
+    if let Some(status) = err
+        .downcast_ref::<AntdHttpStatusError>()
+        .map(|err| err.status)
+    {
+        return matches!(
+            status,
+            reqwest::StatusCode::NOT_FOUND
+                | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                | reqwest::StatusCode::NOT_IMPLEMENTED
+        );
     }
 
-    // Some antd-compatible servers close the connection as soon as they reject
-    // the unsupported streaming route, while reqwest is still sending the body.
-    // Treat that as "endpoint unavailable" so small media can use the legacy
-    // JSON upload path instead of failing mid-stream.
-    let message = message.to_ascii_lowercase();
+    let message = err.to_string();
     message.contains("/v1/file/public")
-        && (message.contains("error sending request")
-            || message.contains("connection reset")
-            || message.contains("broken pipe")
-            || message.contains("connection closed"))
+        && (message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 "))
+}
+
+pub(crate) fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
+    if let Some(status) = err
+        .downcast_ref::<AntdHttpStatusError>()
+        .map(|err| err.status)
+    {
+        return status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+    }
+
+    if let Some(err) = err.downcast_ref::<reqwest::Error>() {
+        return err.is_connect() || err.is_timeout() || err.is_body();
+    }
+
+    false
 }
 
 async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
@@ -326,13 +429,15 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        hex_lower, is_missing_file_upload_endpoint, AntdRestClient, Digest, Sha256, BASE64,
+        hex_lower, is_missing_file_upload_endpoint, AntdHttpStatusError, AntdRestClient, Digest,
+        Sha256, BASE64,
     };
     use crate::metrics::AdminMetrics;
 
     #[derive(Clone, Default)]
     struct MockAntdState {
         cost_failures_remaining: Arc<AtomicUsize>,
+        cost_payload_hashes: Arc<Mutex<Vec<String>>>,
         cost_requests: Arc<AtomicUsize>,
         last_file_upload: Arc<Mutex<Option<FileUploadObservation>>>,
     }
@@ -347,13 +452,19 @@ mod tests {
     }
 
     #[test]
-    fn treats_stream_abort_on_file_upload_route_as_missing_endpoint() {
+    fn treats_only_missing_file_upload_statuses_as_missing_endpoint() {
+        let err: anyhow::Error = AntdHttpStatusError {
+            method: reqwest::Method::POST,
+            path: "/v1/file/public".to_string(),
+            status: reqwest::StatusCode::NOT_FOUND,
+            body: "missing".to_string(),
+        }
+        .into();
+        assert!(is_missing_file_upload_endpoint(&err));
+
         let err = anyhow::anyhow!(
             "error sending request for url (http://antd:8082/v1/file/public?payment_mode=auto&verify=true)"
         );
-        assert!(is_missing_file_upload_endpoint(&err));
-
-        let err = anyhow::anyhow!("error sending request for url (http://antd:8082/health)");
         assert!(!is_missing_file_upload_endpoint(&err));
     }
 
@@ -362,7 +473,7 @@ mod tests {
         let mock_state = MockAntdState::default();
         let base_url = spawn_mock_antd(mock_state.clone()).await;
         let metrics = Arc::new(AdminMetrics::default());
-        let client = AntdRestClient::new(&base_url, 5.0, metrics.clone()).unwrap();
+        let client = AntdRestClient::new(&base_url, 5.0, metrics.clone(), None).unwrap();
 
         let health = client.health().await.unwrap();
         assert_eq!(health.status, "ok");
@@ -394,7 +505,7 @@ mod tests {
             .await
             .unwrap();
         let file = client
-            .file_put_public(&source_path, "auto", true)
+            .file_put_public(&source_path, "auto", true, 1)
             .await
             .unwrap();
         let _ = tokio_fs::remove_file(&source_path).await;
@@ -431,19 +542,22 @@ mod tests {
             .store(2, Ordering::Relaxed);
         let base_url = spawn_mock_antd(mock_state.clone()).await;
         let client =
-            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default())).unwrap();
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default()), None).unwrap();
 
         let cost = client.data_cost_for_size(3).await.unwrap();
 
         assert_eq!(cost.cost.as_deref(), Some("321"));
         assert_eq!(mock_state.cost_requests.load(Ordering::Relaxed), 3);
+        let hashes = mock_state.cost_payload_hashes.lock().await.clone();
+        assert_eq!(hashes.len(), 3);
+        assert!(hashes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[tokio::test]
     async fn mock_antd_client_rejects_invalid_base64_downloads() {
         let base_url = spawn_mock_antd(MockAntdState::default()).await;
         let client =
-            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default())).unwrap();
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default()), None).unwrap();
 
         let err = client.data_get_public("bad-base64").await.unwrap_err();
 
@@ -496,6 +610,19 @@ mod tests {
         Json(body): Json<serde_json::Value>,
     ) -> axum::response::Response {
         state.cost_requests.fetch_add(1, Ordering::Relaxed);
+        let data = body
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let decoded = BASE64.decode(data).unwrap();
+        assert!(decoded.len() >= 3);
+        let mut hasher = Sha256::new();
+        hasher.update(&decoded);
+        state
+            .cost_payload_hashes
+            .lock()
+            .await
+            .push(hex_lower(&hasher.finalize()));
         if state
             .cost_failures_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
@@ -506,11 +633,6 @@ mod tests {
             return (StatusCode::SERVICE_UNAVAILABLE, "cost unavailable").into_response();
         }
 
-        let data = body
-            .get("data")
-            .and_then(serde_json::Value::as_str)
-            .unwrap();
-        assert!(BASE64.decode(data).unwrap().len() >= 3);
         Json(serde_json::json!({
             "cost": "321",
             "chunk_count": 1,

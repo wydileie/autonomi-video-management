@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use linked_hash_map::LinkedHashMap;
 use tokio::sync::{watch, Mutex};
 
@@ -14,7 +15,7 @@ pub(crate) struct AppCache {
     pub(crate) segment_fetches: Mutex<HashMap<String, SegmentFetchReceiver>>,
 }
 
-pub(crate) type SegmentFetchResult = Option<Result<Vec<u8>, String>>;
+pub(crate) type SegmentFetchResult = Option<Result<Bytes, String>>;
 pub(crate) type SegmentFetchReceiver = watch::Receiver<SegmentFetchResult>;
 
 pub(crate) struct CachedValue<T> {
@@ -31,7 +32,7 @@ pub(crate) struct SegmentCache {
 }
 
 struct CachedSegment {
-    data: Vec<u8>,
+    data: Bytes,
     expires_at: Instant,
 }
 
@@ -67,7 +68,7 @@ impl SegmentCache {
         }
     }
 
-    pub(crate) fn get(&mut self, address: &str) -> Option<Vec<u8>> {
+    pub(crate) fn get(&mut self, address: &str) -> Option<Bytes> {
         if self.disabled() {
             return None;
         }
@@ -86,7 +87,7 @@ impl SegmentCache {
         }
     }
 
-    pub(crate) fn insert(&mut self, address: String, data: Vec<u8>) {
+    pub(crate) fn insert(&mut self, address: String, data: Bytes) {
         if self.disabled() || data.len() > self.max_bytes {
             return;
         }

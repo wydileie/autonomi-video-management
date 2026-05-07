@@ -39,6 +39,7 @@ async fn enqueue_video_job(
               AND video_id=$2
               AND status IN ($3, $5)
         )
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(kind.as_str())
@@ -71,6 +72,7 @@ pub(super) async fn enqueue_catalog_publish_job(state: &AppState) -> Result<(), 
             WHERE job_kind=$1
               AND status=$2
         )
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(JOB_KIND_PUBLISH_CATALOG)

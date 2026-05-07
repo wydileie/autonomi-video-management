@@ -640,7 +640,12 @@ pub(crate) async fn upload_approved_video_inner(
                     ));
                 }
                 match antd
-                    .file_put_public(&input.local_path, &payment_mode, upload_verify)
+                    .file_put_public(
+                        &input.local_path,
+                        &payment_mode,
+                        upload_verify,
+                        upload_retries,
+                    )
                     .await
                 {
                     Ok(result) => Ok::<SegmentUploadResult, String>(SegmentUploadResult {
@@ -908,6 +913,7 @@ async fn upload_original_file_if_needed(
             &source_path,
             &state.config.antd_payment_mode,
             state.config.antd_upload_verify,
+            state.config.antd_upload_retries,
         )
         .await;
     let (address, cost, payment_mode) = match file_result {

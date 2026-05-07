@@ -122,10 +122,13 @@ request() {
   local body="${3-}"
   local out="${TMP_DIR}/response.json"
   local code
-  local -a args=(-sS -o "$out" -w '%{http_code}' -X "$method" -H 'Accept: application/json')
+  local -a args=(-sS -o "$out" -w '%{http_code}' -X "$method" -H 'Accept: application/json' -b "$COOKIE_JAR" -c "$COOKIE_JAR")
 
-  if [[ -n "${AUTH_TOKEN:-}" ]]; then
-    args+=(-H "Authorization: Bearer ${AUTH_TOKEN}")
+  if [[ "$method" =~ ^(POST|PATCH|DELETE)$ ]] && [[ "$url" != */auth/login && "$url" != */auth/refresh ]]; then
+    local csrf
+    csrf="$(csrf_token || true)"
+    [[ -n "$csrf" ]] || fail "Missing CSRF cookie before ${method} ${url}"
+    args+=(-H "X-CSRF-Token: ${csrf}")
   fi
   if [[ $# -ge 3 ]]; then
     args+=(-H 'Content-Type: application/json' --data "$body")
@@ -142,6 +145,10 @@ request() {
     return 1
   fi
   cat "$out"
+}
+
+csrf_token() {
+  awk '$6 == "autvid_csrf" { value = $7 } END { if (value != "") print value }' "$COOKIE_JAR"
 }
 
 wait_url() {
@@ -326,7 +333,7 @@ case "$COMPOSE_MODE" in
 esac
 
 TMP_DIR="$(mktemp -d)"
-AUTH_TOKEN=""
+COOKIE_JAR="${TMP_DIR}/cookies.txt"
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -342,8 +349,10 @@ import sys
 print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}, separators=(",", ":")))
 PY
 )"
-AUTH_TOKEN="$(request POST "${API_URL}/auth/login" "$login_body" | json_get access_token)"
-[[ -n "$AUTH_TOKEN" ]] || fail "Login response did not include an access token"
+login_response="$(request POST "${API_URL}/auth/login" "$login_body")"
+login_user="$(printf '%s' "$login_response" | json_get username)"
+[[ "$login_user" == "$ADMIN_USERNAME" ]] || fail "Login response did not include the expected username"
+[[ -n "$(csrf_token || true)" ]] || fail "Login did not set the CSRF cookie"
 log "Authenticated as ${ADMIN_USERNAME}"
 
 if [[ -n "${SMOKE_VIDEO_PATH:-}" ]]; then
@@ -386,7 +395,9 @@ log "Initial upload quote succeeded"
 
 upload_response="$(
   curl -fsS \
-    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -b "$COOKIE_JAR" \
+    -c "$COOKIE_JAR" \
+    -H "X-CSRF-Token: $(csrf_token)" \
     -F "file=@${VIDEO_PATH}" \
     -F "title=Smoke $(date -u +%Y%m%dT%H%M%SZ)" \
     -F "description=Automated local smoke test" \

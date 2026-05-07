@@ -21,9 +21,14 @@ use crate::{
 
 const ADMIN_AUTH_COOKIE: &str = "autvid_admin";
 const ADMIN_REFRESH_COOKIE: &str = "autvid_admin_refresh";
+pub(crate) const ADMIN_CSRF_COOKIE: &str = "autvid_csrf";
+pub(crate) const ADMIN_CSRF_HEADER: &str = "x-csrf-token";
 const ADMIN_AUTH_COOKIE_PATH: &str = "/api";
 const ADMIN_REFRESH_COOKIE_PATH: &str = "/api/auth";
+// The SPA reads this double-submit value from document.cookie on pages such as /manage.
+const ADMIN_CSRF_COOKIE_PATH: &str = "/";
 const REFRESH_TOKEN_BYTES: usize = 32;
+const CSRF_TOKEN_BYTES: usize = 32;
 
 #[derive(Serialize, Deserialize)]
 struct Claims {
@@ -43,8 +48,6 @@ pub(crate) struct LoginRequest {
 
 #[derive(Serialize)]
 pub(crate) struct AuthTokenOut {
-    access_token: String,
-    token_type: &'static str,
     expires_at: String,
     refresh_token_expires_at: String,
     username: String,
@@ -87,8 +90,6 @@ pub(crate) async fn login(
     Ok((
         headers,
         Json(AuthTokenOut {
-            access_token: access.token,
-            token_type: "bearer",
             expires_at: access.expires_at.to_rfc3339(),
             refresh_token_expires_at: refresh.expires_at.to_rfc3339(),
             username: state.config.admin_username.clone(),
@@ -109,8 +110,6 @@ pub(crate) async fn refresh(
     Ok((
         headers,
         Json(AuthTokenOut {
-            access_token: access.token,
-            token_type: "bearer",
             expires_at: access.expires_at.to_rfc3339(),
             refresh_token_expires_at: refresh.expires_at.to_rfc3339(),
             username: state.config.admin_username.clone(),
@@ -130,6 +129,7 @@ pub(crate) async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(HeaderMap, StatusCode), ApiError> {
+    require_csrf(&headers)?;
     if let Some(refresh_token) = refresh_cookie_token(&headers) {
         revoke_refresh_session(&state, refresh_token).await?;
     }
@@ -153,6 +153,17 @@ pub(crate) fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<Str
         return Err(ApiError::unauthorized("Invalid or expired login"));
     }
     Ok(claims.sub)
+}
+
+pub(crate) fn require_csrf(headers: &HeaderMap) -> Result<(), ApiError> {
+    let cookie = csrf_cookie_token(headers)
+        .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "CSRF token required"))?;
+    let header = csrf_header_token(headers)
+        .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "CSRF token required"))?;
+    if !constant_time_eq(cookie, header) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "CSRF token mismatch"));
+    }
+    Ok(())
 }
 
 fn issue_access_token(state: &AppState) -> Result<IssuedAccessToken, ApiError> {
@@ -351,6 +362,7 @@ fn auth_success_headers(
     refresh: &IssuedRefreshToken,
 ) -> Result<HeaderMap, ApiError> {
     let same_site = state.config.admin_auth_cookie_same_site();
+    let csrf_token = generate_csrf_token();
     let mut headers = HeaderMap::new();
     headers.append(
         header::SET_COOKIE,
@@ -369,6 +381,16 @@ fn auth_success_headers(
             ADMIN_REFRESH_COOKIE,
             &refresh.token,
             ADMIN_REFRESH_COOKIE_PATH,
+            cookie_max_age_seconds(refresh.expires_at),
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    headers.append(
+        header::SET_COOKIE,
+        csrf_cookie_header(
+            &csrf_token,
+            ADMIN_CSRF_COOKIE_PATH,
             cookie_max_age_seconds(refresh.expires_at),
             state.config.admin_auth_cookie_secure,
             same_site,
@@ -394,6 +416,15 @@ fn expired_auth_cookie_headers(state: &AppState) -> Result<HeaderMap, ApiError> 
         expired_auth_cookie_header(
             ADMIN_REFRESH_COOKIE,
             ADMIN_REFRESH_COOKIE_PATH,
+            state.config.admin_auth_cookie_secure,
+            same_site,
+        )?,
+    );
+    headers.append(
+        header::SET_COOKIE,
+        expired_plain_cookie_header(
+            ADMIN_CSRF_COOKIE,
+            ADMIN_CSRF_COOKIE_PATH,
             state.config.admin_auth_cookie_secure,
             same_site,
         )?,
@@ -429,6 +460,26 @@ fn auth_cookie_header(
     })
 }
 
+fn csrf_cookie_header(
+    token: &str,
+    path: &str,
+    max_age_seconds: i64,
+    secure: bool,
+    same_site: AuthCookieSameSite,
+) -> Result<HeaderValue, ApiError> {
+    let secure_attribute = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{ADMIN_CSRF_COOKIE}={token}; SameSite={}; Path={path}; Max-Age={max_age_seconds}{secure_attribute}",
+        same_site.as_cookie_value()
+    ))
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not create {ADMIN_CSRF_COOKIE} cookie: {err}"),
+        )
+    })
+}
+
 fn expired_auth_cookie_header(
     cookie_name: &str,
     path: &str,
@@ -446,6 +497,43 @@ fn expired_auth_cookie_header(
             format!("Could not clear {cookie_name} cookie: {err}"),
         )
     })
+}
+
+fn expired_plain_cookie_header(
+    cookie_name: &str,
+    path: &str,
+    secure: bool,
+    same_site: AuthCookieSameSite,
+) -> Result<HeaderValue, ApiError> {
+    let secure_attribute = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{cookie_name}=; SameSite={}; Path={path}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT{secure_attribute}",
+        same_site.as_cookie_value()
+    ))
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not clear {cookie_name} cookie: {err}"),
+        )
+    })
+}
+
+fn generate_csrf_token() -> String {
+    let mut bytes = [0u8; CSRF_TOKEN_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub(crate) fn csrf_cookie_token(headers: &HeaderMap) -> Option<&str> {
+    named_cookie_token(headers, ADMIN_CSRF_COOKIE)
+}
+
+pub(crate) fn csrf_header_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(ADMIN_CSRF_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
 }
 
 #[cfg(test)]

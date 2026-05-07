@@ -1,7 +1,6 @@
 import { act } from "react";
 import { vi } from "vitest";
 import {
-  AUTH_STORAGE_KEY,
   axios,
   click,
   container,
@@ -9,13 +8,14 @@ import {
   findCheckbox,
   flushPromises,
   renderApp,
+  setAuthenticatedCookies,
   setupGetRoutes,
   text,
 } from "./testUtils";
 
 test("shows an upload quote after local video metadata is available", async () => {
   vi.useFakeTimers();
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   setupGetRoutes();
 
   const realCreateElement = document.createElement.bind(document);
@@ -39,14 +39,17 @@ test("shows an upload quote after local video metadata is available", async () =
   });
 
   axios.post.mockImplementation((url, body, config) => {
-    if (url === "/api/videos/upload/quote") {
+    if (url === "/auth/refresh") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/videos/upload/quote") {
       expect(body).toEqual({
         duration_seconds: 64,
         resolutions: ["1080p", "720p", "540p", "480p", "360p", "240p", "144p"],
         source_height: 1080,
         source_width: 1920,
       });
-      expect(config.headers).toEqual({ Authorization: "Bearer stored-token" });
+      expect(config.signal).toBeDefined();
       return Promise.resolve({
         data: {
           estimated_bytes: 5120,
@@ -86,7 +89,7 @@ test("shows an upload quote after local video metadata is available", async () =
 
 test("sends original-source and auto-publish options with an upload", async () => {
   vi.useFakeTimers();
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   setupGetRoutes();
 
   const realCreateElement = document.createElement.bind(document);
@@ -111,7 +114,10 @@ test("sends original-source and auto-publish options with an upload", async () =
 
   let uploadedForm;
   axios.post.mockImplementation((url, body) => {
-    if (url === "/api/videos/upload/quote") {
+    if (url === "/auth/refresh") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/videos/upload/quote") {
       expect(body).toMatchObject({
         duration_seconds: 12,
         upload_original: true,
@@ -129,7 +135,7 @@ test("sends original-source and auto-publish options with an upload", async () =
         },
       });
     }
-    if (url === "/api/videos/upload") {
+    if (url === "/videos/upload") {
       uploadedForm = body;
       return Promise.resolve({
         data: {
@@ -172,7 +178,7 @@ test("sends original-source and auto-publish options with an upload", async () =
 
 test("shows quote and upload errors without clearing the selected source", async () => {
   vi.useFakeTimers();
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   setupGetRoutes();
 
   const realCreateElement = document.createElement.bind(document);
@@ -197,7 +203,10 @@ test("shows quote and upload errors without clearing the selected source", async
 
   let quoteAttempts = 0;
   axios.post.mockImplementation((url, body, config) => {
-    if (url === "/api/videos/upload/quote") {
+    if (url === "/auth/refresh") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/videos/upload/quote") {
       quoteAttempts += 1;
       if (quoteAttempts === 1) {
         return Promise.reject({ response: { data: { detail: "Quote service unavailable" } } });
@@ -213,7 +222,7 @@ test("shows quote and upload errors without clearing the selected source", async
         },
       });
     }
-    if (url === "/api/videos/upload") {
+    if (url === "/videos/upload") {
       config.onUploadProgress({ loaded: 5, total: 10 });
       return Promise.reject({ response: { data: { detail: "Upload disk full" } } });
     }

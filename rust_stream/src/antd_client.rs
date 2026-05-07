@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use bytes::Bytes;
 use serde::Deserialize;
 
 #[derive(Clone)]
 pub(crate) struct AntdRestClient {
     base_url: String,
     client: reqwest::Client,
+    internal_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -21,13 +23,14 @@ struct AntdPublicDataResponse {
 }
 
 impl AntdRestClient {
-    pub(crate) fn new(base_url: &str) -> anyhow::Result<Self> {
+    pub(crate) fn new(base_url: &str, internal_token: Option<String>) -> anyhow::Result<Self> {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(60))
                 .build()?,
+            internal_token,
         })
     }
 
@@ -35,7 +38,7 @@ impl AntdRestClient {
         self.get_json("/health").await
     }
 
-    pub(crate) async fn data_get_public(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+    pub(crate) async fn data_get_public(&self, address: &str) -> anyhow::Result<Bytes> {
         match self.data_get_public_raw(address).await {
             Ok(bytes) => return Ok(bytes),
             Err(err) if raw_endpoint_unavailable(&err) => {}
@@ -44,17 +47,18 @@ impl AntdRestClient {
         self.data_get_public_json(address).await
     }
 
-    async fn data_get_public_raw(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+    async fn data_get_public_raw(&self, address: &str) -> anyhow::Result<Bytes> {
         self.get_bytes(&format!("/v1/data/public/{}/raw", address.trim()))
             .await
     }
 
-    async fn data_get_public_json(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+    async fn data_get_public_json(&self, address: &str) -> anyhow::Result<Bytes> {
         let payload: AntdPublicDataResponse = self
             .get_json(&format!("/v1/data/public/{}", address.trim()))
             .await?;
         BASE64
             .decode(payload.data)
+            .map(Bytes::from)
             .map_err(|err| anyhow::anyhow!("antd returned invalid base64 public data: {err}"))
     }
 
@@ -63,7 +67,10 @@ impl AntdRestClient {
         T: for<'de> Deserialize<'de>,
     {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client.get(&url).send().await?;
+        let response = self
+            .apply_internal_auth(self.client.get(&url))
+            .send()
+            .await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -74,9 +81,12 @@ impl AntdRestClient {
         response.json::<T>().await.map_err(Into::into)
     }
 
-    async fn get_bytes(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+    async fn get_bytes(&self, path: &str) -> anyhow::Result<Bytes> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client.get(&url).send().await?;
+        let response = self
+            .apply_internal_auth(self.client.get(&url))
+            .send()
+            .await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -84,7 +94,14 @@ impl AntdRestClient {
             anyhow::bail!("GET {path} failed: {status} {body}");
         }
 
-        Ok(response.bytes().await?.to_vec())
+        Ok(response.bytes().await?)
+    }
+
+    fn apply_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.internal_token.as_deref() {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use serde_json::Value;
 use sqlx::Row;
 
 use crate::{
-    auth::require_admin,
+    auth::{require_admin, require_csrf},
     catalog::get_db_video,
     db::{db_error, parse_video_uuid, set_status},
     errors::ApiError,
@@ -30,6 +30,7 @@ pub(super) async fn quote_video_upload(
     Json(request): Json<UploadQuoteRequest>,
 ) -> Result<Json<UploadQuoteOut>, ApiError> {
     require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     build_upload_quote(&state, request).await.map(Json)
 }
 
@@ -39,6 +40,7 @@ pub(super) async fn upload_video(
     multipart: Multipart,
 ) -> Result<Json<VideoOut>, ApiError> {
     let username = require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     let accepted = accept_upload(&state, &headers, multipart, &username).await?;
     if let Err(err) = schedule_processing_job(&state, &accepted.video_id).await {
         let _ = set_status(&state, &accepted.video_id, STATUS_ERROR, Some(&err.detail)).await;
@@ -56,6 +58,7 @@ pub(super) async fn approve_video(
     headers: HeaderMap,
 ) -> Result<Json<VideoOut>, ApiError> {
     require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     cleanup_expired_approvals(&state).await.map_err(db_error)?;
     let video_uuid = parse_video_uuid(&video_id)?;
 

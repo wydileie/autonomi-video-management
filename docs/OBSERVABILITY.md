@@ -30,6 +30,11 @@ Admin-specific counters:
 | `autvid_admin_jobs_started_total` | Durable admin job attempts started by workers |
 | `autvid_admin_jobs_succeeded_total` | Durable admin jobs completed successfully |
 | `autvid_admin_jobs_failed_total` | Durable admin job attempts that returned an error |
+| `autvid_admin_jobs_queued` | Current queued durable admin jobs |
+| `autvid_admin_jobs_running` | Current running durable admin jobs |
+| `autvid_admin_jobs_failed` | Current failed durable admin jobs |
+| `autvid_admin_jobs_succeeded` | Current succeeded durable admin jobs |
+| `autvid_admin_oldest_queued_job_age_seconds` | Age of the oldest queued durable admin job |
 | `autvid_admin_ffmpeg_runs_total` | FFmpeg rendition runs |
 | `autvid_admin_ffmpeg_duration_ms_total` | Cumulative FFmpeg runtime in milliseconds |
 | `autvid_admin_antd_requests_total` | Outbound requests from `rust_admin` to `antd` |
