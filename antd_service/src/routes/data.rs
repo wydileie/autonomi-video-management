@@ -6,11 +6,12 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::state::{AppState, CostCacheKey};
 
 use super::shared::{
     decode_base64, format_payment_mode, hex_to_address, parse_payment_mode, resolve_data_map,
@@ -23,13 +24,13 @@ pub(super) struct DataRequest {
     payment_mode: Option<String>,
 }
 
-#[derive(Serialize)]
-pub(super) struct DataCostResponse {
-    cost: String,
-    file_size: u64,
-    chunk_count: usize,
-    estimated_gas_cost_wei: String,
-    payment_mode: String,
+#[derive(Clone, Serialize)]
+pub(crate) struct DataCostResponse {
+    pub(crate) cost: String,
+    pub(crate) file_size: u64,
+    pub(crate) chunk_count: usize,
+    pub(crate) estimated_gas_cost_wei: String,
+    pub(crate) payment_mode: String,
 }
 
 #[derive(Serialize)]
@@ -49,7 +50,13 @@ pub(super) async fn data_cost(
     Json(request): Json<DataRequest>,
 ) -> Result<Json<DataCostResponse>, ApiError> {
     let data = decode_base64(&request.data)?;
-    let mode = parse_payment_mode(request.payment_mode.as_deref().unwrap_or("auto"))?;
+    let raw_payment_mode = request.payment_mode.as_deref().unwrap_or("auto");
+    let mode = parse_payment_mode(raw_payment_mode)?;
+    let payment_mode = raw_payment_mode.trim().to_ascii_lowercase();
+    let cache_key = cost_cache_key(&data, &payment_mode);
+    if let Some(cached) = state.cost_cache.get(&cache_key) {
+        return Ok(Json(cached));
+    }
 
     let mut file = NamedTempFile::new()?;
     file.write_all(&data)?;
@@ -60,13 +67,15 @@ pub(super) async fn data_cost(
         .await
         .map_err(|err| ApiError::from_message(err.to_string()))?;
 
-    Ok(Json(DataCostResponse {
+    let response = DataCostResponse {
         cost: estimate.storage_cost_atto,
         file_size: estimate.file_size,
         chunk_count: estimate.chunk_count,
         estimated_gas_cost_wei: estimate.estimated_gas_cost_wei,
         payment_mode: format_payment_mode(estimate.payment_mode),
-    }))
+    };
+    state.cost_cache.insert(cache_key, response.clone());
+    Ok(Json(response))
 }
 
 pub(super) async fn data_put_public(
@@ -139,6 +148,16 @@ fn public_data_raw_response(
         [(header::CONTENT_TYPE, "application/octet-stream")],
         content,
     )
+}
+
+fn cost_cache_key(data: &[u8], payment_mode: &str) -> CostCacheKey {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    CostCacheKey {
+        sha256: hasher.finalize().into(),
+        byte_len: data.len(),
+        payment_mode: payment_mode.to_string(),
+    }
 }
 
 #[cfg(test)]

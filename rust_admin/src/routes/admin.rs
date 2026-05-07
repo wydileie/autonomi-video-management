@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 
 use crate::{
-    auth::require_admin,
+    auth::{require_admin, require_csrf},
     catalog::{
         db_video_to_out, ensure_video_manifest_address, get_db_video, read_catalog_address,
         refresh_local_catalog_from_db,
@@ -66,6 +66,7 @@ pub(super) async fn update_video_visibility(
     Json(request): Json<VideoVisibilityUpdate>,
 ) -> Result<Json<VideoOut>, ApiError> {
     require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     let video_uuid = parse_video_uuid(&video_id)?;
 
     let row = sqlx::query(
@@ -125,6 +126,7 @@ pub(super) async fn update_video_publication(
     Json(request): Json<VideoPublicationUpdate>,
 ) -> Result<Json<VideoOut>, ApiError> {
     require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     let video_uuid = parse_video_uuid(&video_id)?;
     let row = sqlx::query("SELECT status, manifest_address, is_public FROM videos WHERE id=$1")
         .bind(video_uuid)
@@ -204,6 +206,7 @@ pub(super) async fn delete_video(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
     let video_uuid = parse_video_uuid(&video_id)?;
     let deleted =
         sqlx::query("DELETE FROM videos WHERE id=$1 RETURNING job_dir, status, is_public")

@@ -1,10 +1,10 @@
 import {
-  AUTH_STORAGE_KEY,
   axios,
   click,
   container,
   findButton,
   renderApp,
+  setAuthenticatedCookies,
   setupGetRoutes,
   setInputValue,
   text,
@@ -17,12 +17,13 @@ test("formats signed atto token values without a malformed fractional sign", () 
   expect(formatAttoTokens("-5322870000000000000")).toBe("-5.32287 ANT");
 });
 
-test("logs in, stores the admin token, and sends bearer auth on admin requests", async () => {
+test("logs in with cookie-only auth and sends no bearer headers on admin requests", async () => {
   setupGetRoutes();
   axios.post.mockImplementation((url, body) => {
-    if (url === "/api/auth/login") {
+    if (url === "/auth/login") {
       expect(body).toEqual({ username: "admin", password: "secret" });
-      return Promise.resolve({ data: { access_token: "token-123", username: "admin" } });
+      setAuthenticatedCookies();
+      return Promise.resolve({ data: { username: "admin" } });
     }
     return Promise.reject(new Error(`Unexpected POST ${url}`));
   });
@@ -33,33 +34,26 @@ test("logs in, stores the admin token, and sends bearer auth on admin requests",
   await click(findButton("Sign in"));
 
   await waitFor(() => {
-    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBe("token-123");
+    expect(window.localStorage.length).toBe(0);
     expect(text()).toContain("No videos yet. Upload one to build your first stream.");
   });
   expect(text()).toContain("Manage");
   expect(text()).toContain("Upload");
   expect(text()).toContain("Logout");
-  expect(axios.get).toHaveBeenCalledWith(
-    "/api/auth/me",
-    { headers: { Authorization: "Bearer token-123" } },
-  );
-  expect(axios.get).toHaveBeenCalledWith(
-    "/api/admin/videos",
-    { headers: { Authorization: "Bearer token-123" } },
-  );
+  expect(axios.get).toHaveBeenCalledWith("/auth/me");
+  expect(axios.get).toHaveBeenCalledWith("/admin/videos");
 });
 
 test("restores an admin session from the refresh cookie", async () => {
+  setAuthenticatedCookies();
   setupGetRoutes();
   axios.post.mockImplementation((url, body, config) => {
-    if (url === "/api/auth/refresh") {
+    if (url === "/auth/refresh") {
       expect(body).toBeNull();
-      expect(config).toEqual({ withCredentials: true });
+      expect(config).toBeUndefined();
       return Promise.resolve({
         data: {
-          access_token: "fresh-token",
           refresh_token_expires_at: "2026-05-27T12:00:00Z",
-          token_type: "bearer",
           username: "admin",
         },
       });
@@ -70,21 +64,22 @@ test("restores an admin session from the refresh cookie", async () => {
   await renderApp();
 
   await waitFor(() => {
-    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBe("fresh-token");
+    expect(window.localStorage.length).toBe(0);
     expect(text()).toContain("Manage");
     expect(text()).toContain("Upload");
   });
-  expect(axios.get).toHaveBeenCalledWith(
-    "/api/auth/me",
-    { headers: { Authorization: "Bearer fresh-token" } },
-  );
+  expect(axios.get).toHaveBeenCalledWith("/auth/me");
 });
 
 test("logs out through the backend and clears local admin auth", async () => {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "stored-token");
+  setAuthenticatedCookies();
   setupGetRoutes();
-  axios.post.mockImplementation((url) => {
-    if (url === "/api/auth/logout") {
+  axios.post.mockImplementation((url, body) => {
+    if (url === "/auth/refresh") {
+      return Promise.resolve({ data: { username: "admin" } });
+    }
+    if (url === "/auth/logout") {
+      expect(body).toBeNull();
       return Promise.resolve({ data: { ok: true } });
     }
     return Promise.reject(new Error(`Unexpected POST ${url}`));
@@ -94,8 +89,8 @@ test("logs out through the backend and clears local admin auth", async () => {
   await click(findButton("Logout"));
 
   await waitFor(() => {
-    expect(axios.post).toHaveBeenCalledWith("/api/auth/logout", null, { withCredentials: true });
-    expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
+    expect(axios.post).toHaveBeenCalledWith("/auth/logout", null);
+    expect(window.localStorage.length).toBe(0);
     expect(text()).toContain("Login");
   });
   expect(text()).not.toContain("Logout");

@@ -1,85 +1,60 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getCurrentUser, logoutAdmin, refreshAdmin, subscribeAuthRefresh } from "../api/client";
-import { AUTH_STORAGE_KEY } from "../constants";
+import {
+  getCurrentUser,
+  hasCsrfCookie,
+  logoutAdmin,
+  refreshAdmin,
+  subscribeAuthRefresh,
+} from "../api/client";
 import type { AuthState } from "../types";
 
 export default function useAuth(onInvalid?: () => void) {
-  const skipNextRefresh = useRef(false);
   const onInvalidRef = useRef(onInvalid);
   const authRef = useRef<AuthState | null>(null);
-  const [auth, setAuth] = useState<AuthState | null>(() => {
-    const token = window.localStorage.getItem(AUTH_STORAGE_KEY);
-    const initialAuth = token ? { access_token: token, username: "" } : null;
-    authRef.current = initialAuth;
-    return initialAuth;
-  });
+  const [auth, setAuth] = useState<AuthState | null>(null);
 
   useEffect(() => {
     onInvalidRef.current = onInvalid;
   }, [onInvalid]);
 
-  useEffect(() => {
-    authRef.current = auth;
-  }, [auth]);
+  const applyAuth = useCallback(async (nextAuth: AuthState) => {
+    const currentUser = await getCurrentUser();
+    const merged = { ...nextAuth, username: currentUser.username };
+    authRef.current = merged;
+    setAuth(merged);
+  }, []);
 
   useEffect(() => subscribeAuthRefresh((nextAuth) => {
     if (nextAuth) {
-      const refreshedAuth = {
-        ...nextAuth,
-        username: nextAuth.username || authRef.current?.username || "",
-      };
-      skipNextRefresh.current = false;
-      authRef.current = refreshedAuth;
-      setAuth(refreshedAuth);
+      authRef.current = nextAuth;
+      setAuth(nextAuth);
       return;
     }
 
-    const hadAuth = !!authRef.current?.access_token;
-    skipNextRefresh.current = true;
+    const hadAuth = !!authRef.current;
     authRef.current = null;
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
     setAuth(null);
     if (hadAuth) onInvalidRef.current?.();
   }), []);
 
   useEffect(() => {
-    if (!auth?.access_token && skipNextRefresh.current) {
-      skipNextRefresh.current = false;
-      return undefined;
-    }
-
     let active = true;
 
     async function restoreOrValidate() {
-      const applyAuth = async (nextAuth: AuthState) => {
-        const currentUser = await getCurrentUser(nextAuth.access_token);
-        if (active) {
-          setAuth({ ...nextAuth, username: currentUser.username });
-        }
-      };
-
+      if (!hasCsrfCookie()) {
+        authRef.current = null;
+        setAuth(null);
+        return;
+      }
       try {
-        if (auth?.access_token) {
-          await applyAuth(auth);
-        } else {
-          await applyAuth(await refreshAdmin());
-        }
+        const nextAuth = await refreshAdmin();
+        if (!active) return;
+        await applyAuth(nextAuth);
       } catch {
-        if (auth?.access_token) {
-          try {
-            await applyAuth(await refreshAdmin());
-            return;
-          } catch {
-            // Fall through to clearing stale local bearer state.
-          }
-        }
-        window.localStorage.removeItem(AUTH_STORAGE_KEY);
-        if (active) {
-          authRef.current = null;
-          setAuth(null);
-          if (auth?.access_token) onInvalidRef.current?.();
-        }
+        if (!active) return;
+        authRef.current = null;
+        setAuth(null);
       }
     }
 
@@ -88,15 +63,13 @@ export default function useAuth(onInvalid?: () => void) {
     return () => {
       active = false;
     };
-  }, [auth?.access_token]);
+  }, [applyAuth]);
 
-  const login = useCallback((nextAuth: AuthState) => {
-    authRef.current = nextAuth;
-    setAuth(nextAuth);
-  }, []);
+  const login = useCallback(async (nextAuth: AuthState) => {
+    await applyAuth(nextAuth);
+  }, [applyAuth]);
 
   const logout = useCallback(() => {
-    skipNextRefresh.current = true;
     authRef.current = null;
     logoutAdmin().catch(() => {});
     setAuth(null);

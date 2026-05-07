@@ -12,7 +12,7 @@ use tracing::{info, info_span, Span};
 
 use crate::client::{connect_client, init_logging};
 use crate::config::Config;
-use crate::state::AppState;
+use crate::state::{AppState, CostCache};
 
 mod client;
 mod config;
@@ -31,6 +31,10 @@ async fn main() -> anyhow::Result<()> {
         client,
         network: config.network.clone(),
         metrics: Arc::new(HttpMetrics::default()),
+        cost_cache: Arc::new(CostCache::new(
+            config.cost_cache_ttl,
+            config.cost_cache_max_entries,
+        )),
     };
     let service_metrics = state.metrics.clone();
     let app = routes::router(state, &config)

@@ -54,22 +54,13 @@ groups:
           description: "{{ $value }} admin job attempts failed in the last 15 minutes."
 
       - alert: AutvidAdminJobsLikelyStuck
-        expr: |
-          (
-            increase(autvid_admin_jobs_started_total[1h])
-            - increase(autvid_admin_jobs_succeeded_total[1h])
-            - increase(autvid_admin_jobs_failed_total[1h])
-          ) > 0
-          and
-          increase(autvid_admin_jobs_succeeded_total[30m]) == 0
-          and
-          increase(autvid_admin_jobs_failed_total[30m]) == 0
+        expr: autvid_admin_oldest_queued_job_age_seconds > 1800
         for: 15m
         labels:
           severity: warning
         annotations:
           summary: "Admin jobs may be stuck"
-          description: "Jobs started in the last hour, but no jobs have succeeded or failed in the last 30 minutes."
+          description: "The oldest queued admin job has waited more than 30 minutes."
 
       - alert: AutvidAdminAntdErrorRateHigh
         expr: |

@@ -8,7 +8,26 @@ export default defineConfig({
   envPrefix: ["VITE_", "REACT_APP_"],
   plugins: [react()],
   test: {
+    coverage: {
+      exclude: [
+        "build/**",
+        "dist/**",
+        "public/**",
+        "src/__tests__/**",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx",
+      ],
+      include: ["src/**/*.{ts,tsx}"],
+      provider: "v8",
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 70,
+        statements: 70,
+      },
+    },
     environment: "jsdom",
+    exclude: ["e2e/**", "node_modules/**", "build/**", "dist/**"],
     globals: true,
   },
 });

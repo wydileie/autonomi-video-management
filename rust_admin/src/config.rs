@@ -38,6 +38,7 @@ impl AuthCookieSameSite {
 pub(crate) struct Config {
     pub(crate) db_dsn: String,
     pub(crate) antd_url: String,
+    pub(crate) antd_internal_token: Option<String>,
     pub(crate) antd_payment_mode: String,
     pub(crate) antd_metadata_payment_mode: String,
     pub(crate) admin_username: String,
@@ -265,6 +266,10 @@ impl Config {
         Ok(Self {
             db_dsn,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
+            antd_internal_token: env::var("ANTD_INTERNAL_TOKEN")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             antd_payment_mode,
             antd_metadata_payment_mode,
             admin_username,
@@ -361,6 +366,7 @@ pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
             header::CONTENT_TYPE,
             header::RANGE,
             HeaderName::from_static("x-request-id"),
+            HeaderName::from_static("x-csrf-token"),
         ])
         .allow_credentials(true)
         .expose_headers([HeaderName::from_static("x-request-id")]))

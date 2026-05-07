@@ -1,14 +1,18 @@
 import { afterEach, expect, test, vi } from "vitest";
 
-import { AUTH_STORAGE_KEY } from "../constants";
 import type { AuthState } from "../types";
 
+type FulfilledInterceptor = (config: Record<string, unknown>) => Record<string, unknown>;
 type RejectedInterceptor = (error: unknown) => Promise<unknown>;
 
 type MockAxios = {
+  create: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
   get: ReturnType<typeof vi.fn>;
   interceptors: {
+    request: {
+      use: ReturnType<typeof vi.fn>;
+    };
     response: {
       use: ReturnType<typeof vi.fn>;
     };
@@ -31,11 +35,18 @@ function deferred<T>() {
 
 async function loadClient() {
   vi.resetModules();
+  let requestInterceptor: FulfilledInterceptor | null = null;
   let rejectedInterceptor: RejectedInterceptor | null = null;
   const axiosMock: MockAxios = {
+    create: vi.fn(),
     delete: vi.fn(),
     get: vi.fn(),
     interceptors: {
+      request: {
+        use: vi.fn((onFulfilled) => {
+          requestInterceptor = onFulfilled;
+        }),
+      },
       response: {
         use: vi.fn((_onFulfilled, onRejected) => {
           rejectedInterceptor = onRejected;
@@ -47,11 +58,13 @@ async function loadClient() {
     post: vi.fn(),
     request: vi.fn(),
   };
+  axiosMock.create.mockReturnValue(axiosMock);
 
   vi.doMock("axios", () => ({ default: axiosMock }));
   const client = await import("../api/client");
+  if (!requestInterceptor) throw new Error("API client did not install a request interceptor");
   if (!rejectedInterceptor) throw new Error("API client did not install a response interceptor");
-  return { axiosMock, client, rejectedInterceptor };
+  return { axiosMock, client, rejectedInterceptor, requestInterceptor };
 }
 
 afterEach(() => {
@@ -59,71 +72,96 @@ afterEach(() => {
   vi.resetModules();
   vi.doUnmock("axios");
   window.localStorage.clear();
+  document.cookie = "autvid_csrf=; Max-Age=0; path=/";
 });
 
-test("shares one refresh across concurrent 401s and replaces stale retry headers", async () => {
+test("creates a cookie-only axios client with timeout and credentials", async () => {
+  const { axiosMock } = await loadClient();
+
+  expect(axiosMock.create).toHaveBeenCalledWith({
+    baseURL: "/api",
+    timeout: 60_000,
+    withCredentials: true,
+  });
+});
+
+test("adds CSRF to unsafe non-login requests without adding Authorization", async () => {
+  const { requestInterceptor } = await loadClient();
+  document.cookie = "autvid_csrf=csrf-123; path=/";
+
+  const config = requestInterceptor({
+    headers: {},
+    method: "post",
+    url: "/videos/upload",
+  });
+
+  expect(config.headers).toMatchObject({ "X-CSRF-Token": "csrf-123" });
+  expect(config.headers).not.toHaveProperty("Authorization");
+  expect(requestInterceptor({ method: "post", url: "/auth/login" })).not.toHaveProperty(
+    "headers",
+  );
+});
+
+test("shares one refresh across concurrent 401s and retries without bearer headers", async () => {
   const { axiosMock, rejectedInterceptor } = await loadClient();
   const refresh = deferred<{ data: AuthState }>();
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "old-token");
   axiosMock.post.mockReturnValue(refresh.promise);
   axiosMock.request.mockImplementation((config) => Promise.resolve({ data: { url: config.url } }));
 
   const first = rejectedInterceptor({
     config: {
-      headers: { Authorization: "Bearer old-token" },
+      headers: {},
       method: "get",
-      url: "/api/admin/videos",
+      url: "/admin/videos",
     },
     response: { status: 401 },
   });
   const second = rejectedInterceptor({
     config: {
-      headers: { Authorization: "Bearer old-token" },
+      headers: {},
       method: "get",
-      url: "/api/admin/videos/vid-1",
+      url: "/admin/videos/vid-1",
     },
     response: { status: 401 },
   });
 
   expect(axiosMock.post).toHaveBeenCalledTimes(1);
-  expect(axiosMock.post).toHaveBeenCalledWith("/api/auth/refresh", null, { withCredentials: true });
+  expect(axiosMock.post).toHaveBeenCalledWith("/auth/refresh", null);
 
-  refresh.resolve({ data: { access_token: "fresh-token", username: "admin" } });
+  refresh.resolve({ data: { username: "admin" } });
 
-  await expect(first).resolves.toEqual({ data: { url: "/api/admin/videos" } });
-  await expect(second).resolves.toEqual({ data: { url: "/api/admin/videos/vid-1" } });
-  expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBe("fresh-token");
+  await expect(first).resolves.toEqual({ data: { url: "/admin/videos" } });
+  await expect(second).resolves.toEqual({ data: { url: "/admin/videos/vid-1" } });
+  expect(window.localStorage.length).toBe(0);
   expect(axiosMock.request).toHaveBeenCalledTimes(2);
-  expect(axiosMock.request.mock.calls[0][0].headers.Authorization).toBe("Bearer fresh-token");
-  expect(axiosMock.request.mock.calls[1][0].headers.Authorization).toBe("Bearer fresh-token");
+  expect(axiosMock.request.mock.calls[0][0].headers).not.toHaveProperty("Authorization");
+  expect(axiosMock.request.mock.calls[1][0].headers).not.toHaveProperty("Authorization");
 });
 
-test("clears stored auth and notifies listeners when refresh fails", async () => {
+test("notifies listeners when refresh fails", async () => {
   const { axiosMock, client, rejectedInterceptor } = await loadClient();
   const refreshError = new Error("Refresh expired");
   const refreshEvents: Array<AuthState | null> = [];
-  window.localStorage.setItem(AUTH_STORAGE_KEY, "old-token");
   client.subscribeAuthRefresh((auth) => refreshEvents.push(auth));
   axiosMock.post.mockRejectedValue(refreshError);
 
   await expect(rejectedInterceptor({
     config: {
-      headers: { Authorization: "Bearer old-token" },
+      headers: {},
       method: "get",
-      url: "/api/admin/videos",
+      url: "/admin/videos",
     },
     response: { status: 401 },
   })).rejects.toBe(refreshError);
 
-  expect(window.localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
-  expect(refreshEvents).toEqual([null]);
+  expect(refreshEvents).toEqual([null, null]);
   expect(axiosMock.request).not.toHaveBeenCalled();
 });
 
 test("does not refresh recursively for auth endpoint 401s", async () => {
   const { axiosMock, rejectedInterceptor } = await loadClient();
   const authError = {
-    config: { method: "post", url: "/api/auth/refresh" },
+    config: { method: "post", url: "/auth/refresh" },
     response: { status: 401 },
   };
 
@@ -139,14 +177,14 @@ test("retries idempotent reads and upload quote requests after transient errors"
   axiosMock.request.mockResolvedValue({ data: "ok" });
 
   const readRetry = rejectedInterceptor({
-    config: { method: "get", url: "/api/videos" },
+    config: { method: "get", url: "/videos" },
     response: { status: 503 },
   });
   await vi.advanceTimersByTimeAsync(150);
   await expect(readRetry).resolves.toEqual({ data: "ok" });
 
   const quoteRetry = rejectedInterceptor({
-    config: { method: "post", url: "/api/videos/upload/quote" },
+    config: { method: "post", url: "/videos/upload/quote" },
     response: { status: 502 },
   });
   await vi.advanceTimersByTimeAsync(150);
@@ -156,27 +194,27 @@ test("retries idempotent reads and upload quote requests after transient errors"
   expect(axiosMock.request.mock.calls[0][0]).toMatchObject({
     _transientRetryCount: 1,
     method: "get",
-    url: "/api/videos",
+    url: "/videos",
   });
   expect(axiosMock.request.mock.calls[1][0]).toMatchObject({
     _transientRetryCount: 1,
     method: "post",
-    url: "/api/videos/upload/quote",
+    url: "/videos/upload/quote",
   });
 });
 
 test("does not retry file upload, approve, or delete requests after 5xx errors", async () => {
   const { axiosMock, rejectedInterceptor } = await loadClient();
   const uploadError = {
-    config: { method: "post", url: "/api/videos/upload" },
+    config: { method: "post", url: "/videos/upload" },
     response: { status: 503 },
   };
   const approveError = {
-    config: { method: "post", url: "/api/admin/videos/vid-1/approve" },
+    config: { method: "post", url: "/admin/videos/vid-1/approve" },
     response: { status: 503 },
   };
   const deleteError = {
-    config: { method: "delete", url: "/api/admin/videos/vid-1" },
+    config: { method: "delete", url: "/admin/videos/vid-1" },
     response: { status: 503 },
   };
 

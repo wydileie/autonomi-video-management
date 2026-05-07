@@ -1,6 +1,6 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import App from "../App";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,13 +19,23 @@ type SetupGetRoutesOptions = {
   currentUser?: unknown;
 };
 
-const mockAxios = vi.hoisted(() => ({
-  get: vi.fn(),
-  post: vi.fn(),
-  patch: vi.fn(),
-  delete: vi.fn(),
-  isCancel: vi.fn(() => false),
-}));
+const mockAxios = vi.hoisted(() => {
+  const instance = {
+    create: vi.fn(),
+    delete: vi.fn(),
+    get: vi.fn(),
+    interceptors: {
+      request: { use: vi.fn() },
+      response: { use: vi.fn() },
+    },
+    isCancel: vi.fn(() => false),
+    patch: vi.fn(),
+    post: vi.fn(),
+    request: vi.fn(),
+  };
+  instance.create.mockReturnValue(instance);
+  return instance;
+});
 
 const mockHls = vi.hoisted(() => {
   const HlsMock = vi.fn().mockImplementation(() => ({
@@ -47,7 +57,6 @@ vi.mock("hls.js", () => {
   return { default: mockHls };
 });
 
-export const AUTH_STORAGE_KEY = "autvid_admin_token";
 export { mockAxios as axios, mockHls as Hls };
 
 export let container: HTMLDivElement;
@@ -140,17 +149,26 @@ export function setupGetRoutes({
   details = {},
   currentUser = { username: "admin" },
 }: SetupGetRoutesOptions = {}) {
-  mockAxios.get.mockImplementation((url: string, config = {}) => {
-    if (url === "/api/auth/me") {
+  mockAxios.post.mockImplementation((url: string, body: unknown = null) => {
+    const path = normalizeApiPath(url);
+    if (path === "/auth/refresh") {
+      expect(body).toBeNull();
       return Promise.resolve({ data: currentUser });
     }
-    if (url === "/api/videos") {
+    return Promise.reject(new Error(`Unexpected POST ${url}`));
+  });
+  mockAxios.get.mockImplementation((url: string, config = {}) => {
+    const path = normalizeApiPath(url);
+    if (path === "/auth/me") {
+      return Promise.resolve({ data: currentUser });
+    }
+    if (path === "/videos") {
       return Promise.resolve({ data: publicVideos });
     }
-    if (url === "/api/admin/videos") {
+    if (path === "/admin/videos") {
       return Promise.resolve({ data: adminVideos });
     }
-    const detail = details[url];
+    const detail = details[path] ?? details[`/api${path}`];
     if (detail) {
       return Promise.resolve({ data: detail });
     }
@@ -158,10 +176,21 @@ export function setupGetRoutes({
   });
 }
 
+export function setAuthenticatedCookies(csrf = "test-csrf") {
+  document.cookie = `autvid_csrf=${csrf}; path=/`;
+}
+
+export function normalizeApiPath(url: string): string {
+  return url.startsWith("/api/") ? url.slice(4) : url;
+}
+
 // Importing this module registers shared app test setup and teardown hooks.
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  mockAxios.create.mockReturnValue(mockAxios);
+  mockAxios.interceptors.request.use.mockImplementation((onFulfilled) => onFulfilled);
+  mockAxios.interceptors.response.use.mockImplementation((onFulfilled) => onFulfilled);
   window.history.replaceState({}, "", "/");
   mockHls.isSupported.mockReturnValue(false);
   mockHls.mockImplementation(() => ({
@@ -171,6 +200,7 @@ beforeEach(() => {
     on: vi.fn(),
   }));
   window.localStorage.clear();
+  document.cookie = "autvid_csrf=; Max-Age=0; path=/";
   if (!URL.createObjectURL) {
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,

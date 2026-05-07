@@ -17,7 +17,6 @@ import VideoPlayer from "./VideoPlayer";
 
 interface LibraryProps {
   admin?: boolean;
-  token?: string;
 }
 
 interface PlayingState {
@@ -25,7 +24,7 @@ interface PlayingState {
   videoId: string;
 }
 
-export default function Library({ admin = false, token = "" }: LibraryProps) {
+export default function Library({ admin = false }: LibraryProps) {
   const navigate = useNavigate();
   const { videoId: routeVideoId } = useParams<{ videoId?: string }>();
   const detailBasePath = admin ? "/manage" : "/library";
@@ -43,7 +42,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
 
   const load = useCallback(async () => {
     try {
-      const data = await listVideos({ admin, token });
+      const data = await listVideos({ admin });
       setVideos(data);
       setLoadError("");
     } catch (err) {
@@ -51,18 +50,18 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     } finally {
       setLoading(false);
     }
-  }, [admin, token]);
+  }, [admin]);
 
   const loadDetail = useCallback(async (videoId: string) => {
     setDetailError("");
     setActionError("");
     try {
-      const data = await getVideoDetails({ admin, token, videoId });
+      const data = await getVideoDetails({ admin, videoId });
       setDetail(data);
     } catch (err) {
       setDetailError(requestErrorMessage(err, "Could not load video details."));
     }
-  }, [admin, token]);
+  }, [admin]);
 
   useEffect(() => {
     load();
@@ -77,7 +76,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     let active = true;
     setDetailError("");
     setActionError("");
-    getVideoDetails({ admin, token, videoId: routeVideoId })
+    getVideoDetails({ admin, videoId: routeVideoId })
       .then((data) => {
         if (active) setDetail(data);
       })
@@ -91,7 +90,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     return () => {
       active = false;
     };
-  }, [admin, routeVideoId, token]);
+  }, [admin, routeVideoId]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -106,7 +105,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
     const interval = setInterval(async () => {
       try {
-        const data = await getVideoDetails({ admin, token, videoId: activeDetailId });
+        const data = await getVideoDetails({ admin, videoId: activeDetailId });
         setDetail(data);
         setDetailError("");
       } catch (err) {
@@ -114,7 +113,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [activeDetailId, activeDetailStatus, admin, token]);
+  }, [activeDetailId, activeDetailStatus, admin]);
 
   const openDetail = async (videoId: string) => {
     if (routeVideoId === videoId && detail?.id === videoId) {
@@ -133,7 +132,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
     setActionError("");
     try {
-      await deleteVideoRecord(token, videoId);
+      await deleteVideoRecord(videoId);
       setVideos((prev) => prev.filter((video) => video.id !== videoId));
       if (detail?.id === videoId) {
         setDetail(null);
@@ -149,7 +148,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     setApproving(videoId);
     setActionError("");
     try {
-      const data = await approveVideoUpload(token, videoId);
+      const data = await approveVideoUpload(videoId);
       setDetail(data);
       await load();
     } catch (err) {
@@ -164,7 +163,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
   const updateVisibility = async (videoId: string, next: VisibilityUpdate) => {
     setActionError("");
     try {
-      const data = await updateVideoVisibility(token, videoId, next);
+      const data = await updateVideoVisibility(videoId, next);
       setDetail(data);
       setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
     } catch (err) {
@@ -176,7 +175,7 @@ export default function Library({ admin = false, token = "" }: LibraryProps) {
     setPublishing(videoId);
     setActionError("");
     try {
-      const data = await updateVideoPublication(token, videoId, isPublic);
+      const data = await updateVideoPublication(videoId, isPublic);
       setDetail(data);
       setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
     } catch (err) {

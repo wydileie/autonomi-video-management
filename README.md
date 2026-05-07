@@ -73,14 +73,14 @@ The Nginx proxy keeps uploads unlimited at the proxy layer and relies on
 `UPLOAD_MAX_FILE_BYTES` in `rust_admin` for the application limit. It also
 applies standard security headers and rate limits login attempts on
 `/api/auth/login`.
-Admin login continues returning bearer tokens for compatibility and also sets a
-HttpOnly SameSite cookie for browser sessions.
+Admin login sets HttpOnly SameSite access and refresh cookies. Unsafe
+authenticated `/api` requests also require the double-submit `autvid_csrf`
+cookie value in the `X-CSRF-Token` header.
 
-Internal Prometheus-style metrics are exposed on `/api/metrics`,
-`/stream/metrics`, and the internal `antd` gateway `/metrics` endpoint. They
-cover HTTP request counts/latency, admin job counts, FFmpeg runtime, outbound
-`antd` latency, upload retries, and stream segment cache hit/miss/coalescing
-counts.
+Internal Prometheus-style metrics remain available on the service-local
+`/metrics` endpoints. The public Nginx proxy blocks `/api/metrics` and
+`/stream/metrics`; Prometheus should scrape `rust_admin:8000`,
+`rust_stream:8081`, and `antd:8082` on the Compose network.
 
 ---
 
@@ -443,7 +443,7 @@ catalog manifest
 | `GET` | `/metrics` | Internal Prometheus-style metrics |
 | `POST` | `/auth/login` | Sign in as the single admin user |
 | `POST` | `/auth/logout` | Clear the HttpOnly admin cookie |
-| `GET` | `/auth/me` | Validate the current admin bearer token |
+| `GET` | `/auth/me` | Validate the current admin cookie |
 | `POST` | `/videos/upload/quote` | Estimate Autonomi storage and gas cost for selected upload renditions and optional original file |
 | `POST` | `/videos/upload` | Upload video (multipart: `file`, `title`, `description`, `resolutions`, optional `upload_original`, optional `publish_when_ready`) |
 | `GET` | `/videos` | Public list of published ready videos, with filename and manifest address redacted unless enabled |
@@ -459,8 +459,15 @@ catalog manifest
 
 **Upload example:**
 ```bash
+curl -c cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin"}' \
+  http://localhost/api/auth/login
+CSRF_TOKEN="$(awk '$6 == "autvid_csrf" { token = $7 } END { print token }' cookies.txt)"
+
 curl -X POST http://localhost/api/videos/upload \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -F "file=@myvideo.mp4" \
   -F "title=My Video" \
   -F "resolutions=480p,720p" \

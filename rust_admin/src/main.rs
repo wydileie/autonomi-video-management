@@ -61,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         &config.antd_url,
         config.antd_upload_timeout_seconds.max(60.0) + 30.0,
         metrics.clone(),
+        config.antd_internal_token.clone(),
     )?;
     ensure_autonomi_ready(&config, &antd).await?;
 

@@ -5,7 +5,7 @@ import { BRAND_IMAGE } from "../constants";
 import type { AuthState } from "../types";
 
 interface LoginPanelProps {
-  onLogin: (auth: AuthState) => void;
+  onLogin: (auth: AuthState) => void | Promise<void>;
 }
 
 export default function LoginPanel({ onLogin }: LoginPanelProps) {
@@ -20,7 +20,7 @@ export default function LoginPanel({ onLogin }: LoginPanelProps) {
     setError("");
     try {
       const auth = await loginAdmin({ username, password });
-      onLogin(auth);
+      await onLogin(auth);
     } catch (err) {
       setError(requestErrorMessage(err, "Login failed"));
     } finally {
