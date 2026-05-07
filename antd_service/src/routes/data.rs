@@ -99,9 +99,7 @@ pub(super) async fn data_get_public(
     Path(address): Path<String>,
 ) -> Result<Json<DataGetResponse>, ApiError> {
     let content = fetch_public_bytes(&state, &address).await?;
-    Ok(Json(DataGetResponse {
-        data: BASE64.encode(content),
-    }))
+    Ok(public_data_json_response(&content))
 }
 
 pub(super) async fn data_get_public_raw(
@@ -109,10 +107,7 @@ pub(super) async fn data_get_public_raw(
     Path(address): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let content = fetch_public_bytes(&state, &address).await?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        content,
-    ))
+    Ok(public_data_raw_response(content))
 }
 
 async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, ApiError> {
@@ -129,4 +124,42 @@ async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, 
         .await
         .map(|bytes| bytes.to_vec())
         .map_err(|err| ApiError::from_message(err.to_string()))
+}
+
+fn public_data_json_response(content: &[u8]) -> Json<DataGetResponse> {
+    Json(DataGetResponse {
+        data: BASE64.encode(content),
+    })
+}
+
+fn public_data_raw_response(
+    content: Vec<u8>,
+) -> ([(header::HeaderName, &'static str); 1], Vec<u8>) {
+    (
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        content,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+
+    #[tokio::test]
+    async fn raw_public_data_response_matches_json_payload_bytes() {
+        let payload = b"autvid raw bytes \x00\x01\x02".to_vec();
+        let json = public_data_json_response(&payload);
+        let raw = public_data_raw_response(payload.clone()).into_response();
+
+        assert_eq!(raw.status(), StatusCode::OK);
+        assert_eq!(
+            raw.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+        let raw_body = to_bytes(raw.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(raw_body.as_ref(), payload.as_slice());
+        assert_eq!(BASE64.decode(&json.0.data).unwrap(), payload);
+    }
 }

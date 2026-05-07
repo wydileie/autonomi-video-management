@@ -139,13 +139,11 @@ pub(super) async fn update_video_publication(
         .ok()
         .flatten();
     let was_public: bool = row.try_get("is_public").unwrap_or(false);
-    if request.is_public {
-        if status != STATUS_READY {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "Only ready videos can be published",
-            ));
-        }
+    if request.is_public && status != STATUS_READY {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "Only ready videos can be published",
+        ));
     }
 
     let manifest_address = if request.is_public {
