@@ -128,12 +128,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(autvid_http_request_latency_ms_total{service=\"antd_service\"}[$__rate_interval]) / clamp_min(rate(autvid_http_requests_total{service=\"antd_service\"}[$__rate_interval]), 0.001)",
-          "legendFormat": "avg gateway latency",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(autvid_http_request_latency_ms_bucket{service=\"antd_service\"}[$__rate_interval])))",
+          "legendFormat": "p95 gateway latency",
           "refId": "A"
         }
       ],
-      "title": "antd Average Latency",
+      "title": "antd P95 Latency",
       "type": "stat"
     },
     {
@@ -260,8 +260,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(autvid_admin_antd_request_latency_ms_total[$__rate_interval]) / clamp_min(rate(autvid_admin_antd_requests_total[$__rate_interval]), 0.001)",
-          "legendFormat": "admin outbound latency",
+          "expr": "histogram_quantile(0.95, sum by (endpoint, le) (rate(autvid_admin_antd_request_latency_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{endpoint}} p95",
           "refId": "A"
         }
       ],
@@ -411,8 +411,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(autvid_http_request_latency_ms_total{service=\"antd_service\"}[$__rate_interval]) / clamp_min(rate(autvid_http_requests_total{service=\"antd_service\"}[$__rate_interval]), 0.001)",
-          "legendFormat": "antd avg latency",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(autvid_http_request_latency_ms_bucket{service=\"antd_service\"}[$__rate_interval])))",
+          "legendFormat": "antd p95 latency",
           "refId": "A"
         }
       ],

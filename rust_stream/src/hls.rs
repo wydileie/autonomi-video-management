@@ -131,13 +131,8 @@ pub(crate) async fn fetch_segment(
         .variants
         .iter()
         .find(|variant| variant.resolution == resolution)
-        .and_then(|variant| {
-            variant
-                .segments
-                .iter()
-                .find(|segment| segment.segment_index == seg_index)
-        })
-        .map(|segment| segment.autonomi_address.clone())
+        .and_then(|variant| variant.segment_address(seg_index))
+        .map(str::to_string)
         .ok_or_else(|| "segment not found".to_string())?;
 
     fetch_segment_data(state, &segment_address).await
@@ -155,13 +150,8 @@ pub(crate) async fn fetch_segment_from_address(
         .variants
         .iter()
         .find(|variant| variant.resolution == resolution)
-        .and_then(|variant| {
-            variant
-                .segments
-                .iter()
-                .find(|segment| segment.segment_index == seg_index)
-        })
-        .map(|segment| segment.autonomi_address.clone())
+        .and_then(|variant| variant.segment_address(seg_index))
+        .map(str::to_string)
         .ok_or_else(|| "segment not found".to_string())?;
 
     fetch_segment_data(state, &segment_address).await
@@ -292,8 +282,9 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
         .data_get_public(manifest_address)
         .await
         .map_err(|e| format!("Autonomi manifest fetch failed: {e}"))?;
-    let manifest: VideoManifest = serde_json::from_slice(&manifest_bytes)
+    let mut manifest: VideoManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("invalid video manifest JSON: {e}"))?;
+    manifest.index_segments();
 
     if !state.cache_config.manifest_ttl.is_zero() {
         let mut manifests = state.cache.manifests.lock().await;
@@ -311,11 +302,15 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
 
 #[instrument(skip(state), fields(segment_address = %segment_address))]
 async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Bytes, String> {
+    let started = Instant::now();
     loop {
         {
             let mut segments = state.cache.segments.lock().await;
             if let Some(data) = segments.get(segment_address) {
                 state.metrics.record_segment_cache_hit();
+                state
+                    .metrics
+                    .record_segment_fetch_latency("cache_hit", started.elapsed());
                 debug!(cache = "segment", hit = true, "segment cache hit");
                 return Ok(data);
             }
@@ -352,6 +347,9 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<B
                     .lock()
                     .await
                     .remove(segment_address);
+                state
+                    .metrics
+                    .record_segment_fetch_latency("cache_miss", started.elapsed());
                 return result;
             }
         };
@@ -362,6 +360,9 @@ async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<B
         loop {
             let result = receiver.borrow().clone();
             if let Some(result) = result {
+                state
+                    .metrics
+                    .record_segment_fetch_latency("cache_miss", started.elapsed());
                 return result;
             }
             if receiver.changed().await.is_err() {

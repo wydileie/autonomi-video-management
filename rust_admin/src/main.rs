@@ -5,6 +5,7 @@ use std::{
 
 use sqlx::postgres::PgPoolOptions;
 use tokio::{net::TcpListener, sync::Mutex, sync::Semaphore};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -57,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let metrics = Arc::new(metrics::AdminMetrics::default());
+    let shutdown = CancellationToken::new();
     let antd = AntdRestClient::new(
         &config.antd_url,
         config.antd_upload_timeout_seconds.max(60.0) + 30.0,
@@ -74,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
         catalog_publish_lock: Arc::new(Mutex::new(())),
         catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
         upload_save_semaphore: Arc::new(Semaphore::new(config.upload_max_concurrent_saves)),
+        shutdown: shutdown.clone(),
     };
     cleanup_expired_approvals(&state).await?;
     recover_interrupted_jobs(state.clone()).await?;
@@ -84,8 +87,16 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     info!("rust_admin listening on {}", config.bind_addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown))
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal(shutdown: CancellationToken) {
+    autvid_common::shutdown_signal().await;
+    info!("shutdown signal received");
+    shutdown.cancel();
 }
 
 async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow::Result<()> {

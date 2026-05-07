@@ -10,7 +10,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tower-http = { version = "0.5", features = ["cors", "request-id", "timeout", "trace", "util"] }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 # Serialization
 base64 = "0.22"

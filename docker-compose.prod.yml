@@ -1,5 +1,16 @@
 services:
   db:
+    environment:
+      POSTGRES_PASSWORD: !reset null
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_root_password
+      ADMIN_PASS: !reset null
+      ADMIN_PASS_FILE: /run/secrets/admin_db_password
+      BACKUP_PASS: !reset null
+      BACKUP_PASS_FILE: /run/secrets/backup_db_password
+    secrets:
+      - postgres_root_password
+      - admin_db_password
+      - backup_db_password
     deploy:
       resources:
         limits:
@@ -19,8 +30,8 @@ services:
       # For production secret-file use, mount the file with an optional
       # Compose override and set PROD_AUTONOMI_WALLET_KEY_FILE to its
       # in-container path, for example /run/secrets/autonomi_wallet_key.
-      AUTONOMI_WALLET_KEY: "${PROD_AUTONOMI_WALLET_KEY:-}"
-      AUTONOMI_WALLET_KEY_FILE: "${PROD_AUTONOMI_WALLET_KEY_FILE:-}"
+      AUTONOMI_WALLET_KEY: !reset null
+      AUTONOMI_WALLET_KEY_FILE: /run/secrets/autonomi_wallet_key
       ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
       PROD_AUTONOMI_PEERS: "${PROD_AUTONOMI_PEERS:-}"
       ANT_PEERS: "${ANT_PEERS:-}"
@@ -33,7 +44,11 @@ services:
       ANTD_COST_CACHE_MAX_ENTRIES: "${ANTD_COST_CACHE_MAX_ENTRIES:-512}"
       ANTD_QUOTE_TIMEOUT_SECS: "${ANTD_QUOTE_TIMEOUT_SECS:-60}"
       ANTD_STORE_TIMEOUT_SECS: "${ANTD_STORE_TIMEOUT_SECS:-120}"
-      ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:?ANTD_INTERNAL_TOKEN is required in production}"
+      ANTD_INTERNAL_TOKEN: !reset null
+      ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
+      ANTD_CORS_ALLOWED_ORIGINS: "${ANTD_CORS_ALLOWED_ORIGINS:-}"
+      ANTD_FILE_UPLOAD_MAX_BYTES: "${ANTD_FILE_UPLOAD_MAX_BYTES:-21474836480}"
+      ANTD_UPLOAD_TEMP_DIR: "${ANTD_UPLOAD_TEMP_DIR:-/tmp}"
       EVM_NETWORK: "${PROD_EVM_NETWORK:-arbitrum-one}"
       PROD_EVM_RPC_URL: "${PROD_EVM_RPC_URL:-}"
       PROD_EVM_PAYMENT_TOKEN_ADDRESS: "${PROD_EVM_PAYMENT_TOKEN_ADDRESS:-}"
@@ -43,7 +58,7 @@ services:
     networks:
       - appnet
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/livez"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -52,6 +67,9 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    secrets:
+      - antd_internal_token
+      - autonomi_wallet_key
     deploy:
       resources:
         limits:
@@ -69,7 +87,20 @@ services:
     environment:
       APP_ENV: "production"
       ANTD_URL: "http://antd:8082"
+      ADMIN_DB_PASS: !reset null
+      ADMIN_DB_PASS_FILE: /run/secrets/admin_db_password
+      ADMIN_PASSWORD: !reset null
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_login_password
+      ADMIN_AUTH_SECRET: !reset null
+      ADMIN_AUTH_SECRET_FILE: /run/secrets/admin_auth_secret
+      ANTD_INTERNAL_TOKEN: !reset null
+      ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+    secrets:
+      - admin_db_password
+      - admin_login_password
+      - admin_auth_secret
+      - antd_internal_token
     deploy:
       resources:
         limits:
@@ -85,6 +116,10 @@ services:
         condition: service_healthy
     environment:
       ANTD_URL: "http://antd:8082"
+      ANTD_INTERNAL_TOKEN: !reset null
+      ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
+    secrets:
+      - antd_internal_token
     deploy:
       resources:
         limits:
@@ -113,3 +148,19 @@ services:
         reservations:
           cpus: "0.1"
           memory: 128M
+
+secrets:
+  postgres_root_password:
+    file: "${POSTGRES_ROOT_PASSWORD_SECRET_FILE:-./secrets/postgres_root_password}"
+  admin_db_password:
+    file: "${ADMIN_DB_PASSWORD_SECRET_FILE:-./secrets/admin_db_password}"
+  backup_db_password:
+    file: "${BACKUP_DB_PASSWORD_SECRET_FILE:-./secrets/backup_db_password}"
+  admin_login_password:
+    file: "${ADMIN_LOGIN_PASSWORD_SECRET_FILE:-./secrets/admin_login_password}"
+  admin_auth_secret:
+    file: "${ADMIN_AUTH_SECRET_SECRET_FILE:-./secrets/admin_auth_secret}"
+  antd_internal_token:
+    file: "${ANTD_INTERNAL_TOKEN_SECRET_FILE:-./secrets/antd_internal_token}"
+  autonomi_wallet_key:
+    file: "${AUTONOMI_WALLET_KEY_SECRET_FILE:-./secrets/autonomi_wallet_key}"

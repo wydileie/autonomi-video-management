@@ -8,8 +8,9 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
       POSTGRES_DB: "${ADMIN_DB}"
-      POSTGRES_USER: "${ADMIN_USER}"
-      PGPASSWORD: "${ADMIN_PASS}"
+      POSTGRES_USER: "${BACKUP_DB_USER:-autvid_backup}"
+      PGPASSWORD: "${BACKUP_DB_PASS:-autvid_backup_dev_pass}"
+      POSTGRES_PASSWORD_FILE: "${BACKUP_DB_PASS_FILE:-}"
       BACKUP_DIR: /backups
       BACKUP_PREFIX: "${BACKUP_PREFIX:-autvid}"
       BACKUP_SCHEDULE: "${BACKUP_SCHEDULE:-daily@02:00}"
@@ -19,6 +20,8 @@ services:
       BACKUP_CATALOG: "${BACKUP_CATALOG:-true}"
       BACKUP_FILE_OWNER: "${BACKUP_FILE_OWNER:-}"
       BACKUP_DB_WAIT_SECONDS: "${BACKUP_DB_WAIT_SECONDS:-120}"
+      BACKUP_TEXTFILE_DIR: "${BACKUP_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
+      BACKUP_TEXTFILE_NAME: "${BACKUP_TEXTFILE_NAME:-autvid_backup.prom}"
       CATALOG_PATH: /catalog/catalog.json
     depends_on:
       db:
@@ -28,6 +31,7 @@ services:
     volumes:
       - ${BACKUP_HOST_PATH:-./backups}:/backups
       - catalog_state:/catalog:ro
+      - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/var/lib/node_exporter/textfile_collector
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

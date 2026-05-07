@@ -60,7 +60,7 @@ pub(super) async fn file_put_public(
         )));
     }
 
-    let file = NamedTempFile::new()?;
+    let file = NamedTempFile::new_in(&state.upload_temp_dir)?;
     let path = file.path().to_path_buf();
     let mut async_file = tokio::fs::File::from_std(file.reopen()?);
     let mut hasher = Sha256::new();
@@ -69,6 +69,12 @@ pub(super) async fn file_put_public(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| ApiError::bad_request(format!("invalid body: {err}")))?;
         byte_size += chunk.len() as u64;
+        if byte_size > state.file_upload_max_bytes {
+            return Err(ApiError::bad_request(format!(
+                "file exceeds ANTD_FILE_UPLOAD_MAX_BYTES ({})",
+                state.file_upload_max_bytes
+            )));
+        }
         hasher.update(&chunk);
         async_file.write_all(&chunk).await?;
     }
@@ -103,7 +109,7 @@ pub(super) async fn file_put_public(
 
     let mut verified = false;
     if query.verify {
-        let verify_file = NamedTempFile::new()?;
+        let verify_file = NamedTempFile::new_in(&state.upload_temp_dir)?;
         let verify_path = verify_file.path().to_path_buf();
         let downloaded = state
             .client

@@ -1,6 +1,7 @@
+use autvid_common::constant_time_eq;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{header, Request, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -52,6 +53,7 @@ pub(crate) fn router(state: AppState, config: &Config) -> Router {
         ));
 
     Router::new()
+        .route("/livez", get(livez))
         .route("/health", get(health::health))
         .route("/metrics", get(metrics))
         .merge(v1_json_routes)
@@ -67,6 +69,10 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
+async fn livez() -> impl IntoResponse {
+    StatusCode::OK
+}
+
 async fn require_internal_token(
     State(expected): State<Option<String>>,
     request: Request<Body>,
@@ -75,8 +81,16 @@ async fn require_internal_token(
     let Some(expected) = expected else {
         return next.run(request).await;
     };
-    let authorized = request
-        .headers()
+    let authorized = internal_token_authorized(request.headers(), &expected);
+    if authorized {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "internal bearer token required").into_response()
+    }
+}
+
+fn internal_token_authorized(headers: &HeaderMap, expected: &str) -> bool {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| {
@@ -85,10 +99,31 @@ async fn require_internal_token(
                 .or_else(|| value.strip_prefix("bearer "))
         })
         .map(str::trim)
-        .is_some_and(|token| token == expected);
-    if authorized {
-        next.run(request).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "internal bearer token required").into_response()
+        .is_some_and(|token| constant_time_eq(token, expected))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    use super::internal_token_authorized;
+
+    #[test]
+    fn internal_token_auth_rejects_missing_or_wrong_bearer() {
+        let expected = "secret-token";
+        let mut headers = HeaderMap::new();
+        assert!(!internal_token_authorized(&headers, expected));
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer wrong-token"),
+        );
+        assert!(!internal_token_authorized(&headers, expected));
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-token"),
+        );
+        assert!(internal_token_authorized(&headers, expected));
     }
 }

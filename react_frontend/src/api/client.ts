@@ -200,14 +200,35 @@ type RequestErrorShape = {
   response?: {
     data?: {
       detail?: string;
+      request_id?: string;
+      requestId?: string;
     };
+    headers?: RequestErrorHeaders;
   };
 };
+
+type RequestErrorHeaders = Record<string, unknown> & {
+  get?: (name: string) => unknown;
+};
+
+function headerValue(headers: RequestErrorHeaders | undefined, name: string): string {
+  const value = headers?.get?.(name) ?? headers?.[name] ?? headers?.[name.toLowerCase()];
+  return typeof value === "string" ? value : "";
+}
+
+function requestIdFromError(requestError: RequestErrorShape): string {
+  return requestError.response?.data?.request_id
+    || requestError.response?.data?.requestId
+    || headerValue(requestError.response?.headers, "x-request-id")
+    || headerValue(requestError.response?.headers, "X-Request-ID");
+}
 
 export function requestErrorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === "object") {
     const requestError = err as RequestErrorShape;
-    return requestError.response?.data?.detail || requestError.message || fallback;
+    const message = requestError.response?.data?.detail || requestError.message || fallback;
+    const requestId = requestIdFromError(requestError);
+    return requestId ? `${message} (request ${requestId})` : message;
   }
   return fallback;
 }

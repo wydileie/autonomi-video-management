@@ -7,6 +7,7 @@
 
 use std::{env, path::PathBuf, sync::Arc, time::Duration as StdDuration};
 
+use autvid_common::{secret_env, shutdown_signal as wait_for_shutdown_signal};
 use axum::http::{header, HeaderName, Method, Request, Response};
 use tower_http::{
     cors::CorsLayer,
@@ -39,10 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let antd_url = env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into());
-    let antd_internal_token = env::var("ANTD_INTERNAL_TOKEN")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let antd_internal_token = secret_env("ANTD_INTERNAL_TOKEN", "ANTD_INTERNAL_TOKEN_FILE")?;
     let catalog_state_path = env::var("CATALOG_STATE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/video_catalog/catalog.json"));
@@ -128,9 +126,16 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = "0.0.0.0:8081";
     info!("Listening on {}", bind_addr);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    wait_for_shutdown_signal().await;
+    info!("shutdown signal received");
 }
 
 #[cfg(test)]
@@ -230,6 +235,7 @@ mod tests {
                         duration: 4.4,
                     },
                 ],
+                segments_by_index: Vec::new(),
             }],
         }
     }

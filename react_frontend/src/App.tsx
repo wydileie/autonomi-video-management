@@ -10,6 +10,7 @@ import {
 } from "react-router-dom";
 
 import "./App.css";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Library from "./components/Library";
 import LoginPanel from "./components/LoginPanel";
 import UploadPanel from "./components/UploadPanel";
@@ -110,8 +111,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <AppRoutes />
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <AppRoutes />
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

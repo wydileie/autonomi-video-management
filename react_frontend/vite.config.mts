@@ -4,6 +4,17 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   build: {
     outDir: "build",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("hls.js")) return "hls";
+          if (id.includes("react-router")) return "router";
+          if (id.includes("/react/") || id.includes("/react-dom/")) return "react";
+          return "vendor";
+        },
+      },
+    },
   },
   envPrefix: ["VITE_", "REACT_APP_"],
   plugins: [react()],

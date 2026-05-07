@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::atomic::Ordering, time::Duration as StdDurati
 
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
-use sqlx::Row;
+use sqlx::{postgres::PgListener, Row};
 use tokio::time::sleep;
 use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
@@ -34,13 +34,30 @@ pub(crate) fn start_job_workers(state: &AppState) {
 }
 
 async fn job_worker_loop(state: AppState, worker_id: String) {
+    let mut listener = job_listener(&state, &worker_id).await;
     loop {
+        if state.shutdown.is_cancelled() {
+            info!("Worker {} stopping after shutdown signal", worker_id);
+            break;
+        }
         match acquire_next_job(&state, &worker_id).await {
             Ok(Some(job)) => {
                 let kind = job.kind;
                 let job_id = job.id;
                 state.metrics.record_job_started();
-                let result = run_leased_job(&state, &job).await;
+                let result = tokio::select! {
+                    result = run_leased_job(&state, &job) => result,
+                    _ = state.shutdown.cancelled() => {
+                        if let Err(err) = mark_job_interrupted(&state, job_id, &worker_id).await {
+                            warn!(
+                                "Worker {} could not release {:?} job {} during shutdown: {}",
+                                worker_id, kind, job_id, err.detail
+                            );
+                        }
+                        info!("Worker {} released {:?} job {} during shutdown", worker_id, kind, job_id);
+                        break;
+                    }
+                };
                 match result {
                     Ok(()) => {
                         state.metrics.record_job_succeeded();
@@ -68,18 +85,55 @@ async fn job_worker_loop(state: AppState, worker_id: String) {
                 }
             }
             Ok(None) => {
-                sleep(StdDuration::from_secs(
-                    state.config.admin_job_poll_interval_seconds,
-                ))
-                .await;
+                wait_for_job_signal(&state, &worker_id, &mut listener).await;
             }
             Err(err) => {
                 warn!("Worker {} could not lease a job: {}", worker_id, err.detail);
-                sleep(StdDuration::from_secs(
-                    state.config.admin_job_poll_interval_seconds,
-                ))
-                .await;
+                wait_for_job_signal(&state, &worker_id, &mut listener).await;
             }
+        }
+    }
+}
+
+async fn job_listener(state: &AppState, worker_id: &str) -> Option<PgListener> {
+    match PgListener::connect(&state.config.db_dsn).await {
+        Ok(mut listener) => match listener.listen("autvid_jobs").await {
+            Ok(()) => Some(listener),
+            Err(err) => {
+                warn!(
+                    "Worker {} could not LISTEN for job notifications: {}",
+                    worker_id, err
+                );
+                None
+            }
+        },
+        Err(err) => {
+            warn!(
+                "Worker {} could not connect job notification listener: {}",
+                worker_id, err
+            );
+            None
+        }
+    }
+}
+
+async fn wait_for_job_signal(state: &AppState, worker_id: &str, listener: &mut Option<PgListener>) {
+    let poll_delay = StdDuration::from_secs(state.config.admin_job_poll_interval_seconds);
+    if let Some(active_listener) = listener.as_mut() {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {},
+            _ = sleep(poll_delay) => {},
+            notification = active_listener.recv() => {
+                if let Err(err) = notification {
+                    warn!("Worker {} job notification listener failed: {}", worker_id, err);
+                    *listener = None;
+                }
+            }
+        }
+    } else {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {},
+            _ = sleep(poll_delay) => {},
         }
     }
 }
@@ -111,7 +165,9 @@ pub(super) async fn acquire_next_job(
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
-        RETURNING id, job_kind, video_id, attempts, max_attempts
+        RETURNING id, job_kind, video_id, attempts, max_attempts,
+            GREATEST(EXTRACT(EPOCH FROM (NOW() - run_after)) * 1000, 0)::double precision
+                AS pickup_latency_ms
         "#,
     )
     .bind(JOB_STATUS_RUNNING)
@@ -126,6 +182,14 @@ pub(super) async fn acquire_next_job(
         return Ok(None);
     };
     let id: Uuid = row.try_get("id").map_err(db_error)?;
+    let pickup_latency_ms = row
+        .try_get::<f64, _>("pickup_latency_ms")
+        .ok()
+        .unwrap_or(0.0)
+        .max(0.0) as u64;
+    state
+        .metrics
+        .record_job_pickup_latency(StdDuration::from_millis(pickup_latency_ms));
     let kind_raw: String = row.try_get("job_kind").map_err(db_error)?;
     let kind = JobKind::parse(&kind_raw).ok_or_else(|| {
         ApiError::new(
@@ -266,6 +330,34 @@ async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiErr
     )
     .bind(JOB_STATUS_SUCCEEDED)
     .bind(job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+#[instrument(skip(state, worker_id), fields(job_id = %job_id))]
+async fn mark_job_interrupted(
+    state: &AppState,
+    job_id: Uuid,
+    worker_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        UPDATE video_jobs
+        SET status=$1,
+            lease_owner=NULL,
+            lease_expires_at=NULL,
+            run_after=NOW(),
+            last_error='Interrupted by graceful shutdown; job was requeued.',
+            updated_at=NOW()
+        WHERE id=$2 AND status=$3 AND lease_owner=$4
+        "#,
+    )
+    .bind(JOB_STATUS_QUEUED)
+    .bind(job_id)
+    .bind(JOB_STATUS_RUNNING)
+    .bind(worker_id)
     .execute(&state.pool)
     .await
     .map_err(db_error)?;

@@ -9,7 +9,7 @@ use std::{
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
-use sqlx::Row;
+use sqlx::{Postgres, QueryBuilder, Row};
 use tokio::{fs as tokio_fs, sync::Semaphore, task::JoinSet};
 use tracing::{info, instrument};
 use uuid::Uuid;
@@ -22,7 +22,7 @@ use crate::{
     },
     errors::ApiError,
     jobs::schedule_catalog_publish,
-    media::{probe_duration, probe_video_dimensions, transcode_renditions},
+    media::{assert_under, probe_duration, probe_video_dimensions, transcode_renditions},
     models::{
         ManifestOriginalFile, ManifestSegment, ManifestVariant, QuoteValue, VideoManifestDocument,
     },
@@ -70,8 +70,8 @@ pub(crate) async fn process_video_inner(
         ));
     }
 
-    let total_duration = probe_duration(source_path).await?.unwrap_or(0.0);
-    let source_dimensions = probe_video_dimensions(source_path).await?;
+    let total_duration = probe_duration(state, source_path).await?.unwrap_or(0.0);
+    let source_dimensions = probe_video_dimensions(state, source_path).await?;
     let renditions = transcode_renditions(
         state,
         video_id,
@@ -106,27 +106,32 @@ pub(crate) async fn process_video_inner(
         .map_err(db_error)?;
         let variant_id: Uuid = variant_row.try_get("id").map_err(db_error)?;
 
-        for segment in rendition.segments {
-            sqlx::query(
-                r#"
-                INSERT INTO video_segments
-                    (variant_id, segment_index, duration, byte_size, local_path)
-                VALUES ($1,$2,$3,$4,$5)
-                ON CONFLICT (variant_id, segment_index) DO UPDATE
-                  SET duration=EXCLUDED.duration,
-                      byte_size=EXCLUDED.byte_size,
-                      local_path=EXCLUDED.local_path
+        let mut builder = QueryBuilder::<Postgres>::new(
+            r#"
+            INSERT INTO video_segments
+                (variant_id, segment_index, duration, byte_size, local_path)
             "#,
-            )
-            .bind(variant_id)
-            .bind(segment.segment_index)
-            .bind(segment.duration)
-            .bind(segment.byte_size)
-            .bind(segment.local_path.to_string_lossy().as_ref())
+        );
+        builder.push_values(rendition.segments.iter(), |mut row, segment| {
+            row.push_bind(variant_id)
+                .push_bind(segment.segment_index)
+                .push_bind(segment.duration)
+                .push_bind(segment.byte_size)
+                .push_bind(segment.local_path.to_string_lossy().to_string());
+        });
+        builder.push(
+            r#"
+            ON CONFLICT (variant_id, segment_index) DO UPDATE
+              SET duration=EXCLUDED.duration,
+                  byte_size=EXCLUDED.byte_size,
+                  local_path=EXCLUDED.local_path
+            "#,
+        );
+        builder
+            .build()
             .execute(&state.pool)
             .await
             .map_err(db_error)?;
-        }
     }
 
     let mut final_quote = build_final_upload_quote(state, video_id).await?;
@@ -235,6 +240,7 @@ pub(crate) async fn build_final_upload_quote(
                 "Transcoded segment is missing from disk",
             )
         })?;
+        let path = assert_under(&path, &state.config.upload_temp_dir)?;
         if !path.exists() {
             return Err(ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -595,6 +601,7 @@ pub(crate) async fn upload_approved_video_inner(
                     "Transcoded segment is missing from disk",
                 )
             })?;
+            let path = assert_under(&path, &state.config.upload_temp_dir)?;
             if !path.exists() {
                 return Err(ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -886,6 +893,7 @@ async fn upload_original_file_if_needed(
                 "Original source file is missing from disk",
             )
         })?;
+    let source_path = assert_under(&source_path, &state.config.upload_temp_dir)?;
     if !source_path.exists() {
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,

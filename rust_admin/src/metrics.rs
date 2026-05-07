@@ -1,9 +1,14 @@
 use std::{
+    collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
     time::Duration,
 };
 
-use autvid_common::{push_counter, push_gauge, HttpMetrics};
+use autvid_common::{
+    push_counter, push_gauge, push_histogram, push_histogram_header, push_histogram_samples,
+    HttpMetrics, LatencyHistogram,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct JobMetricsSnapshot {
@@ -25,6 +30,9 @@ pub(crate) struct AdminMetrics {
     antd_request_errors_total: AtomicU64,
     antd_request_latency_ms_total: AtomicU64,
     upload_retries_total: AtomicU64,
+    ffmpeg_duration: Mutex<HashMap<String, LatencyHistogram>>,
+    antd_request_latency: Mutex<HashMap<String, LatencyHistogram>>,
+    job_pickup_latency: LatencyHistogram,
 }
 
 impl Default for AdminMetrics {
@@ -40,6 +48,9 @@ impl Default for AdminMetrics {
             antd_request_errors_total: AtomicU64::new(0),
             antd_request_latency_ms_total: AtomicU64::new(0),
             upload_retries_total: AtomicU64::new(0),
+            ffmpeg_duration: Mutex::new(HashMap::new()),
+            antd_request_latency: Mutex::new(HashMap::new()),
+            job_pickup_latency: LatencyHistogram::default(),
         }
     }
 }
@@ -57,24 +68,40 @@ impl AdminMetrics {
         self.jobs_failed_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_ffmpeg_duration(&self, duration: Duration) {
+    pub(crate) fn record_ffmpeg_duration(&self, resolution: &str, duration: Duration) {
         self.ffmpeg_runs_total.fetch_add(1, Ordering::Relaxed);
         self.ffmpeg_duration_ms_total.fetch_add(
             duration.as_millis().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
+        self.ffmpeg_duration
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entry(resolution.to_string())
+            .or_default()
+            .record_duration(duration);
     }
 
-    pub(crate) fn record_antd_request(&self, duration: Duration, ok: bool) {
+    pub(crate) fn record_antd_request(&self, endpoint: &str, duration: Duration, ok: bool) {
         self.antd_requests_total.fetch_add(1, Ordering::Relaxed);
         self.antd_request_latency_ms_total.fetch_add(
             duration.as_millis().min(u128::from(u64::MAX)) as u64,
             Ordering::Relaxed,
         );
+        self.antd_request_latency
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entry(endpoint.to_string())
+            .or_default()
+            .record_duration(duration);
         if !ok {
             self.antd_request_errors_total
                 .fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub(crate) fn record_job_pickup_latency(&self, duration: Duration) {
+        self.job_pickup_latency.record_duration(duration);
     }
 
     pub(crate) fn record_upload_retry(&self) {
@@ -152,6 +179,61 @@ impl AdminMetrics {
             service,
             self.upload_retries_total.load(Ordering::Relaxed),
         );
+        {
+            let ffmpeg_duration = self
+                .ffmpeg_duration
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if !ffmpeg_duration.is_empty() {
+                push_histogram_header(
+                    &mut output,
+                    "autvid_admin_ffmpeg_duration_ms",
+                    "FFmpeg rendition runtime in milliseconds.",
+                );
+            }
+            for (resolution, histogram) in ffmpeg_duration.iter() {
+                let snapshot = histogram.snapshot();
+                push_histogram_samples(
+                    &mut output,
+                    "autvid_admin_ffmpeg_duration_ms",
+                    service,
+                    &[("resolution", resolution.as_str())],
+                    &snapshot,
+                );
+            }
+        }
+        {
+            let antd_request_latency = self
+                .antd_request_latency
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if !antd_request_latency.is_empty() {
+                push_histogram_header(
+                    &mut output,
+                    "autvid_admin_antd_request_latency_ms",
+                    "Outbound antd request latency in milliseconds.",
+                );
+            }
+            for (endpoint, histogram) in antd_request_latency.iter() {
+                let snapshot = histogram.snapshot();
+                push_histogram_samples(
+                    &mut output,
+                    "autvid_admin_antd_request_latency_ms",
+                    service,
+                    &[("endpoint", endpoint.as_str())],
+                    &snapshot,
+                );
+            }
+        }
+        let job_pickup_snapshot = self.job_pickup_latency.snapshot();
+        push_histogram(
+            &mut output,
+            "autvid_admin_job_pickup_latency_ms",
+            "Time queued jobs waited before a worker picked them up, in milliseconds.",
+            service,
+            &[],
+            &job_pickup_snapshot,
+        );
         if let Some(jobs) = jobs {
             push_gauge(
                 &mut output,
@@ -204,9 +286,10 @@ mod tests {
         metrics.record_job_started();
         metrics.record_job_succeeded();
         metrics.record_job_failed();
-        metrics.record_ffmpeg_duration(Duration::from_millis(1500));
-        metrics.record_antd_request(Duration::from_millis(80), true);
-        metrics.record_antd_request(Duration::from_millis(20), false);
+        metrics.record_ffmpeg_duration("720p", Duration::from_millis(1500));
+        metrics.record_antd_request("/v1/file/public", Duration::from_millis(80), true);
+        metrics.record_antd_request("/v1/data/cost", Duration::from_millis(20), false);
+        metrics.record_job_pickup_latency(Duration::from_millis(12));
         metrics.record_upload_retry();
 
         let rendered = metrics.render_prometheus();
@@ -226,5 +309,14 @@ mod tests {
         assert!(rendered
             .contains("autvid_admin_antd_request_latency_ms_total{service=\"rust_admin\"} 100"));
         assert!(rendered.contains("autvid_admin_upload_retries_total{service=\"rust_admin\"} 1"));
+        assert!(rendered.contains(
+            "autvid_admin_ffmpeg_duration_ms_bucket{service=\"rust_admin\",resolution=\"720p\""
+        ));
+        assert!(rendered.contains(
+            "autvid_admin_antd_request_latency_ms_bucket{service=\"rust_admin\",endpoint=\"/v1/data/cost\""
+        ));
+        assert!(
+            rendered.contains("autvid_admin_job_pickup_latency_ms_bucket{service=\"rust_admin\"")
+        );
     }
 }

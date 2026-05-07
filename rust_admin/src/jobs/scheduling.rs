@@ -1,4 +1,4 @@
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use sqlx::Row;
@@ -53,6 +53,7 @@ async fn enqueue_video_job(
 
     if result.rows_affected() > 0 {
         info!("Queued durable {:?} job for video {}", kind, video_id);
+        notify_job_workers(state, &format!("{}:{video_id}", kind.as_str())).await;
     } else {
         info!(
             "Durable {:?} job for video {} is already queued or running",
@@ -84,10 +85,21 @@ pub(super) async fn enqueue_catalog_publish_job(state: &AppState) -> Result<(), 
 
     if result.rows_affected() > 0 {
         info!("Queued durable catalog publish job");
+        notify_job_workers(state, JOB_KIND_PUBLISH_CATALOG).await;
     } else {
         info!("Durable catalog publish job is already queued");
     }
     Ok(())
+}
+
+async fn notify_job_workers(state: &AppState, payload: &str) {
+    if let Err(err) = sqlx::query("SELECT pg_notify('autvid_jobs', $1)")
+        .bind(payload)
+        .execute(&state.pool)
+        .await
+    {
+        warn!("Could not notify durable job workers: {}", err);
+    }
 }
 
 pub(crate) fn job_retry_delay_seconds(attempts: i32) -> i64 {

@@ -20,6 +20,23 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
+  node_exporter:
+    image: "${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}"
+    container_name: autvid_node_exporter
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.textfile.directory=/textfile"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($$|/)"
+    networks:
+      - appnet
+    volumes:
+      - /:/host:ro,rslave
+      - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/textfile:ro
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   alertmanager:
     image: "${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.27.0}"
     container_name: autvid_alertmanager

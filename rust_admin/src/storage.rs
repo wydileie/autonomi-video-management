@@ -1,12 +1,13 @@
 use std::time::Duration as StdDuration;
 
+use autvid_common::{is_retryable_antd_error, jitter_duration};
 use axum::http::StatusCode;
 use serde::Serialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::{
-    antd_client::{is_retryable_antd_error, AntdDataPutResponse, AntdRestClient},
+    antd_client::{AntdDataPutResponse, AntdRestClient},
     errors::ApiError,
     state::AppState,
     upload::format_bytes,
@@ -107,16 +108,18 @@ pub(crate) async fn put_public_verified_inner(
 
         if attempt < upload_retries {
             antd.record_upload_retry();
-            let delay = 2_u64.pow((attempt - 1).min(3) as u32);
+            let delay = jitter_duration(StdDuration::from_secs(
+                2_u64.pow((attempt - 1).min(3) as u32),
+            ));
             warn!(
-                "Autonomi upload verification failed for {} on attempt {}/{}: {}; retrying in {}s",
+                "Autonomi upload verification failed for {} on attempt {}/{}: {}; retrying in {}ms",
                 label,
                 attempt,
                 upload_retries,
                 last_error.as_deref().unwrap_or("unknown error"),
-                delay
+                delay.as_millis()
             );
-            sleep(StdDuration::from_secs(delay)).await;
+            sleep(delay).await;
         }
     }
 

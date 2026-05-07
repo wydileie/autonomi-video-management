@@ -1,14 +1,20 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
+use autvid_common::{
+    is_retryable_antd_error, jitter_duration, AutonomiHttpStatusError, CircuitBreaker,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use serde::Deserialize;
+use tokio::time::sleep;
+use tracing::warn;
 
 #[derive(Clone)]
 pub(crate) struct AntdRestClient {
     base_url: String,
     client: reqwest::Client,
     internal_token: Option<String>,
+    circuit: Arc<CircuitBreaker>,
 }
 
 #[derive(Deserialize)]
@@ -31,6 +37,7 @@ impl AntdRestClient {
                 .timeout(Duration::from_secs(60))
                 .build()?,
             internal_token,
+            circuit: Arc::new(CircuitBreaker::default()),
         })
     }
 
@@ -66,6 +73,35 @@ impl AntdRestClient {
     where
         T: for<'de> Deserialize<'de>,
     {
+        let attempts = 3;
+        for attempt in 1..=attempts {
+            self.circuit.check()?;
+            let result = self.get_json_once(path).await;
+            self.circuit.record_result(&result);
+            match result {
+                Ok(value) => return Ok(value),
+                Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
+                    let delay = retry_delay(attempt);
+                    warn!(
+                        "Autonomi JSON fetch failed on attempt {}/{} for {}: {}; retrying in {}ms",
+                        attempt,
+                        attempts,
+                        path,
+                        err,
+                        delay.as_millis()
+                    );
+                    sleep(delay).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        anyhow::bail!("Autonomi JSON fetch failed for {path}")
+    }
+
+    async fn get_json_once<T>(&self, path: &str) -> anyhow::Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
         let url = format!("{}{}", self.base_url, path);
         let response = self
             .apply_internal_auth(self.client.get(&url))
@@ -75,13 +111,45 @@ impl AntdRestClient {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "".to_string());
-            anyhow::bail!("GET {path} failed: {status} {body}");
+            return Err(AutonomiHttpStatusError {
+                method: reqwest::Method::GET,
+                path: path.to_string(),
+                status,
+                body,
+            }
+            .into());
         }
 
         response.json::<T>().await.map_err(Into::into)
     }
 
     async fn get_bytes(&self, path: &str) -> anyhow::Result<Bytes> {
+        let attempts = 3;
+        for attempt in 1..=attempts {
+            self.circuit.check()?;
+            let result = self.get_bytes_once(path).await;
+            self.circuit.record_result(&result);
+            match result {
+                Ok(value) => return Ok(value),
+                Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
+                    let delay = retry_delay(attempt);
+                    warn!(
+                        "Autonomi byte fetch failed on attempt {}/{} for {}: {}; retrying in {}ms",
+                        attempt,
+                        attempts,
+                        path,
+                        err,
+                        delay.as_millis()
+                    );
+                    sleep(delay).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        anyhow::bail!("Autonomi byte fetch failed for {path}")
+    }
+
+    async fn get_bytes_once(&self, path: &str) -> anyhow::Result<Bytes> {
         let url = format!("{}{}", self.base_url, path);
         let response = self
             .apply_internal_auth(self.client.get(&url))
@@ -91,7 +159,13 @@ impl AntdRestClient {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "".to_string());
-            anyhow::bail!("GET {path} failed: {status} {body}");
+            return Err(AutonomiHttpStatusError {
+                method: reqwest::Method::GET,
+                path: path.to_string(),
+                status,
+                body,
+            }
+            .into());
         }
 
         Ok(response.bytes().await?)
@@ -106,6 +180,18 @@ impl AntdRestClient {
 }
 
 fn raw_endpoint_unavailable(err: &anyhow::Error) -> bool {
-    let message = err.to_string();
-    message.contains("/raw failed: 404") || message.contains("/raw failed: 405")
+    if let Some(err) = err.downcast_ref::<AutonomiHttpStatusError>() {
+        return err.path.ends_with("/raw")
+            && matches!(
+                err.status,
+                reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            );
+    }
+    false
+}
+
+fn retry_delay(attempt: usize) -> Duration {
+    // Segment reads are latency-sensitive, so start below the admin file-upload delay.
+    let base = Duration::from_millis(250 * 2_u64.pow((attempt - 1).min(4) as u32));
+    jitter_duration(base)
 }

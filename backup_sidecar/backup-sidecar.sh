@@ -31,6 +31,9 @@ Environment:
   CATALOG_PATH               Catalog bookmark path (default: /catalog/catalog.json)
   BACKUP_FILE_OWNER          Optional numeric owner for completed backups, UID:GID
   BACKUP_DB_WAIT_SECONDS     Seconds to wait for Postgres readiness (default: 120)
+  BACKUP_TEXTFILE_DIR        Optional node-exporter textfile collector directory
+  BACKUP_TEXTFILE_NAME       Metric filename in BACKUP_TEXTFILE_DIR
+                             (default: autvid_backup.prom)
 EOF
 }
 
@@ -87,6 +90,11 @@ validate_config() {
 
   if [[ -n "${BACKUP_FILE_OWNER:-}" && ! "${BACKUP_FILE_OWNER}" =~ ^[0-9]+:[0-9]+$ ]]; then
     log "BACKUP_FILE_OWNER must be numeric UID:GID when set"
+    exit 2
+  fi
+
+  if [[ -n "${BACKUP_TEXTFILE_NAME:-}" && "${BACKUP_TEXTFILE_NAME}" == *"/"* ]]; then
+    log "BACKUP_TEXTFILE_NAME must be a filename, not a path"
     exit 2
   fi
 }
@@ -202,6 +210,7 @@ run_backup() {
 
   mv "${tmp_dir}" "${backup_dir}" || return 1
   trap - RETURN
+  LAST_BACKUP_DIR="${backup_dir}"
   log "Backup complete: ${backup_dir}"
 }
 
@@ -258,11 +267,105 @@ cleanup_backups() {
   cleanup_by_count
 }
 
+backup_count() {
+  find "${BACKUP_DIR}" \
+    -mindepth 1 \
+    -maxdepth 1 \
+    -type d \
+    -name "${BACKUP_PREFIX}-*" \
+    -print | wc -l
+}
+
+write_backup_metrics() {
+  local status="$1"
+  local backup_dir="${2:-}"
+  local started_at="$3"
+  local finished_at
+  local duration
+  local backup_size
+  local backup_created
+  local retained_count
+  local textfile_dir="${BACKUP_TEXTFILE_DIR:-}"
+  local textfile_name="${BACKUP_TEXTFILE_NAME:-autvid_backup.prom}"
+  local tmp_file
+  local metric_file
+
+  if [[ -z "${textfile_dir}" ]]; then
+    return 0
+  fi
+
+  finished_at="$(date -u +%s)"
+  duration=$(( finished_at - started_at ))
+  backup_size=0
+  backup_created=0
+  retained_count=0
+
+  if [[ "${status}" == "success" && -n "${backup_dir}" && -d "${backup_dir}" ]]; then
+    backup_size="$(du -sb "${backup_dir}" | awk '{print $1}')"
+    backup_created="${finished_at}"
+  fi
+
+  if [[ -d "${BACKUP_DIR}" ]]; then
+    retained_count="$(backup_count)"
+  fi
+
+  mkdir -p "${textfile_dir}" || return 1
+  tmp_file="${textfile_dir%/}/.${textfile_name}.$$"
+  metric_file="${textfile_dir%/}/${textfile_name}"
+
+  if [[ "${status}" != "success" && -f "${metric_file}" ]]; then
+    backup_created="$(awk '/^autvid_backup_last_success_timestamp_seconds / {print $2}' "${metric_file}" | tail -n 1)"
+    if ! [[ "${backup_created}" =~ ^[0-9]+$ ]]; then
+      backup_created=0
+    fi
+  fi
+
+  cat > "${tmp_file}" <<EOF
+# HELP autvid_backup_last_success_timestamp_seconds Unix timestamp of the last successful AutVid backup.
+# TYPE autvid_backup_last_success_timestamp_seconds gauge
+autvid_backup_last_success_timestamp_seconds ${backup_created}
+# HELP autvid_backup_last_run_timestamp_seconds Unix timestamp of the last AutVid backup attempt.
+# TYPE autvid_backup_last_run_timestamp_seconds gauge
+autvid_backup_last_run_timestamp_seconds ${finished_at}
+# HELP autvid_backup_last_duration_seconds Duration of the last AutVid backup attempt.
+# TYPE autvid_backup_last_duration_seconds gauge
+autvid_backup_last_duration_seconds ${duration}
+# HELP autvid_backup_last_size_bytes Size of the last successful AutVid backup directory.
+# TYPE autvid_backup_last_size_bytes gauge
+autvid_backup_last_size_bytes ${backup_size}
+# HELP autvid_backup_last_status Last AutVid backup status, labeled by status.
+# TYPE autvid_backup_last_status gauge
+autvid_backup_last_status{status="success"} $([[ "${status}" == "success" ]] && printf '1' || printf '0')
+autvid_backup_last_status{status="failure"} $([[ "${status}" == "failure" ]] && printf '1' || printf '0')
+# HELP autvid_backup_retained_count Number of retained AutVid backup directories.
+# TYPE autvid_backup_retained_count gauge
+autvid_backup_retained_count ${retained_count}
+EOF
+  mv "${tmp_file}" "${metric_file}" || return 1
+}
+
+run_backup_cycle() {
+  local started_at
+
+  LAST_BACKUP_DIR=""
+  started_at="$(date -u +%s)"
+  if run_backup; then
+    if ! cleanup_backups; then
+      write_backup_metrics failure "" "${started_at}" || log "Could not write backup textfile metrics"
+      return 1
+    fi
+    write_backup_metrics success "${LAST_BACKUP_DIR}" "${started_at}" || log "Could not write backup textfile metrics"
+    return 0
+  fi
+
+  write_backup_metrics failure "" "${started_at}" || log "Could not write backup textfile metrics"
+  return 1
+}
+
 run_once() {
   load_password
   validate_config
-  run_backup
-  cleanup_backups
+  run_backup_cycle
 }
 
 interval_sleep_seconds() {
@@ -317,16 +420,13 @@ schedule_loop() {
   validate_config
 
   if [[ "${BACKUP_SCHEDULE}" == "once" ]]; then
-    run_backup
-    cleanup_backups
+    run_backup_cycle
     return 0
   fi
 
   if is_true "${BACKUP_RUN_ON_START}"; then
-    if ! run_backup; then
+    if ! run_backup_cycle; then
       log "Initial backup failed; continuing scheduler"
-    else
-      cleanup_backups
     fi
   fi
 
@@ -335,11 +435,10 @@ schedule_loop() {
     log "Next backup in ${sleep_seconds}s using BACKUP_SCHEDULE=${BACKUP_SCHEDULE}"
     sleep "${sleep_seconds}"
 
-    if ! run_backup; then
+    if ! run_backup_cycle; then
       log "Scheduled backup failed; waiting for the next run"
       continue
     fi
-    cleanup_backups
   done
 }
 
@@ -355,6 +454,8 @@ main() {
   export BACKUP_CATALOG="${BACKUP_CATALOG:-true}"
   export CATALOG_PATH="${CATALOG_PATH:-/catalog/catalog.json}"
   export BACKUP_DB_WAIT_SECONDS="${BACKUP_DB_WAIT_SECONDS:-120}"
+  export BACKUP_TEXTFILE_DIR="${BACKUP_TEXTFILE_DIR:-}"
+  export BACKUP_TEXTFILE_NAME="${BACKUP_TEXTFILE_NAME:-autvid_backup.prom}"
 
   trap 'log "Shutdown requested"; exit 0' INT TERM
 

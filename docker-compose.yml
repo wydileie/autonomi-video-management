@@ -12,6 +12,8 @@ services:
       ADMIN_DB: "${ADMIN_DB}"
       ADMIN_USER: "${ADMIN_USER}"
       ADMIN_PASS: "${ADMIN_PASS}"
+      BACKUP_USER: "${BACKUP_DB_USER:-autvid_backup}"
+      BACKUP_PASS: "${BACKUP_DB_PASS:-autvid_backup_dev_pass}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -54,9 +56,12 @@ services:
       ADMIN_DB_NAME: "${ADMIN_DB}"
       ADMIN_DB_USER: "${ADMIN_USER}"
       ADMIN_DB_PASS: "${ADMIN_PASS}"
+      ADMIN_DB_PASS_FILE: "${ADMIN_DB_PASS_FILE:-}"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin}"
+      ADMIN_PASSWORD_FILE: "${ADMIN_PASSWORD_FILE:-}"
       ADMIN_AUTH_SECRET: "${ADMIN_AUTH_SECRET:-change-me}"
+      ADMIN_AUTH_SECRET_FILE: "${ADMIN_AUTH_SECRET_FILE:-}"
       ADMIN_AUTH_TTL_HOURS: "${ADMIN_AUTH_TTL_HOURS:-12}"
       ADMIN_REFRESH_TOKEN_TTL_HOURS: "${ADMIN_REFRESH_TOKEN_TTL_HOURS:-720}"
       ADMIN_AUTH_COOKIE_SAME_SITE: "${ADMIN_AUTH_COOKIE_SAME_SITE:-Lax}"
@@ -65,6 +70,7 @@ services:
       ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS: "${ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS:-3600}"
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
+      ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
       ANTD_PAYMENT_MODE: "${ANTD_PAYMENT_MODE:-auto}"
       ANTD_METADATA_PAYMENT_MODE: "${ANTD_METADATA_PAYMENT_MODE:-merkle}"
       ANTD_UPLOAD_VERIFY: "${ANTD_UPLOAD_VERIFY:-true}"
@@ -87,10 +93,12 @@ services:
       UPLOAD_MIN_FREE_BYTES: "${UPLOAD_MIN_FREE_BYTES:-5368709120}"
       UPLOAD_MAX_CONCURRENT_SAVES: "${UPLOAD_MAX_CONCURRENT_SAVES:-2}"
       UPLOAD_FFPROBE_TIMEOUT_SECONDS: "${UPLOAD_FFPROBE_TIMEOUT_SECONDS:-30}"
+      UPLOAD_READ_IDLE_TIMEOUT_SECONDS: "${UPLOAD_READ_IDLE_TIMEOUT_SECONDS:-30}"
       HLS_SEGMENT_DURATION: "${HLS_SEGMENT_DURATION:-1}"
       FFMPEG_THREADS: "${FFMPEG_THREADS:-2}"
       FFMPEG_FILTER_THREADS: "${FFMPEG_FILTER_THREADS:-1}"
       FFMPEG_MAX_PARALLEL_RENDITIONS: "${FFMPEG_MAX_PARALLEL_RENDITIONS:-1}"
+      FFMPEG_RENDITION_TIMEOUT_SECONDS: "${FFMPEG_RENDITION_TIMEOUT_SECONDS:-21600}"
       UPLOAD_QUOTE_TRANSCODED_OVERHEAD: "${UPLOAD_QUOTE_TRANSCODED_OVERHEAD:-1.08}"
       UPLOAD_QUOTE_MAX_SAMPLE_BYTES: "${UPLOAD_QUOTE_MAX_SAMPLE_BYTES:-16777216}"
       FINAL_QUOTE_APPROVAL_TTL_SECONDS: "${FINAL_QUOTE_APPROVAL_TTL_SECONDS:-14400}"
@@ -117,7 +125,7 @@ services:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/livez"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -139,6 +147,7 @@ services:
     environment:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
+      ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/catalog/catalog.json"
       STREAM_CATALOG_CACHE_TTL_SECONDS: "${STREAM_CATALOG_CACHE_TTL_SECONDS:-10}"
@@ -158,7 +167,7 @@ services:
     volumes:
       - catalog_state:/catalog:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/livez"]
       interval: 10s
       timeout: 5s
       retries: 12

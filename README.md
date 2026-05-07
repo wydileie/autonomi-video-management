@@ -71,8 +71,8 @@ admin jobs add fields such as `video_id`, `job_id`, `resolution`,
 
 The Nginx proxy keeps uploads unlimited at the proxy layer and relies on
 `UPLOAD_MAX_FILE_BYTES` in `rust_admin` for the application limit. It also
-applies standard security headers and rate limits login attempts on
-`/api/auth/login`.
+applies standard security headers, sanitizes forwarded headers, and rate limits
+login, refresh, upload quote, and stream requests.
 Admin login sets HttpOnly SameSite access and refresh cookies. Unsafe
 authenticated `/api` requests also require the double-submit `autvid_csrf`
 cookie value in the `X-CSRF-Token` header.
@@ -80,7 +80,9 @@ cookie value in the `X-CSRF-Token` header.
 Internal Prometheus-style metrics remain available on the service-local
 `/metrics` endpoints. The public Nginx proxy blocks `/api/metrics` and
 `/stream/metrics`; Prometheus should scrape `rust_admin:8000`,
-`rust_stream:8081`, and `antd:8082` on the Compose network.
+`rust_stream:8081`, `antd:8082`, and `node_exporter:9100` on the Compose
+network when the monitoring override is enabled. The backup sidecar can emit
+Prometheus textfile metrics for node-exporter via `BACKUP_TEXTFILE_HOST_PATH`.
 
 ---
 
@@ -260,7 +262,8 @@ public Autonomi storage; data lives in local Docker volumes.
 
 ```bash
 cp .env.production.example .env.production
-# Fill in a wallet source and any network/payment settings.
+# Create the secret files referenced by *_SECRET_FILE in .env.production,
+# then fill in domain and any network/payment settings.
 
 docker compose --env-file .env.production \
   -f docker-compose.yml \
@@ -268,37 +271,22 @@ docker compose --env-file .env.production \
   up --build -d
 ```
 
-For production wallet keys, the simple env path remains supported:
-`PROD_AUTONOMI_WALLET_KEY=0x...`. The preferred production path is to mount a
-Docker Secret or other read-only file and set
-`PROD_AUTONOMI_WALLET_KEY_FILE=/run/secrets/autonomi_wallet_key` in
-`.env.production`; when that file variable is set, it wins over the direct env
-key.
-
-Keep the base production compose files usable without a real secret file by
-putting the secret mount in a local overlay such as:
-
-```yaml
-services:
-  antd:
-    secrets:
-      - source: autonomi_wallet_key
-        target: autonomi_wallet_key
-        mode: 0400
-
-secrets:
-  autonomi_wallet_key:
-    file: ./secrets/autonomi_wallet_key.txt
-```
-
-Run with that extra overlay only on hosts where the secret file exists:
+Production Compose uses Docker Compose file-backed secrets for Postgres, the
+admin database password, the admin login password, the auth signing secret, the
+internal service bearer token, the backup read-only database password, and the
+Autonomi wallet key. The containers receive only `_FILE` environment variables
+for these values. A minimal local secret-file setup looks like:
 
 ```bash
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.prod.secrets.yml \
-  up --build -d
+install -d -m 0700 secrets
+printf '%s\n' '<postgres root password>' > secrets/postgres_root_password
+printf '%s\n' '<admin database password>' > secrets/admin_db_password
+printf '%s\n' '<backup read-only database password>' > secrets/backup_db_password
+printf '%s\n' '<admin login password>' > secrets/admin_login_password
+printf '%s\n' '<long auth signing secret>' > secrets/admin_auth_secret
+printf '%s\n' '<internal bearer token>' > secrets/antd_internal_token
+printf '%s\n' '0x<your_wallet_private_key>' > secrets/autonomi_wallet_key
+chmod 0600 secrets/*
 ```
 
 For public deployments, put TLS and domain routing in front of the stack with
@@ -318,9 +306,11 @@ for deployment. `.env.example` contains the full variable set in one file.
 |---|---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Yes | PostgreSQL root credentials |
 | `ADMIN_DB` / `ADMIN_USER` / `ADMIN_PASS` | Yes | App database credentials |
+| `BACKUP_DB_USER` / `BACKUP_DB_PASS` | Backup | Read-only Postgres role used by the backup sidecar. Production should provide the password via `BACKUP_DB_PASSWORD_SECRET_FILE` |
 | `APP_ENV` | Production | Set to `production` in deployments. Production mode rejects default or weak admin credentials at startup |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
+| `POSTGRES_ROOT_PASSWORD_SECRET_FILE` / `ADMIN_DB_PASSWORD_SECRET_FILE` / `ADMIN_LOGIN_PASSWORD_SECRET_FILE` / `ADMIN_AUTH_SECRET_SECRET_FILE` / `ANTD_INTERNAL_TOKEN_SECRET_FILE` / `AUTONOMI_WALLET_KEY_SECRET_FILE` | Production | Host paths used by `docker-compose.prod.yml` for file-backed Docker secrets |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `ADMIN_REFRESH_TOKEN_TTL_HOURS` | No | HttpOnly refresh-cookie session lifetime. Default: `720` |
 | `ADMIN_AUTH_COOKIE_SAME_SITE` | No | SameSite attribute for admin access and refresh cookies: `Strict`, `Lax`, or `None`. Default: `Lax`; `None` requires secure cookies |
@@ -341,6 +331,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANT_DEVNET_RESET_ON_START` | Local only | Reset active local devnet node data on container start to avoid stale testnet peers. Default: `true` |
 | `ANTD_PAYMENT_MODE` | No | Upload payment strategy: `auto`, `merkle`, or `single`. Default: `auto` |
 | `ANTD_METADATA_PAYMENT_MODE` | No | Rust admin payment strategy for small manifest/catalog JSON writes. Default: `merkle` |
+| `ANTD_INTERNAL_TOKEN` / `ANTD_INTERNAL_TOKEN_FILE` | Recommended | Internal bearer token shared by `antd`, admin, and stream services. `antd` refuses non-loopback binds without this token |
+| `ANTD_CORS_ALLOWED_ORIGINS` | No | Explicit browser origins allowed to call `antd` directly. Empty by default; Nginx same-origin traffic does not require this |
 | `ANTD_UPLOAD_VERIFY` | No | Read each uploaded segment back before publishing the manifest. Default: `true` |
 | `ANTD_UPLOAD_RETRIES` | No | Number of upload/verify attempts per segment. Default: `3` |
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
@@ -349,6 +341,8 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `ANTD_REQUIRE_COST_READY` | No | Whether admin startup and health require a successful Autonomi write-cost probe, not just `/health`. Default: `false` |
 | `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
+| `ANTD_FILE_UPLOAD_MAX_BYTES` | No | Max bytes accepted by the `antd` streaming file route. Default: `21474836480` |
+| `ANTD_UPLOAD_TEMP_DIR` | No | Temp directory used by `antd` while verifying streaming uploads. Default: `/tmp` |
 | `ANTD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway default route timeout for non-file-upload requests. Default: `60` |
 | `ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway streaming file upload route timeout. Default: `3600` |
 | `ANTD_JSON_BODY_LIMIT_BYTES` | No | `antd` gateway JSON body limit for quote/cost and legacy data routes. Default: `33554432` |
@@ -366,10 +360,12 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `UPLOAD_MIN_FREE_BYTES` | No | Extra processing-disk free-space headroom required before and during upload writes. Base/prod default: `5368709120` (5 GiB). Local devnet default: `0` |
 | `UPLOAD_MAX_CONCURRENT_SAVES` | No | Max concurrent source uploads being streamed/probed to disk. Default: `2` |
 | `UPLOAD_FFPROBE_TIMEOUT_SECONDS` | No | Server-side upload validation `ffprobe` timeout. Default: `30` |
+| `UPLOAD_READ_IDLE_TIMEOUT_SECONDS` | No | Idle timeout while reading multipart upload bodies after the save semaphore is acquired. Default: `30` |
 | `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
 | `FFMPEG_THREADS` | No | Maximum FFmpeg/x264 encoder threads. Default: `2` to reduce memory use for high-resolution portrait transcodes |
 | `FFMPEG_FILTER_THREADS` | No | Maximum FFmpeg filter graph threads. Default: `1` |
 | `FFMPEG_MAX_PARALLEL_RENDITIONS` | No | Max renditions to transcode at once inside one processing job. Base/prod default: `1`; local examples set `2` |
+| `FFMPEG_RENDITION_TIMEOUT_SECONDS` | No | Per-rendition FFmpeg runtime cap. Default: `21600` |
 | `FINAL_QUOTE_APPROVAL_TTL_SECONDS` | No | Seconds before an unapproved final quote expires and local transcoded files are deleted. Default: `14400` |
 | `APPROVAL_CLEANUP_INTERVAL_SECONDS` | No | Seconds between cleanup scans for expired final quotes. Default: `300` |
 | `CATALOG_ADDRESS` | No | Optional bootstrap address for an existing network-hosted video catalog |

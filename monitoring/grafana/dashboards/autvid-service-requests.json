@@ -86,7 +86,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=~\"rust_admin|rust_stream|antd\"}",
+          "expr": "up{job=~\"rust_admin|rust_stream|antd|node_exporter\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -220,12 +220,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (service) (rate(autvid_http_request_latency_ms_total[$__rate_interval])) / clamp_min(sum by (service) (rate(autvid_http_requests_total[$__rate_interval])), 0.001)",
-          "legendFormat": "{{service}}",
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(autvid_http_request_latency_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{service}} p95",
           "refId": "A"
         }
       ],
-      "title": "Average Latency",
+      "title": "P95 Latency",
       "type": "stat"
     },
     {
@@ -499,8 +499,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (service) (rate(autvid_http_request_latency_ms_total[$__rate_interval])) / clamp_min(sum by (service) (rate(autvid_http_requests_total[$__rate_interval])), 0.001)",
-          "legendFormat": "{{service}}",
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(autvid_http_request_latency_ms_bucket[$__rate_interval])))",
+          "legendFormat": "{{service}} p95",
           "refId": "A"
         }
       ],
@@ -575,7 +575,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "scrape_duration_seconds{job=~\"rust_admin|rust_stream|antd\"}",
+          "expr": "scrape_duration_seconds{job=~\"rust_admin|rust_stream|antd|node_exporter\"}",
           "legendFormat": "{{job}}",
           "refId": "A"
         }

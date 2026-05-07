@@ -6,6 +6,7 @@ import App from "../App";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type TestHlsMock = ReturnType<typeof vi.fn> & {
+  ErrorTypes: { MEDIA_ERROR: string; NETWORK_ERROR: string };
   Events: { ERROR: string; MANIFEST_PARSED: string };
   isSupported: ReturnType<typeof vi.fn>;
 };
@@ -44,6 +45,7 @@ const mockHls = vi.hoisted(() => {
     loadSource: vi.fn(),
     on: vi.fn(),
   })) as TestHlsMock;
+  HlsMock.ErrorTypes = { MEDIA_ERROR: "mediaError", NETWORK_ERROR: "networkError" };
   HlsMock.Events = { ERROR: "hlsError", MANIFEST_PARSED: "manifestParsed" };
   HlsMock.isSupported = vi.fn(() => false);
   return HlsMock;

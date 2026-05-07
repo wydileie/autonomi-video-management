@@ -43,3 +43,10 @@ scrape_configs:
           - antd:8082
         labels:
           component: autonomi-gateway
+
+  - job_name: node_exporter
+    static_configs:
+      - targets:
+          - node_exporter:9100
+        labels:
+          component: host

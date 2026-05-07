@@ -1,15 +1,35 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
+    time::Duration,
+};
 
-use autvid_common::{push_counter, push_gauge, HttpMetrics};
+use autvid_common::{
+    push_counter, push_gauge, push_histogram_header, push_histogram_samples, HttpMetrics,
+    LatencyHistogram,
+};
 
 use crate::cache::SegmentCacheSnapshot;
 
-#[derive(Default)]
 pub(crate) struct StreamMetrics {
     pub(crate) http: HttpMetrics,
     segment_cache_hits_total: AtomicU64,
     segment_cache_misses_total: AtomicU64,
     segment_fetch_coalesced_total: AtomicU64,
+    segment_fetch_latency: Mutex<HashMap<String, LatencyHistogram>>,
+}
+
+impl Default for StreamMetrics {
+    fn default() -> Self {
+        Self {
+            http: HttpMetrics::default(),
+            segment_cache_hits_total: AtomicU64::new(0),
+            segment_cache_misses_total: AtomicU64::new(0),
+            segment_fetch_coalesced_total: AtomicU64::new(0),
+            segment_fetch_latency: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl StreamMetrics {
@@ -26,6 +46,15 @@ impl StreamMetrics {
     pub(crate) fn record_segment_fetch_coalesced(&self) {
         self.segment_fetch_coalesced_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_segment_fetch_latency(&self, cache_state: &str, duration: Duration) {
+        self.segment_fetch_latency
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entry(cache_state.to_string())
+            .or_default()
+            .record_duration(duration);
     }
 
     pub(crate) fn render_prometheus_with_cache(
@@ -55,6 +84,29 @@ impl StreamMetrics {
             service,
             self.segment_fetch_coalesced_total.load(Ordering::Relaxed),
         );
+        {
+            let segment_fetch_latency = self
+                .segment_fetch_latency
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if !segment_fetch_latency.is_empty() {
+                push_histogram_header(
+                    &mut output,
+                    "autvid_stream_segment_fetch_latency_ms",
+                    "Stream segment fetch latency in milliseconds.",
+                );
+            }
+            for (cache_state, histogram) in segment_fetch_latency.iter() {
+                let snapshot = histogram.snapshot();
+                push_histogram_samples(
+                    &mut output,
+                    "autvid_stream_segment_fetch_latency_ms",
+                    service,
+                    &[("cache_state", cache_state.as_str())],
+                    &snapshot,
+                );
+            }
+        }
         if let Some(segment_cache) = segment_cache {
             push_counter(
                 &mut output,
@@ -94,6 +146,8 @@ mod tests {
         metrics.record_segment_cache_hit();
         metrics.record_segment_cache_miss();
         metrics.record_segment_fetch_coalesced();
+        metrics.record_segment_fetch_latency("cache_hit", Duration::from_millis(3));
+        metrics.record_segment_fetch_latency("cache_miss", Duration::from_millis(30));
 
         let rendered = metrics.render_prometheus_with_cache(Some(SegmentCacheSnapshot {
             evictions_total: 2,
@@ -113,6 +167,12 @@ mod tests {
             .contains("autvid_stream_segment_cache_misses_total{service=\"rust_stream\"} 1"));
         assert!(rendered
             .contains("autvid_stream_segment_fetch_coalesced_total{service=\"rust_stream\"} 1"));
+        assert!(rendered.contains(
+            "autvid_stream_segment_fetch_latency_ms_bucket{service=\"rust_stream\",cache_state=\"cache_hit\""
+        ));
+        assert!(rendered.contains(
+            "autvid_stream_segment_fetch_latency_ms_bucket{service=\"rust_stream\",cache_state=\"cache_miss\""
+        ));
         assert!(rendered
             .contains("autvid_stream_segment_cache_evictions_total{service=\"rust_stream\"} 2"));
         assert!(rendered

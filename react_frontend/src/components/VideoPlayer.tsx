@@ -6,6 +6,19 @@ import { STREAM_BASE_URL } from "../runtimeConfig";
 import type { VideoVariant } from "../types";
 import { variantDisplayLabel } from "../utils/resolutions";
 
+const HLS_RETRY_CONFIG = {
+  fragLoadingMaxRetry: 4,
+  fragLoadingMaxRetryTimeout: 8_000,
+  fragLoadingRetryDelay: 500,
+  levelLoadingMaxRetry: 4,
+  levelLoadingMaxRetryTimeout: 8_000,
+  levelLoadingRetryDelay: 500,
+  manifestLoadingMaxRetry: 4,
+  manifestLoadingMaxRetryTimeout: 8_000,
+  manifestLoadingRetryDelay: 500,
+};
+const HLS_FATAL_RECOVERY_ATTEMPTS = 1;
+
 interface PlaybackState {
   currentTime: number;
   shouldResume: boolean;
@@ -146,8 +159,11 @@ export default function VideoPlayer({
     import("hls.js").then(({ default: Hls }) => {
       if (!active) return;
       if (Hls.isSupported()) {
+        let mediaRecoveryAttempts = 0;
+        let networkRecoveryAttempts = 0;
         const hls = new Hls({
           enableWorker: true,
+          ...HLS_RETRY_CONFIG,
           lowLatencyMode: false,
           startPosition: resumeAt > 0 ? resumeAt : -1,
         });
@@ -157,6 +173,24 @@ export default function VideoPlayer({
         hls.on(Hls.Events.MANIFEST_PARSED, resumePlayback);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data?.fatal) {
+            if (
+              data.type === Hls.ErrorTypes.NETWORK_ERROR
+              && networkRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
+            ) {
+              networkRecoveryAttempts += 1;
+              hls.startLoad();
+              return;
+            }
+
+            if (
+              data.type === Hls.ErrorTypes.MEDIA_ERROR
+              && mediaRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
+            ) {
+              mediaRecoveryAttempts += 1;
+              hls.recoverMediaError();
+              return;
+            }
+
             setPlaybackError("Playback failed because the video segments could not be loaded.");
           }
         });
