@@ -177,7 +177,6 @@ function installInterceptors() {
           await sharedRefresh();
           return api.request(config);
         } catch (refreshError) {
-          notifyAuthRefresh(null);
           return Promise.reject(refreshError);
         }
       }

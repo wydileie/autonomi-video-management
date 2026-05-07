@@ -8,7 +8,7 @@ use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::{info, info_span, Span};
+use tracing::{info, info_span, warn, Span};
 
 use crate::client::{connect_client, init_logging};
 use crate::config::Config;
@@ -25,6 +25,12 @@ async fn main() -> anyhow::Result<()> {
     init_logging();
 
     let config = Config::from_env()?;
+    if config.internal_token.is_none() && !config.bind_addr.ip().is_loopback() {
+        warn!(
+            bind_addr = %config.bind_addr,
+            "ANTD_INTERNAL_TOKEN is unset while binding to a non-loopback address; /v1 routes will not require internal auth"
+        );
+    }
     let client = Arc::new(connect_client().await?);
 
     let state = AppState {

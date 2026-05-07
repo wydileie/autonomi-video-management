@@ -148,7 +148,7 @@ impl AdminMetrics {
         push_counter(
             &mut output,
             "autvid_admin_upload_retries_total",
-            "Total Autonomi upload retries scheduled by rust_admin.",
+            "Total retry attempts scheduled for Autonomi uploads and cost quotes by rust_admin.",
             service,
             self.upload_retries_total.load(Ordering::Relaxed),
         );

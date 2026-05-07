@@ -266,10 +266,7 @@ impl Config {
         Ok(Self {
             db_dsn,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
-            antd_internal_token: env::var("ANTD_INTERNAL_TOKEN")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            antd_internal_token: non_empty_env("ANTD_INTERNAL_TOKEN"),
             antd_payment_mode,
             antd_metadata_payment_mode,
             admin_username,
@@ -281,10 +278,7 @@ impl Config {
                 env::var("CATALOG_STATE_PATH")
                     .unwrap_or_else(|_| "/tmp/video_catalog/catalog.json".into()),
             ),
-            catalog_bootstrap_address: env::var("CATALOG_ADDRESS")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            catalog_bootstrap_address: non_empty_env("CATALOG_ADDRESS"),
             cors_allowed_origins: cors_allowed_origins()?,
             bind_addr,
             admin_request_timeout_seconds,
@@ -529,6 +523,13 @@ fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
     let raw = env::var("CORS_ALLOWED_ORIGINS")
         .unwrap_or_else(|_| "http://localhost,http://127.0.0.1".into());
     autvid_common::parse_cors_allowed_origins(&raw)
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]

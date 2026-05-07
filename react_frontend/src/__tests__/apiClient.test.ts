@@ -154,7 +154,7 @@ test("notifies listeners when refresh fails", async () => {
     response: { status: 401 },
   })).rejects.toBe(refreshError);
 
-  expect(refreshEvents).toEqual([null, null]);
+  expect(refreshEvents).toEqual([null]);
   expect(axiosMock.request).not.toHaveBeenCalled();
 });
 

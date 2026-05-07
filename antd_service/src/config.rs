@@ -17,10 +17,7 @@ impl Config {
         Ok(Self {
             bind_addr: rest_addr.parse()?,
             network: env::var("ANTD_NETWORK").unwrap_or_else(|_| "default".to_string()),
-            internal_token: env::var("ANTD_INTERNAL_TOKEN")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            internal_token: non_empty_env("ANTD_INTERNAL_TOKEN"),
             request_timeout: duration_from_env("ANTD_REQUEST_TIMEOUT_SECONDS", 60)?,
             file_upload_request_timeout: duration_from_env(
                 "ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS",
@@ -31,6 +28,13 @@ impl Config {
             cost_cache_max_entries: usize_from_env("ANTD_COST_CACHE_MAX_ENTRIES", 512)?,
         })
     }
+}
+
+pub(crate) fn non_empty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn usize_from_env(name: &str, default_value: usize) -> anyhow::Result<usize> {

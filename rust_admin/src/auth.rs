@@ -25,6 +25,7 @@ pub(crate) const ADMIN_CSRF_COOKIE: &str = "autvid_csrf";
 pub(crate) const ADMIN_CSRF_HEADER: &str = "x-csrf-token";
 const ADMIN_AUTH_COOKIE_PATH: &str = "/api";
 const ADMIN_REFRESH_COOKIE_PATH: &str = "/api/auth";
+// The SPA reads this double-submit value from document.cookie on pages such as /manage.
 const ADMIN_CSRF_COOKIE_PATH: &str = "/";
 const REFRESH_TOKEN_BYTES: usize = 32;
 const CSRF_TOKEN_BYTES: usize = 32;

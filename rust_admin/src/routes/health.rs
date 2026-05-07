@@ -1,3 +1,8 @@
+use std::{
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
+
 use axum::{
     extract::State,
     http::{header, StatusCode},
@@ -13,6 +18,15 @@ use crate::{
     MIN_ANTD_SELF_ENCRYPTION_BYTES,
 };
 
+const JOB_METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
+static JOB_METRICS_CACHE: OnceLock<Mutex<Option<CachedJobMetrics>>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+struct CachedJobMetrics {
+    snapshot: JobMetricsSnapshot,
+    expires_at: Instant,
+}
+
 pub(super) async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     let job_metrics = load_job_metrics(&state).await;
     (
@@ -22,6 +36,27 @@ pub(super) async fn metrics(State(state): State<AppState>) -> impl IntoResponse 
 }
 
 async fn load_job_metrics(state: &AppState) -> Option<JobMetricsSnapshot> {
+    let cache = JOB_METRICS_CACHE.get_or_init(|| Mutex::new(None));
+    let now = Instant::now();
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = *guard {
+            if cached.expires_at > now {
+                return Some(cached.snapshot);
+            }
+        }
+    }
+
+    let snapshot = load_job_metrics_uncached(state).await?;
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedJobMetrics {
+            snapshot,
+            expires_at: Instant::now() + JOB_METRICS_CACHE_TTL,
+        });
+    }
+    Some(snapshot)
+}
+
+async fn load_job_metrics_uncached(state: &AppState) -> Option<JobMetricsSnapshot> {
     let row = sqlx::query(
         r#"
         SELECT

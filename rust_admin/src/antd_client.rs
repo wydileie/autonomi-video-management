@@ -1,7 +1,6 @@
 use std::{fmt, path::Path as FsPath, sync::Arc, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -167,8 +166,7 @@ impl AntdRestClient {
         byte_size: usize,
     ) -> anyhow::Result<AntdDataCostResponse> {
         let quote_size = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES);
-        let mut data = vec![0_u8; quote_size];
-        rand::thread_rng().fill_bytes(&mut data);
+        let data = vec![0_u8; quote_size];
         let mut last_error = None;
         for attempt in 1..=3 {
             match self.data_cost(&data).await {
@@ -181,6 +179,7 @@ impl AntdRestClient {
                     }
                     last_error = Some(err);
                     if attempt < 3 {
+                        self.record_upload_retry();
                         sleep(Duration::from_millis(100 * attempt as u64)).await;
                     }
                 }
@@ -373,7 +372,7 @@ pub(crate) fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
     }
 
     if let Some(err) = err.downcast_ref::<reqwest::Error>() {
-        return err.is_connect() || err.is_timeout() || err.is_request();
+        return err.is_connect() || err.is_timeout() || err.is_body();
     }
 
     false
@@ -438,6 +437,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockAntdState {
         cost_failures_remaining: Arc<AtomicUsize>,
+        cost_payload_hashes: Arc<Mutex<Vec<String>>>,
         cost_requests: Arc<AtomicUsize>,
         last_file_upload: Arc<Mutex<Option<FileUploadObservation>>>,
     }
@@ -548,6 +548,9 @@ mod tests {
 
         assert_eq!(cost.cost.as_deref(), Some("321"));
         assert_eq!(mock_state.cost_requests.load(Ordering::Relaxed), 3);
+        let hashes = mock_state.cost_payload_hashes.lock().await.clone();
+        assert_eq!(hashes.len(), 3);
+        assert!(hashes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[tokio::test]
@@ -607,6 +610,19 @@ mod tests {
         Json(body): Json<serde_json::Value>,
     ) -> axum::response::Response {
         state.cost_requests.fetch_add(1, Ordering::Relaxed);
+        let data = body
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let decoded = BASE64.decode(data).unwrap();
+        assert!(decoded.len() >= 3);
+        let mut hasher = Sha256::new();
+        hasher.update(&decoded);
+        state
+            .cost_payload_hashes
+            .lock()
+            .await
+            .push(hex_lower(&hasher.finalize()));
         if state
             .cost_failures_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
@@ -617,11 +633,6 @@ mod tests {
             return (StatusCode::SERVICE_UNAVAILABLE, "cost unavailable").into_response();
         }
 
-        let data = body
-            .get("data")
-            .and_then(serde_json::Value::as_str)
-            .unwrap();
-        assert!(BASE64.decode(data).unwrap().len() >= 3);
         Json(serde_json::json!({
             "cost": "321",
             "chunk_count": 1,

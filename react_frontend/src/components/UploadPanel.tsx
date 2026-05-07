@@ -376,7 +376,7 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
               <span>{progress < 100 ? `Uploading source file ${progress}%` : "Transcoding and preparing final quote..."}</span>
               <span>{selected.map((value) => resolutionByValue(value)?.label || value).join(", ")}</span>
             </div>
-            <div className="progress-track"><div style={{ width: `${progress}%` }} /></div>
+            <progress className="progress-track" value={progress} max={100} aria-label="Upload progress" />
           </div>
         )}
 

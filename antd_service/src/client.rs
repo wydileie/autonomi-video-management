@@ -8,6 +8,8 @@ use ant_core::data::{
 use tracing::{info, warn};
 use zeroize::Zeroize;
 
+use crate::config::non_empty_env;
+
 const DEFAULT_PEERS: &[&str] = &[
     "207.148.94.42:10000",
     "45.77.50.10:10000",
@@ -81,10 +83,7 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
 }
 
 fn wallet_key() -> Option<String> {
-    env::var("AUTONOMI_WALLET_KEY_FILE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    non_empty_env("AUTONOMI_WALLET_KEY_FILE")
         .and_then(|path| match fs::read_to_string(&path) {
             Ok(value) => Some(value),
             Err(err) => {
@@ -92,9 +91,7 @@ fn wallet_key() -> Option<String> {
                 None
             }
         })
-        .or_else(|| env::var("AUTONOMI_WALLET_KEY").ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .or_else(|| non_empty_env("AUTONOMI_WALLET_KEY"))
 }
 
 fn evm_network() -> evmlib::Network {
@@ -137,11 +134,7 @@ fn is_local_network_name(network: &str) -> bool {
 }
 
 fn first_env(names: &[&str]) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| env::var(name).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    names.iter().find_map(|name| non_empty_env(name))
 }
 
 fn bootstrap_peers() -> anyhow::Result<Vec<MultiAddr>> {
