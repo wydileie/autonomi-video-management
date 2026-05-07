@@ -58,6 +58,12 @@ pub fn push_counter(output: &mut String, name: &str, help: &str, service: &str, 
     let _ = writeln!(output, "{name}{{service=\"{service}\"}} {value}");
 }
 
+pub fn push_gauge(output: &mut String, name: &str, help: &str, service: &str, value: u64) {
+    let _ = writeln!(output, "# HELP {name} {help}");
+    let _ = writeln!(output, "# TYPE {name} gauge");
+    let _ = writeln!(output, "{name}{{service=\"{service}\"}} {value}");
+}
+
 pub fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
     let origin = origin.trim().trim_end_matches('/');
     if origin == "*" {

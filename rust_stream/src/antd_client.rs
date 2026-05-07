@@ -36,6 +36,20 @@ impl AntdRestClient {
     }
 
     pub(crate) async fn data_get_public(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+        match self.data_get_public_raw(address).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) if raw_endpoint_unavailable(&err) => {}
+            Err(err) => return Err(err),
+        }
+        self.data_get_public_json(address).await
+    }
+
+    async fn data_get_public_raw(&self, address: &str) -> anyhow::Result<Vec<u8>> {
+        self.get_bytes(&format!("/v1/data/public/{}/raw", address.trim()))
+            .await
+    }
+
+    async fn data_get_public_json(&self, address: &str) -> anyhow::Result<Vec<u8>> {
         let payload: AntdPublicDataResponse = self
             .get_json(&format!("/v1/data/public/{}", address.trim()))
             .await?;
@@ -59,4 +73,22 @@ impl AntdRestClient {
 
         response.json::<T>().await.map_err(Into::into)
     }
+
+    async fn get_bytes(&self, path: &str) -> anyhow::Result<Vec<u8>> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self.client.get(&url).send().await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "".to_string());
+            anyhow::bail!("GET {path} failed: {status} {body}");
+        }
+
+        Ok(response.bytes().await?.to_vec())
+    }
+}
+
+fn raw_endpoint_unavailable(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("/raw failed: 404") || message.contains("/raw failed: 405")
 }

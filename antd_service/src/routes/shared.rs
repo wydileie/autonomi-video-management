@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ant_core::data::{Client as CoreClient, DataMap, PaymentMode};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -37,20 +39,24 @@ pub(super) fn hex_to_address(value: &str) -> Result<[u8; 32], ApiError> {
         .map_err(|_| ApiError::bad_request("address must be 32 bytes"))
 }
 
-pub(super) fn resolve_data_map(inner: &CoreClient, data_map: DataMap) -> Result<DataMap, ApiError> {
+pub(super) async fn resolve_data_map(
+    inner: Arc<CoreClient>,
+    data_map: DataMap,
+) -> Result<DataMap, ApiError> {
     if !data_map.is_child() {
         return Ok(data_map);
     }
 
     let handle = tokio::runtime::Handle::current();
-    tokio::task::block_in_place(|| {
+    tokio::task::spawn_blocking(move || {
         let fetch =
             |batch: &[(usize, xor_name::XorName)]| -> Result<
                 Vec<(usize, bytes::Bytes)>,
                 self_encryption::Error,
             > {
                 let batch_owned: Vec<(usize, xor_name::XorName)> = batch.to_vec();
-                handle.block_on(async {
+                let inner = inner.clone();
+                handle.block_on(async move {
                     let mut results = Vec::with_capacity(batch_owned.len());
                     for (idx, hash) in batch_owned {
                         let chunk = inner.chunk_get(&hash.0).await.map_err(|err| {
@@ -71,6 +77,18 @@ pub(super) fn resolve_data_map(inner: &CoreClient, data_map: DataMap) -> Result<
             };
         self_encryption::get_root_data_map_parallel(data_map, &fetch)
     })
+    .await
+    .map_err(|err| {
+        let detail = match err.try_into_panic() {
+            Ok(panic) => match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+                (Some(message), _) => format!("DataMap resolution task panicked: {message}"),
+                (_, Some(message)) => format!("DataMap resolution task panicked: {message}"),
+                _ => "DataMap resolution task panicked".to_string(),
+            },
+            Err(err) => format!("DataMap resolution task failed: {err}"),
+        };
+        ApiError::from_message(detail)
+    })?
     .map_err(|err| ApiError::from_message(format!("DataMap resolution failed: {err}")))
 }
 

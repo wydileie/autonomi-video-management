@@ -27,7 +27,7 @@ pub(crate) fn segment_headers(state: &AppState) -> HeaderMap {
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp2t"));
     headers.insert(
         header::CACHE_CONTROL,
-        cache_control_header(state.cache_config.segment_max_age_seconds()),
+        segment_cache_control_header(state.cache_config.segment_max_age_seconds()),
     );
     headers
 }
@@ -38,6 +38,15 @@ fn cache_control_header(max_age_seconds: u64) -> HeaderValue {
     }
 
     HeaderValue::from_str(&format!("public, max-age={max_age_seconds}"))
+        .unwrap_or_else(|_| HeaderValue::from_static("no-store"))
+}
+
+fn segment_cache_control_header(max_age_seconds: u64) -> HeaderValue {
+    if max_age_seconds == 0 {
+        return HeaderValue::from_static("no-store");
+    }
+
+    HeaderValue::from_str(&format!("public, max-age={max_age_seconds}, immutable"))
         .unwrap_or_else(|_| HeaderValue::from_static("no-store"))
 }
 
