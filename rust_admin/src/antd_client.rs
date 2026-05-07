@@ -1,15 +1,9 @@
-use std::{
-    fmt,
-    path::Path as FsPath,
-    sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc,
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::Path as FsPath, sync::Arc, time::Duration};
 
+use autvid_common::{
+    is_retryable_antd_error, jitter_duration, AutonomiHttpStatusError, CircuitBreaker,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -28,76 +22,6 @@ pub(crate) struct AntdRestClient {
     metrics: Arc<AdminMetrics>,
     internal_token: Option<String>,
     circuit: Arc<CircuitBreaker>,
-}
-
-#[derive(Debug)]
-struct AntdHttpStatusError {
-    method: reqwest::Method,
-    path: String,
-    status: reqwest::StatusCode,
-    body: String,
-}
-
-impl fmt::Display for AntdHttpStatusError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} {} failed: {} {}",
-            self.method, self.path, self.status, self.body
-        )
-    }
-}
-
-impl std::error::Error for AntdHttpStatusError {}
-
-#[derive(Debug, Default)]
-struct CircuitBreaker {
-    consecutive_failures: AtomicUsize,
-    opened_until_epoch_ms: AtomicU64,
-}
-
-impl CircuitBreaker {
-    const FAILURE_THRESHOLD: usize = 5;
-    const OPEN_DURATION: Duration = Duration::from_secs(30);
-
-    fn check(&self) -> anyhow::Result<()> {
-        let now = epoch_millis();
-        let opened_until = self.opened_until_epoch_ms.load(Ordering::Relaxed);
-        if opened_until > now {
-            anyhow::bail!(
-                "Autonomi request circuit is open for {}ms",
-                opened_until.saturating_sub(now)
-            );
-        }
-        Ok(())
-    }
-
-    fn record_result<T>(&self, result: &anyhow::Result<T>) {
-        if result.is_ok() {
-            self.consecutive_failures.store(0, Ordering::Relaxed);
-            self.opened_until_epoch_ms.store(0, Ordering::Relaxed);
-            return;
-        }
-
-        let Some(err) = result.as_ref().err() else {
-            return;
-        };
-        if !is_retryable_antd_error(err) {
-            self.consecutive_failures.store(0, Ordering::Relaxed);
-            return;
-        }
-
-        let failures = self
-            .consecutive_failures
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        if failures >= Self::FAILURE_THRESHOLD {
-            let opened_until = epoch_millis()
-                .saturating_add(Self::OPEN_DURATION.as_millis().min(u128::from(u64::MAX)) as u64);
-            self.opened_until_epoch_ms
-                .store(opened_until, Ordering::Relaxed);
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -241,6 +165,7 @@ impl AntdRestClient {
                     last_error = Some(err);
                     if attempt < 3 {
                         self.record_upload_retry();
+                        // Cost quotes are tiny and user-facing, so retry quickly.
                         sleep(jitter_duration(Duration::from_millis(100 * attempt as u64))).await;
                     }
                 }
@@ -288,6 +213,7 @@ impl AntdRestClient {
             {
                 Ok(result) => return Ok(result),
                 Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
+                    // Full file uploads back off more slowly to avoid re-sending large streams.
                     let delay = jitter_duration(Duration::from_secs(
                         2_u64.pow((attempt - 1).min(4) as u32),
                     ));
@@ -341,7 +267,7 @@ impl AntdRestClient {
             let status = response.status();
             let text = response.text().await?;
             if !status.is_success() {
-                return Err(AntdHttpStatusError {
+                return Err(AutonomiHttpStatusError {
                     method: reqwest::Method::POST,
                     path: "/v1/file/public".to_string(),
                     status,
@@ -382,7 +308,7 @@ impl AntdRestClient {
             let status = response.status();
             let text = response.text().await?;
             if !status.is_success() {
-                return Err(AntdHttpStatusError {
+                return Err(AutonomiHttpStatusError {
                     method: method.clone(),
                     path: path.to_string(),
                     status,
@@ -413,15 +339,6 @@ impl AntdRestClient {
     }
 }
 
-pub(crate) fn jitter_duration(base: Duration) -> Duration {
-    if base.is_zero() {
-        return base;
-    }
-    let factor = rand::thread_rng().gen_range(0.8..=1.2);
-    let millis = (base.as_millis() as f64 * factor).round().max(1.0) as u64;
-    Duration::from_millis(millis)
-}
-
 fn metrics_path(path: &str) -> String {
     if path.starts_with("/v1/data/public/") {
         "/v1/data/public/:address".to_string()
@@ -430,17 +347,9 @@ fn metrics_path(path: &str) -> String {
     }
 }
 
-fn epoch_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64
-}
-
 pub(crate) fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
     if let Some(status) = err
-        .downcast_ref::<AntdHttpStatusError>()
+        .downcast_ref::<AutonomiHttpStatusError>()
         .map(|err| err.status)
     {
         return matches!(
@@ -454,21 +363,6 @@ pub(crate) fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
     let message = err.to_string();
     message.contains("/v1/file/public")
         && (message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 "))
-}
-
-pub(crate) fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
-    if let Some(status) = err
-        .downcast_ref::<AntdHttpStatusError>()
-        .map(|err| err.status)
-    {
-        return status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
-    }
-
-    if let Some(err) = err.downcast_ref::<reqwest::Error>() {
-        return err.is_connect() || err.is_timeout() || err.is_body();
-    }
-
-    false
 }
 
 async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
@@ -521,9 +415,10 @@ mod tests {
     use tokio::sync::Mutex;
     use uuid::Uuid;
 
+    use autvid_common::AutonomiHttpStatusError;
+
     use super::{
-        hex_lower, is_missing_file_upload_endpoint, AntdHttpStatusError, AntdRestClient, Digest,
-        Sha256, BASE64,
+        hex_lower, is_missing_file_upload_endpoint, AntdRestClient, Digest, Sha256, BASE64,
     };
     use crate::metrics::AdminMetrics;
 
@@ -546,7 +441,7 @@ mod tests {
 
     #[test]
     fn treats_only_missing_file_upload_statuses_as_missing_endpoint() {
-        let err: anyhow::Error = AntdHttpStatusError {
+        let err: anyhow::Error = AutonomiHttpStatusError {
             method: reqwest::Method::POST,
             path: "/v1/file/public".to_string(),
             status: reqwest::StatusCode::NOT_FOUND,

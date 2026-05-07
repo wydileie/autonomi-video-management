@@ -1,15 +1,17 @@
 use std::{
     env,
-    fmt::Write as _,
+    error::Error,
+    fmt::{self, Write as _},
     fs,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Mutex,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use http::HeaderValue;
+use http::{HeaderValue, Method, StatusCode};
+use rand::Rng;
 use subtle::ConstantTimeEq;
 
 const DEFAULT_LATENCY_BUCKETS_MS: &[u64] = &[
@@ -19,7 +21,7 @@ const DEFAULT_LATENCY_BUCKETS_MS: &[u64] = &[
 #[derive(Clone, Debug)]
 pub struct HistogramSnapshot {
     pub buckets_ms: Vec<u64>,
-    pub counts: Vec<u64>,
+    pub cumulative_counts: Vec<u64>,
     pub count: u64,
     pub sum_ms: u64,
 }
@@ -32,7 +34,7 @@ pub struct LatencyHistogram {
 
 #[derive(Debug)]
 struct HistogramState {
-    counts: Vec<u64>,
+    cumulative_counts: Vec<u64>,
     count: u64,
     sum_ms: u64,
 }
@@ -48,7 +50,7 @@ impl LatencyHistogram {
         Self {
             buckets_ms,
             inner: Mutex::new(HistogramState {
-                counts: vec![0; buckets_ms.len()],
+                cumulative_counts: vec![0; buckets_ms.len()],
                 count: 0,
                 sum_ms: 0,
             }),
@@ -65,7 +67,7 @@ impl LatencyHistogram {
         guard.sum_ms = guard.sum_ms.saturating_add(millis);
         for (index, bucket_ms) in self.buckets_ms.iter().enumerate() {
             if millis <= *bucket_ms {
-                guard.counts[index] = guard.counts[index].saturating_add(1);
+                guard.cumulative_counts[index] = guard.cumulative_counts[index].saturating_add(1);
             }
         }
     }
@@ -74,7 +76,7 @@ impl LatencyHistogram {
         let guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         HistogramSnapshot {
             buckets_ms: self.buckets_ms.to_vec(),
-            counts: guard.counts.clone(),
+            cumulative_counts: guard.cumulative_counts.clone(),
             count: guard.count,
             sum_ms: guard.sum_ms,
         }
@@ -134,6 +136,124 @@ impl HttpMetrics {
             &self.request_latency.snapshot(),
         );
         output
+    }
+}
+
+#[derive(Debug)]
+pub struct AutonomiHttpStatusError {
+    pub method: Method,
+    pub path: String,
+    pub status: StatusCode,
+    pub body: String,
+}
+
+impl fmt::Display for AutonomiHttpStatusError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} {} failed: {} {}",
+            self.method, self.path, self.status, self.body
+        )
+    }
+}
+
+impl Error for AutonomiHttpStatusError {}
+
+#[derive(Debug, Default)]
+pub struct CircuitBreaker {
+    consecutive_failures: AtomicUsize,
+    opened_until_epoch_ms: AtomicU64,
+}
+
+impl CircuitBreaker {
+    const FAILURE_THRESHOLD: usize = 5;
+    const OPEN_DURATION: Duration = Duration::from_secs(30);
+
+    pub fn check(&self) -> anyhow::Result<()> {
+        let now = epoch_millis();
+        let opened_until = self.opened_until_epoch_ms.load(Ordering::Relaxed);
+        if opened_until > now {
+            anyhow::bail!(
+                "Autonomi request circuit is open for {}ms",
+                opened_until.saturating_sub(now)
+            );
+        }
+        Ok(())
+    }
+
+    pub fn record_result<T>(&self, result: &anyhow::Result<T>) {
+        if result.is_ok() {
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            self.opened_until_epoch_ms.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        let Some(err) = result.as_ref().err() else {
+            return;
+        };
+        if !is_retryable_antd_error(err) {
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            return;
+        }
+
+        let failures = self
+            .consecutive_failures
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if failures >= Self::FAILURE_THRESHOLD {
+            let opened_until = epoch_millis()
+                .saturating_add(Self::OPEN_DURATION.as_millis().min(u128::from(u64::MAX)) as u64);
+            self.opened_until_epoch_ms
+                .store(opened_until, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
+    if let Some(status) = err
+        .downcast_ref::<AutonomiHttpStatusError>()
+        .map(|err| err.status)
+    {
+        return status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+    }
+
+    if let Some(err) = err.downcast_ref::<reqwest::Error>() {
+        return err.is_connect() || err.is_timeout() || err.is_body();
+    }
+
+    false
+}
+
+pub fn jitter_duration(base: Duration) -> Duration {
+    if base.is_zero() {
+        return base;
+    }
+    let factor = rand::thread_rng().gen_range(0.8..=1.2);
+    let millis = (base.as_millis() as f64 * factor).round().max(1.0) as u64;
+    Duration::from_millis(millis)
+}
+
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }
 
@@ -198,7 +318,11 @@ pub fn push_histogram_samples(
     extra_labels: &[(&str, &str)],
     snapshot: &HistogramSnapshot,
 ) {
-    for (bucket_ms, count) in snapshot.buckets_ms.iter().zip(snapshot.counts.iter()) {
+    for (bucket_ms, count) in snapshot
+        .buckets_ms
+        .iter()
+        .zip(snapshot.cumulative_counts.iter())
+    {
         let labels = prometheus_labels(service, extra_labels, Some(*bucket_ms));
         let _ = writeln!(output, "{name}_bucket{{{labels}}} {count}");
     }
@@ -228,6 +352,14 @@ fn escape_label_value(value: &str) -> String {
         .replace('\\', r"\\")
         .replace('"', r#"\""#)
         .replace('\n', r"\n")
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 pub fn normalize_cors_origin(origin: &str) -> anyhow::Result<String> {
@@ -317,8 +449,68 @@ mod tests {
     }
 
     #[test]
+    fn histogram_snapshot_names_cumulative_bucket_counts() {
+        let histogram = LatencyHistogram::new(&[10, 100]);
+        histogram.record_ms(10);
+        histogram.record_ms(75);
+
+        let snapshot = histogram.snapshot();
+
+        assert_eq!(snapshot.cumulative_counts, vec![1, 2]);
+        assert_eq!(snapshot.count, 2);
+    }
+
+    #[test]
     fn constant_time_comparison_matches_string_equality() {
         assert!(constant_time_eq("same", "same"));
         assert!(!constant_time_eq("same", "different"));
+    }
+
+    #[test]
+    fn retry_classifier_uses_shared_http_status_error() {
+        let err: anyhow::Error = AutonomiHttpStatusError {
+            method: Method::GET,
+            path: "/health".to_string(),
+            status: StatusCode::TOO_MANY_REQUESTS,
+            body: "slow down".to_string(),
+        }
+        .into();
+        assert!(is_retryable_antd_error(&err));
+
+        let err: anyhow::Error = AutonomiHttpStatusError {
+            method: Method::GET,
+            path: "/missing".to_string(),
+            status: StatusCode::NOT_FOUND,
+            body: "missing".to_string(),
+        }
+        .into();
+        assert!(!is_retryable_antd_error(&err));
+    }
+
+    #[test]
+    fn circuit_breaker_opens_after_retryable_failures_and_resets_on_success() {
+        let breaker = CircuitBreaker::default();
+
+        for _ in 0..5 {
+            let result: anyhow::Result<()> = Err(AutonomiHttpStatusError {
+                method: Method::GET,
+                path: "/health".to_string(),
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                body: "unavailable".to_string(),
+            }
+            .into());
+            breaker.record_result(&result);
+        }
+
+        assert!(breaker.check().is_err());
+
+        let result: anyhow::Result<()> = Ok(());
+        breaker.record_result(&result);
+        assert!(breaker.check().is_ok());
+    }
+
+    #[test]
+    fn jitter_leaves_zero_duration_unchanged() {
+        assert_eq!(jitter_duration(Duration::ZERO), Duration::ZERO);
     }
 }

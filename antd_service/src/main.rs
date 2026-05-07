@@ -1,7 +1,7 @@
 use std::time::Duration as StdDuration;
 use std::{fs, sync::Arc};
 
-use autvid_common::HttpMetrics;
+use autvid_common::{shutdown_signal as wait_for_shutdown_signal, HttpMetrics};
 use axum::http::{header, HeaderName, Method, Request, Response};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -111,26 +111,6 @@ fn cors_layer(config: &Config) -> CorsLayer {
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
+    wait_for_shutdown_signal().await;
     info!("shutdown signal received");
 }

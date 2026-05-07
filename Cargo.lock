@@ -1325,7 +1325,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "http",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
  "subtle",
+ "tokio",
 ]
 
 [[package]]
@@ -5286,7 +5289,6 @@ dependencies = [
  "base64",
  "bytes",
  "linked-hash-map",
- "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

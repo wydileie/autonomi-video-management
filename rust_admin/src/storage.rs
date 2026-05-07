@@ -1,12 +1,13 @@
 use std::time::Duration as StdDuration;
 
+use autvid_common::{is_retryable_antd_error, jitter_duration};
 use axum::http::StatusCode;
 use serde::Serialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::{
-    antd_client::{is_retryable_antd_error, jitter_duration, AntdDataPutResponse, AntdRestClient},
+    antd_client::{AntdDataPutResponse, AntdRestClient},
     errors::ApiError,
     state::AppState,
     upload::format_bytes,

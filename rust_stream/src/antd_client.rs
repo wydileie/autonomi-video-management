@@ -1,15 +1,10 @@
-use std::{
-    fmt,
-    sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc,
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Arc, time::Duration};
 
+use autvid_common::{
+    is_retryable_antd_error, jitter_duration, AutonomiHttpStatusError, CircuitBreaker,
+};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
-use rand::Rng;
 use serde::Deserialize;
 use tokio::time::sleep;
 use tracing::warn;
@@ -20,76 +15,6 @@ pub(crate) struct AntdRestClient {
     client: reqwest::Client,
     internal_token: Option<String>,
     circuit: Arc<CircuitBreaker>,
-}
-
-#[derive(Debug)]
-struct AntdHttpStatusError {
-    method: reqwest::Method,
-    path: String,
-    status: reqwest::StatusCode,
-    body: String,
-}
-
-impl fmt::Display for AntdHttpStatusError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} {} failed: {} {}",
-            self.method, self.path, self.status, self.body
-        )
-    }
-}
-
-impl std::error::Error for AntdHttpStatusError {}
-
-#[derive(Debug, Default)]
-struct CircuitBreaker {
-    consecutive_failures: AtomicUsize,
-    opened_until_epoch_ms: AtomicU64,
-}
-
-impl CircuitBreaker {
-    const FAILURE_THRESHOLD: usize = 5;
-    const OPEN_DURATION: Duration = Duration::from_secs(30);
-
-    fn check(&self) -> anyhow::Result<()> {
-        let now = epoch_millis();
-        let opened_until = self.opened_until_epoch_ms.load(Ordering::Relaxed);
-        if opened_until > now {
-            anyhow::bail!(
-                "Autonomi request circuit is open for {}ms",
-                opened_until.saturating_sub(now)
-            );
-        }
-        Ok(())
-    }
-
-    fn record_result<T>(&self, result: &anyhow::Result<T>) {
-        if result.is_ok() {
-            self.consecutive_failures.store(0, Ordering::Relaxed);
-            self.opened_until_epoch_ms.store(0, Ordering::Relaxed);
-            return;
-        }
-
-        let Some(err) = result.as_ref().err() else {
-            return;
-        };
-        if !is_retryable_antd_error(err) {
-            self.consecutive_failures.store(0, Ordering::Relaxed);
-            return;
-        }
-
-        let failures = self
-            .consecutive_failures
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        if failures >= Self::FAILURE_THRESHOLD {
-            let opened_until = epoch_millis()
-                .saturating_add(Self::OPEN_DURATION.as_millis().min(u128::from(u64::MAX)) as u64);
-            self.opened_until_epoch_ms
-                .store(opened_until, Ordering::Relaxed);
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -186,7 +111,7 @@ impl AntdRestClient {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "".to_string());
-            return Err(AntdHttpStatusError {
+            return Err(AutonomiHttpStatusError {
                 method: reqwest::Method::GET,
                 path: path.to_string(),
                 status,
@@ -234,7 +159,7 @@ impl AntdRestClient {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "".to_string());
-            return Err(AntdHttpStatusError {
+            return Err(AutonomiHttpStatusError {
                 method: reqwest::Method::GET,
                 path: path.to_string(),
                 status,
@@ -255,7 +180,7 @@ impl AntdRestClient {
 }
 
 fn raw_endpoint_unavailable(err: &anyhow::Error) -> bool {
-    if let Some(err) = err.downcast_ref::<AntdHttpStatusError>() {
+    if let Some(err) = err.downcast_ref::<AutonomiHttpStatusError>() {
         return err.path.ends_with("/raw")
             && matches!(
                 err.status,
@@ -265,34 +190,8 @@ fn raw_endpoint_unavailable(err: &anyhow::Error) -> bool {
     false
 }
 
-fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
-    if let Some(status) = err
-        .downcast_ref::<AntdHttpStatusError>()
-        .map(|err| err.status)
-    {
-        return status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
-    }
-    if let Some(err) = err.downcast_ref::<reqwest::Error>() {
-        return err.is_connect() || err.is_timeout() || err.is_body();
-    }
-    false
-}
-
 fn retry_delay(attempt: usize) -> Duration {
+    // Segment reads are latency-sensitive, so start below the admin file-upload delay.
     let base = Duration::from_millis(250 * 2_u64.pow((attempt - 1).min(4) as u32));
     jitter_duration(base)
-}
-
-fn jitter_duration(base: Duration) -> Duration {
-    let factor = rand::thread_rng().gen_range(0.8..=1.2);
-    let millis = (base.as_millis() as f64 * factor).round().max(1.0) as u64;
-    Duration::from_millis(millis)
-}
-
-fn epoch_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u128::from(u64::MAX)) as u64
 }

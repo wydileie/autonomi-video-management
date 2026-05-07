@@ -380,7 +380,7 @@ pub(crate) fn assert_under(path: &FsPath, root: &FsPath) -> Result<PathBuf, ApiE
 
     if !target.starts_with(&root) {
         return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
             "Media path is outside the configured upload workspace",
         ));
     }
@@ -766,11 +766,12 @@ pub(crate) fn enforce_upload_media_limits(
 mod tests {
     use std::fs;
 
+    use axum::http::StatusCode;
     use serde_json::json;
     use uuid::Uuid;
 
     use super::{
-        collect_segment_files, estimate_transcoded_bytes, parse_probe_duration,
+        assert_under, collect_segment_files, estimate_transcoded_bytes, parse_probe_duration,
         stream_rotation_degrees, target_dimensions_for_source, target_video_bitrate_kbps,
     };
 
@@ -857,5 +858,19 @@ mod tests {
 
         assert_eq!(names, vec!["seg_00002.ts", "seg_00010.ts", "seg_bad.ts"]);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn assert_under_treats_workspace_escape_as_server_integrity_error() {
+        let base = std::env::temp_dir().join(format!("autvid_assert_under_{}", Uuid::new_v4()));
+        let root = base.join("upload-temp");
+        let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let err = assert_under(&outside.join("source.mp4"), &root).unwrap_err();
+
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let _ = fs::remove_dir_all(base);
     }
 }
