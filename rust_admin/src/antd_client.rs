@@ -542,6 +542,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_antd_cost_estimate_open_circuit_preserves_last_error() {
+        let mock_state = MockAntdState::default();
+        mock_state
+            .cost_failures_remaining
+            .store(10, Ordering::Relaxed);
+        let base_url = spawn_mock_antd(mock_state.clone()).await;
+        let client =
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default()), None).unwrap();
+
+        let first_error = match client.data_cost_for_size(3).await {
+            Ok(_) => panic!("expected persistent cost estimate failure"),
+            Err(err) => err,
+        };
+        assert!(first_error.to_string().contains("cost unavailable"));
+
+        let second_error = match client.data_cost_for_size(3).await {
+            Ok(_) => panic!("expected circuit-open cost estimate failure"),
+            Err(err) => err,
+        };
+        let message = second_error.to_string();
+        assert!(message.contains("Autonomi request circuit is open"));
+        assert!(message.contains("last retryable error"));
+        assert!(message.contains("POST /v1/data/cost failed: 503 Service Unavailable"));
+        assert!(message.contains("cost unavailable"));
+        assert_eq!(mock_state.cost_requests.load(Ordering::Relaxed), 5);
+    }
+
+    #[tokio::test]
     async fn mock_antd_client_rejects_invalid_base64_downloads() {
         let base_url = spawn_mock_antd(MockAntdState::default()).await;
         let client =
