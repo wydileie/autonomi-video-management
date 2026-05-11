@@ -15,6 +15,8 @@ use crate::{
     config::duration_from_secs_f64, metrics::AdminMetrics, MIN_ANTD_SELF_ENCRYPTION_BYTES,
 };
 
+const COST_ESTIMATE_ATTEMPTS: usize = 5;
+
 #[derive(Clone)]
 pub(crate) struct AntdRestClient {
     base_url: String,
@@ -153,7 +155,7 @@ impl AntdRestClient {
         let quote_size = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES);
         let data = vec![0_u8; quote_size];
         let mut last_error = None;
-        for attempt in 1..=3 {
+        for attempt in 1..=COST_ESTIMATE_ATTEMPTS {
             match self.data_cost(&data).await {
                 Ok(estimate) => return Ok(estimate),
                 Err(err) => {
@@ -163,10 +165,20 @@ impl AntdRestClient {
                         ));
                     }
                     last_error = Some(err);
-                    if attempt < 3 {
+                    if attempt < COST_ESTIMATE_ATTEMPTS {
                         self.record_upload_retry();
-                        // Cost quotes are tiny and user-facing, so retry quickly.
-                        sleep(jitter_duration(Duration::from_millis(100 * attempt as u64))).await;
+                        let delay = jitter_duration(Duration::from_millis(
+                            250 * 2_u64.pow((attempt - 1).min(3) as u32),
+                        ));
+                        warn!(
+                            "Autonomi cost estimate failed on attempt {}/{} for {} quote bytes: {}; retrying in {}ms",
+                            attempt,
+                            COST_ESTIMATE_ATTEMPTS,
+                            quote_size,
+                            last_error.as_ref().unwrap(),
+                            delay.as_millis()
+                        );
+                        sleep(delay).await;
                     }
                 }
             }
@@ -397,7 +409,7 @@ mod tests {
     use std::{
         collections::HashMap,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU16, AtomicUsize, Ordering},
             Arc,
         },
     };
@@ -425,6 +437,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockAntdState {
         cost_failures_remaining: Arc<AtomicUsize>,
+        cost_failure_status: Arc<AtomicU16>,
         cost_payload_hashes: Arc<Mutex<Vec<String>>>,
         cost_requests: Arc<AtomicUsize>,
         last_file_upload: Arc<Mutex<Option<FileUploadObservation>>>,
@@ -542,6 +555,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mock_antd_cost_estimate_retries_request_timeout() {
+        let mock_state = MockAntdState::default();
+        mock_state
+            .cost_failures_remaining
+            .store(1, Ordering::Relaxed);
+        mock_state
+            .cost_failure_status
+            .store(StatusCode::REQUEST_TIMEOUT.as_u16(), Ordering::Relaxed);
+        let base_url = spawn_mock_antd(mock_state.clone()).await;
+        let client =
+            AntdRestClient::new(&base_url, 5.0, Arc::new(AdminMetrics::default()), None).unwrap();
+
+        let cost = client.data_cost_for_size(3).await.unwrap();
+
+        assert_eq!(cost.cost.as_deref(), Some("321"));
+        assert_eq!(mock_state.cost_requests.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
     async fn mock_antd_cost_estimate_open_circuit_preserves_last_error() {
         let mock_state = MockAntdState::default();
         mock_state
@@ -646,7 +678,9 @@ mod tests {
             })
             .is_ok()
         {
-            return (StatusCode::SERVICE_UNAVAILABLE, "cost unavailable").into_response();
+            let status = StatusCode::from_u16(state.cost_failure_status.load(Ordering::Relaxed))
+                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+            return (status, "cost unavailable").into_response();
         }
 
         Json(serde_json::json!({

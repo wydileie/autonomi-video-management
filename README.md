@@ -336,14 +336,14 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ANTD_UPLOAD_VERIFY` | No | Read each uploaded segment back before publishing the manifest. Default: `true` |
 | `ANTD_UPLOAD_RETRIES` | No | Number of upload/verify attempts per segment. Default: `3` |
 | `ANTD_UPLOAD_TIMEOUT_SECONDS` | No | Per upload/read-back timeout before retrying a segment. Default: `120` |
-| `ANTD_QUOTE_CONCURRENCY` | No | Rust admin concurrent final-quote cost checks. Default: `8` |
+| `ANTD_QUOTE_CONCURRENCY` | No | Rust admin concurrent final-quote cost checks. Default: `2` |
 | `ANTD_UPLOAD_CONCURRENCY` | No | Rust admin concurrent segment upload/verify tasks. Default: `4` |
 | `ANTD_APPROVE_ON_STARTUP` | No | Whether `rust_admin` runs the one-time wallet spend approval on startup. Default: `true` |
 | `ANTD_REQUIRE_COST_READY` | No | Whether admin startup and health require a successful Autonomi write-cost probe, not just `/health`. Default: `false` |
 | `ANTD_DIRECT_UPLOAD_MAX_BYTES` | No | Max bytes allowed through the legacy base64 JSON data endpoint from `rust_admin`; media files use the streaming file endpoint. Default: `16777216` |
 | `ANTD_FILE_UPLOAD_MAX_BYTES` | No | Max bytes accepted by the `antd` streaming file route. Default: `21474836480` |
 | `ANTD_UPLOAD_TEMP_DIR` | No | Temp directory used by `antd` while verifying streaming uploads. Default: `/tmp` |
-| `ANTD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway default route timeout for non-file-upload requests. Default: `60` |
+| `ANTD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway default route timeout for non-file-upload requests. Default: `150` |
 | `ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `antd` gateway streaming file upload route timeout. Default: `3600` |
 | `ANTD_JSON_BODY_LIMIT_BYTES` | No | `antd` gateway JSON body limit for quote/cost and legacy data routes. Default: `33554432` |
 | `ADMIN_JOB_WORKERS` | No | Number of durable `rust_admin` DB job workers. Default: `1` |

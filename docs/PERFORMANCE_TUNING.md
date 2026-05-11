@@ -25,7 +25,7 @@ temporary FFmpeg output, and final HLS segments.
 These values control pressure on the `antd` gateway and Autonomi network:
 
 ```dotenv
-ANTD_QUOTE_CONCURRENCY=8
+ANTD_QUOTE_CONCURRENCY=2
 ANTD_UPLOAD_CONCURRENCY=4
 ANTD_UPLOAD_RETRIES=3
 ANTD_UPLOAD_TIMEOUT_SECONDS=120
