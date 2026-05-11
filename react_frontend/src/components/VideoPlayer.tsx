@@ -18,6 +18,7 @@ const HLS_RETRY_CONFIG = {
   manifestLoadingRetryDelay: 500,
 };
 const HLS_FATAL_RECOVERY_ATTEMPTS = 1;
+const MEDIA_HAVE_FUTURE_DATA = 3;
 
 interface PlaybackState {
   currentTime: number;
@@ -43,6 +44,7 @@ export default function VideoPlayer({
   const hlsRef = useRef<Hls | null>(null);
   const controlsIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playbackStateRef = useRef<PlaybackState>({ currentTime: 0, shouldResume: false });
+  const playbackIntentRef = useRef(false);
   const [qualityOpen, setQualityOpen] = useState(false);
   const [controlsActive, setControlsActive] = useState(true);
   const [playbackError, setPlaybackError] = useState("");
@@ -82,15 +84,18 @@ export default function VideoPlayer({
     scheduleControlsIdleHide();
   }, [scheduleControlsIdleHide]);
 
+  const capturePlaybackStateFromVideo = useCallback((video: HTMLVideoElement) => {
+    playbackStateRef.current = {
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      shouldResume: playbackIntentRef.current || (!video.paused && !video.ended),
+    };
+  }, []);
+
   const capturePlaybackState = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-
-    playbackStateRef.current = {
-      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
-      shouldResume: !video.paused && !video.ended,
-    };
-  }, []);
+    capturePlaybackStateFromVideo(video);
+  }, [capturePlaybackStateFromVideo]);
 
   const handleResolutionChange = useCallback((nextResolution: string) => {
     capturePlaybackState();
@@ -109,9 +114,46 @@ export default function VideoPlayer({
     let restorePending = resumeAt > 0;
     let hlsManifestParsed = false;
     let resumedAfterRestore = false;
+    let nativeSeekRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+    let nativeSeekResumeAt = 0;
+    let nativeSeekShouldResume = false;
     const readCurrentTime = () => (
       Number.isFinite(video.currentTime) ? video.currentTime : 0
     );
+    const clearNativeSeekRecoveryTimer = () => {
+      if (nativeSeekRecoveryTimer) {
+        clearTimeout(nativeSeekRecoveryTimer);
+        nativeSeekRecoveryTimer = null;
+      }
+    };
+    const wantsPlayback = () => (
+      playbackIntentRef.current || (!video.paused && !video.ended)
+    );
+    const requestPlayback = () => {
+      playbackIntentRef.current = true;
+      video.play().catch(() => {});
+    };
+    const scheduleNativeSeekRecovery = () => {
+      clearNativeSeekRecoveryTimer();
+      if (!nativeSeekShouldResume) return;
+
+      nativeSeekRecoveryTimer = setTimeout(() => {
+        nativeSeekRecoveryTimer = null;
+        if (!active || !nativeSeekShouldResume || video.ended) return;
+
+        if (video.paused || video.readyState < MEDIA_HAVE_FUTURE_DATA) {
+          try {
+            if (Math.abs(readCurrentTime() - nativeSeekResumeAt) > RESUME_DURATION_TOLERANCE_SECONDS) {
+              video.currentTime = nativeSeekResumeAt;
+            }
+          } catch {
+            // Safari can reject seeks while native HLS is swapping internal buffers.
+          }
+          requestPlayback();
+          scheduleNativeSeekRecovery();
+        }
+      }, 750);
+    };
     const syncPendingSeek = () => {
       if (!restorePending) return;
       pendingResumeAt = readCurrentTime();
@@ -130,7 +172,7 @@ export default function VideoPlayer({
     const resumePlayback = () => {
       if (shouldResume && !resumedAfterRestore) {
         resumedAfterRestore = true;
-        video.play().catch(() => {});
+        requestPlayback();
       }
     };
     const removeNativeRestoreListeners = () => {
@@ -166,17 +208,62 @@ export default function VideoPlayer({
       const onNativePlaybackError = () => {
         setPlaybackError("Playback failed because the video segments could not be loaded.");
       };
+      const rememberNativeSeekIntent = () => {
+        nativeSeekResumeAt = readCurrentTime();
+        nativeSeekShouldResume = restorePending
+          ? wantsPlayback() || shouldResume
+          : wantsPlayback();
+        if (nativeSeekShouldResume) scheduleNativeSeekRecovery();
+      };
+      const resumeAfterNativeSeek = () => {
+        nativeSeekResumeAt = readCurrentTime();
+        if (!nativeSeekShouldResume) return;
+        requestPlayback();
+        scheduleNativeSeekRecovery();
+      };
+      const finishNativeSeekRecovery = () => {
+        nativeSeekShouldResume = false;
+        clearNativeSeekRecoveryTimer();
+      };
+      const recoverNativeSeekStall = () => {
+        if (!nativeSeekShouldResume && !wantsPlayback()) return;
+        nativeSeekResumeAt = readCurrentTime();
+        nativeSeekShouldResume = true;
+        scheduleNativeSeekRecovery();
+      };
+      const cancelNativeSeekRecovery = () => {
+        if (video.seeking) return;
+        nativeSeekShouldResume = false;
+        clearNativeSeekRecoveryTimer();
+      };
       video.addEventListener("canplay", restoreNativePlayback);
       video.addEventListener("durationchange", restoreNativePlayback);
       video.addEventListener("loadeddata", restoreNativePlayback);
       video.addEventListener("loadedmetadata", restoreNativePlayback);
       video.addEventListener("seeking", syncPendingSeek);
+      video.addEventListener("seeking", rememberNativeSeekIntent);
+      video.addEventListener("seeked", resumeAfterNativeSeek);
+      video.addEventListener("canplay", resumeAfterNativeSeek);
+      video.addEventListener("playing", finishNativeSeekRecovery);
+      video.addEventListener("pause", cancelNativeSeekRecovery);
+      video.addEventListener("stalled", recoverNativeSeekStall);
+      video.addEventListener("waiting", recoverNativeSeekStall);
       video.addEventListener("error", onNativePlaybackError, { once: true });
       video.src = src;
       video.load();
       cleanupPlayback = () => {
+        clearNativeSeekRecoveryTimer();
         removeNativeRestoreListeners();
+        video.removeEventListener("seeking", rememberNativeSeekIntent);
+        video.removeEventListener("seeked", resumeAfterNativeSeek);
+        video.removeEventListener("canplay", resumeAfterNativeSeek);
+        video.removeEventListener("playing", finishNativeSeekRecovery);
+        video.removeEventListener("pause", cancelNativeSeekRecovery);
+        video.removeEventListener("stalled", recoverNativeSeekStall);
+        video.removeEventListener("waiting", recoverNativeSeekStall);
         video.removeEventListener("error", onNativePlaybackError);
+        video.removeAttribute("src");
+        video.load();
       };
     };
 
@@ -249,32 +336,38 @@ export default function VideoPlayer({
 
     return () => {
       active = false;
-      capturePlaybackState();
+      capturePlaybackStateFromVideo(video);
       cleanupPlayback();
       hlsRef.current = null;
     };
-  }, [capturePlaybackState, src]);
+  }, [capturePlaybackStateFromVideo, src]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
 
     const handlePlay = () => {
+      playbackIntentRef.current = true;
       setControlsActive(true);
       scheduleControlsIdleHide();
     };
     const handlePause = () => {
+      if (!video.seeking) playbackIntentRef.current = false;
       clearControlsIdleTimer();
       setControlsActive(true);
+    };
+    const handleEnded = () => {
+      playbackIntentRef.current = false;
+      handlePause();
     };
 
     video.addEventListener("play", handlePlay);
     video.addEventListener("pause", handlePause);
-    video.addEventListener("ended", handlePause);
+    video.addEventListener("ended", handleEnded);
     return () => {
       video.removeEventListener("play", handlePlay);
       video.removeEventListener("pause", handlePause);
-      video.removeEventListener("ended", handlePause);
+      video.removeEventListener("ended", handleEnded);
     };
   }, [clearControlsIdleTimer, scheduleControlsIdleHide]);
 
