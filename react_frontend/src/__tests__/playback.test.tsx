@@ -162,6 +162,7 @@ test("passes the current playback position to hls.js when changing resolution", 
       on: vi.fn((eventName, handler) => {
         hlsInstance.handlers[eventName] = handler;
       }),
+      startLoad: vi.fn(),
     };
     hlsInstances.push(hlsInstance);
     return hlsInstance;
@@ -214,6 +215,76 @@ test("passes the current playback position to hls.js when changing resolution", 
   });
 
   expect(video.currentTime).toBe(0);
+  expect(video.play).toHaveBeenCalled();
+});
+
+test("honors a manual scrub to the beginning while hls.js reloads after a resolution change", async () => {
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstances = [];
+  Hls.mockImplementation(() => {
+    const hlsInstance = {
+      attachMedia: vi.fn((media) => {
+        hlsInstance.media = media;
+      }),
+      destroy: vi.fn(() => {
+        if (hlsInstance.media) hlsInstance.media.currentTime = 0;
+      }),
+      handlers: {},
+      loadSource: vi.fn(),
+      media: null,
+      on: vi.fn((eventName, handler) => {
+        hlsInstance.handlers[eventName] = handler;
+      }),
+      startLoad: vi.fn(),
+    };
+    hlsInstances.push(hlsInstance);
+    return hlsInstance;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-hls-scrub-start",
+    original_filename: "",
+    status: "published",
+    title: "HLS scrub stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-hls-scrub-start": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("HLS scrub stream"));
+  await click(findButton("HLS scrub stream"));
+
+  const video = container.querySelector("video");
+  Object.defineProperties(video, {
+    currentTime: { configurable: true, writable: true, value: 15 },
+    ended: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+    play: { configurable: true, value: vi.fn(() => Promise.resolve()) },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+
+  await act(async () => {
+    video.currentTime = 0;
+    video.dispatchEvent(new Event("seeking"));
+    hlsInstances[1].handlers[Hls.Events.MANIFEST_PARSED]();
+  });
+
+  expect(Hls.mock.calls[1][0]).toMatchObject({ autoStartLoad: false, startPosition: 15 });
+  expect(hlsInstances[1].startLoad).toHaveBeenCalledWith(0);
   expect(video.play).toHaveBeenCalled();
 });
 
@@ -289,6 +360,69 @@ test("waits for native HLS duration before seeking after a resolution change", a
   });
 
   expect(video.currentTime).toBe(7);
+  expect(video.play).toHaveBeenCalled();
+});
+
+test("honors a manual scrub to the beginning while native HLS reloads after a resolution change", async () => {
+  Hls.isSupported.mockReturnValue(false);
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
+    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
+  ));
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
+    this.currentTime = 0;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-native-scrub-start",
+    original_filename: "",
+    status: "published",
+    title: "Native scrub stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-native-scrub-start": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Native scrub stream"));
+  await click(findButton("Native scrub stream"));
+
+  const video = container.querySelector("video");
+  let currentTime = 15;
+  Object.defineProperties(video, {
+    currentTime: {
+      configurable: true,
+      get: () => currentTime,
+      set: (value) => {
+        currentTime = value;
+      },
+    },
+    duration: { configurable: true, value: 1 },
+    ended: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+    play: { configurable: true, value: vi.fn(() => Promise.resolve()) },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+
+  await act(async () => {
+    video.currentTime = 0;
+    video.dispatchEvent(new Event("seeking"));
+    video.dispatchEvent(new Event("loadedmetadata"));
+  });
+
+  expect(video.currentTime).toBe(0);
   expect(video.play).toHaveBeenCalled();
 });
 
