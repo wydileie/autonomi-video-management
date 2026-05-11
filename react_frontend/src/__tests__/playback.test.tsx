@@ -426,6 +426,95 @@ test("honors a manual scrub to the beginning while native HLS reloads after a re
   expect(video.play).toHaveBeenCalled();
 });
 
+test("resumes native HLS after a scrub near the beginning once a resolution change has settled", async () => {
+  Hls.isSupported.mockReturnValue(false);
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
+    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
+  ));
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
+    this.currentTime = 0;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-native-settled-scrub",
+    original_filename: "",
+    status: "published",
+    title: "Native settled scrub stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-native-settled-scrub": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Native settled scrub stream"));
+  await click(findButton("Native settled scrub stream"));
+
+  const video = container.querySelector("video");
+  let currentTime = 15;
+  let paused = false;
+  let seeking = false;
+  Object.defineProperties(video, {
+    currentTime: {
+      configurable: true,
+      get: () => currentTime,
+      set: (value) => {
+        currentTime = value;
+      },
+    },
+    duration: { configurable: true, value: 20 },
+    ended: { configurable: true, value: false },
+    paused: {
+      configurable: true,
+      get: () => paused,
+    },
+    play: {
+      configurable: true,
+      value: vi.fn(() => {
+        paused = false;
+        return Promise.resolve();
+      }),
+    },
+    readyState: { configurable: true, value: 1 },
+    seeking: {
+      configurable: true,
+      get: () => seeking,
+    },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+  await act(async () => {
+    video.dispatchEvent(new Event("loadedmetadata"));
+    video.dispatchEvent(new Event("playing"));
+  });
+  const play = video.play as ReturnType<typeof vi.fn>;
+  play.mockClear();
+
+  await act(async () => {
+    currentTime = 1.25;
+    paused = true;
+    seeking = true;
+    video.dispatchEvent(new Event("pause"));
+    video.dispatchEvent(new Event("seeking"));
+    seeking = false;
+    video.dispatchEvent(new Event("seeked"));
+  });
+
+  expect(video.currentTime).toBe(1.25);
+  expect(play).toHaveBeenCalled();
+});
+
 test("closes the playback resolution menu when the pointer leaves it", async () => {
   const publicVideo = {
     created_at: "2026-04-27T12:00:00Z",
