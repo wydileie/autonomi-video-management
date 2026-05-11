@@ -44,6 +44,39 @@ docker compose --env-file .env.production \
   logs --tail=200 rust_admin
 ```
 
+## Upload Quote Unavailable
+
+If the UI says `Autonomi request circuit is open`, `rust_admin` has already
+seen repeated retryable `antd` failures and is failing fast for about 30
+seconds. Check the first `antd` error in the message or logs; common causes are
+`Found 0 peers, need 7`, low peer count, or a timed-out write quote.
+
+For the local Compose devnet, confirm the gateway can see peers and return a
+small write quote:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  exec rust_admin curl -fsS http://antd:8082/health
+
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  exec rust_admin sh -ceu '
+    token="$(cat "$ANTD_INTERNAL_TOKEN_FILE" 2>/dev/null || printf %s "$ANTD_INTERNAL_TOKEN")"
+    curl -fsS -X POST \
+      -H "Authorization: Bearer $token" \
+      -H "Content-Type: application/json" \
+      -d "{\"data\":\"aGV5\"}" \
+      http://antd:8082/v1/data/cost
+  '
+```
+
+If local `/health` reports `peer_count: 0`, the local devnet/gateway is stale.
+Restarting `antd` usually rebuilds the test network, but the default
+`ANT_DEVNET_RESET_ON_START=true` deletes local devnet data.
+
 ## antd Peer Count Low
 
 The gateway can be healthy before enough Autonomi peers are reachable for

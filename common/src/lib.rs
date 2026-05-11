@@ -163,6 +163,7 @@ impl Error for AutonomiHttpStatusError {}
 pub struct CircuitBreaker {
     consecutive_failures: AtomicUsize,
     opened_until_epoch_ms: AtomicU64,
+    last_retryable_error: Mutex<Option<String>>,
 }
 
 impl CircuitBreaker {
@@ -173,10 +174,20 @@ impl CircuitBreaker {
         let now = epoch_millis();
         let opened_until = self.opened_until_epoch_ms.load(Ordering::Relaxed);
         if opened_until > now {
-            anyhow::bail!(
-                "Autonomi request circuit is open for {}ms",
-                opened_until.saturating_sub(now)
-            );
+            let remaining_ms = opened_until.saturating_sub(now);
+            let last_retryable_error = self
+                .last_retryable_error
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
+            if let Some(last_retryable_error) = last_retryable_error {
+                anyhow::bail!(
+                    "Autonomi request circuit is open for {}ms; last retryable error: {}",
+                    remaining_ms,
+                    last_retryable_error
+                );
+            }
+            anyhow::bail!("Autonomi request circuit is open for {}ms", remaining_ms);
         }
         Ok(())
     }
@@ -185,6 +196,10 @@ impl CircuitBreaker {
         if result.is_ok() {
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.opened_until_epoch_ms.store(0, Ordering::Relaxed);
+            *self
+                .last_retryable_error
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = None;
             return;
         }
 
@@ -193,9 +208,17 @@ impl CircuitBreaker {
         };
         if !is_retryable_antd_error(err) {
             self.consecutive_failures.store(0, Ordering::Relaxed);
+            *self
+                .last_retryable_error
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = None;
             return;
         }
 
+        *self
+            .last_retryable_error
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(err.to_string());
         let failures = self
             .consecutive_failures
             .fetch_add(1, Ordering::Relaxed)
@@ -503,6 +526,11 @@ mod tests {
         }
 
         assert!(breaker.check().is_err());
+        assert!(breaker
+            .check()
+            .unwrap_err()
+            .to_string()
+            .contains("last retryable error: GET /health failed"));
 
         let result: anyhow::Result<()> = Ok(());
         breaker.record_result(&result);
