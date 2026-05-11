@@ -237,7 +237,9 @@ pub fn is_retryable_antd_error(err: &anyhow::Error) -> bool {
         .downcast_ref::<AutonomiHttpStatusError>()
         .map(|err| err.status)
     {
-        return status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+        return status == StatusCode::REQUEST_TIMEOUT
+            || status == StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error();
     }
 
     if let Some(err) = err.downcast_ref::<reqwest::Error>() {
@@ -496,6 +498,15 @@ mod tests {
             path: "/health".to_string(),
             status: StatusCode::TOO_MANY_REQUESTS,
             body: "slow down".to_string(),
+        }
+        .into();
+        assert!(is_retryable_antd_error(&err));
+
+        let err: anyhow::Error = AutonomiHttpStatusError {
+            method: Method::POST,
+            path: "/v1/data/cost".to_string(),
+            status: StatusCode::REQUEST_TIMEOUT,
+            body: String::new(),
         }
         .into();
         assert!(is_retryable_antd_error(&err));

@@ -241,7 +241,7 @@ impl Config {
         if antd_upload_timeout_seconds <= 0.0 {
             anyhow::bail!("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero");
         }
-        let antd_quote_concurrency = parse_usize_env("ANTD_QUOTE_CONCURRENCY", 8)?;
+        let antd_quote_concurrency = parse_usize_env("ANTD_QUOTE_CONCURRENCY", 2)?;
         if antd_quote_concurrency < 1 {
             anyhow::bail!("ANTD_QUOTE_CONCURRENCY must be at least 1");
         }

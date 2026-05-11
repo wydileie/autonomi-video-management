@@ -77,6 +77,12 @@ If local `/health` reports `peer_count: 0`, the local devnet/gateway is stale.
 Restarting `antd` usually rebuilds the test network, but the default
 `ANT_DEVNET_RESET_ON_START=true` deletes local devnet data.
 
+If final quotes fail with `POST /v1/data/cost failed: 408 Request Timeout`,
+the `antd` route timeout fired before the Autonomi quote finished. Keep
+`ANTD_REQUEST_TIMEOUT_SECONDS` higher than `ANTD_QUOTE_TIMEOUT_SECS` and
+`ANTD_STORE_TIMEOUT_SECS`, and lower `ANTD_QUOTE_CONCURRENCY` when the local
+devnet is small or peer count is unstable.
+
 ## antd Peer Count Low
 
 The gateway can be healthy before enough Autonomi peers are reachable for

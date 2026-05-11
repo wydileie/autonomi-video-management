@@ -24,7 +24,7 @@ impl Config {
             network: env::var("ANTD_NETWORK").unwrap_or_else(|_| "default".to_string()),
             internal_token: secret_env("ANTD_INTERNAL_TOKEN", "ANTD_INTERNAL_TOKEN_FILE")?,
             cors_allowed_origins: cors_allowed_origins()?,
-            request_timeout: duration_from_env("ANTD_REQUEST_TIMEOUT_SECONDS", 60)?,
+            request_timeout: duration_from_env("ANTD_REQUEST_TIMEOUT_SECONDS", 150)?,
             file_upload_request_timeout: duration_from_env(
                 "ANTD_FILE_UPLOAD_REQUEST_TIMEOUT_SECONDS",
                 3600,
