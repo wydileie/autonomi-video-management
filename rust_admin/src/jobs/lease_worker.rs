@@ -3,6 +3,7 @@ use std::{fs, path::PathBuf, sync::atomic::Ordering, time::Duration as StdDurati
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 use sqlx::{postgres::PgListener, Row};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
@@ -22,15 +23,20 @@ use crate::{
     STATUS_PENDING, STATUS_PROCESSING, STATUS_UPLOADING,
 };
 
-pub(crate) fn start_job_workers(state: &AppState) {
+pub(crate) fn start_job_workers(state: &AppState) -> Vec<(String, JoinHandle<()>)> {
+    let mut handles = Vec::with_capacity(state.config.admin_job_workers);
     for worker_index in 0..state.config.admin_job_workers {
         let worker_id = format!("admin-{}-{worker_index}", Uuid::new_v4());
-        tokio::spawn(job_worker_loop(state.clone(), worker_id));
+        handles.push((
+            format!("job-worker-{worker_index}"),
+            tokio::spawn(job_worker_loop(state.clone(), worker_id)),
+        ));
     }
     info!(
         "Started {} durable admin job worker(s)",
         state.config.admin_job_workers
     );
+    handles
 }
 
 async fn job_worker_loop(state: AppState, worker_id: String) {
@@ -337,7 +343,7 @@ async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiErr
 }
 
 #[instrument(skip(state, worker_id), fields(job_id = %job_id))]
-async fn mark_job_interrupted(
+pub(super) async fn mark_job_interrupted(
     state: &AppState,
     job_id: Uuid,
     worker_id: &str,

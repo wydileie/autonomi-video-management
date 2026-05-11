@@ -22,6 +22,10 @@ mod state;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if autvid_common::run_healthcheck_from_args(std::env::args())? {
+        return Ok(());
+    }
+
     init_logging();
 
     let config = Config::from_env()?;

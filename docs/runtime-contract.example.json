@@ -27,6 +27,7 @@
     "rust_admin": {
       "role": "Upload, FFmpeg transcoding, admin auth, job state, Autonomi writes, catalog publication, and delete.",
       "bind_url": "http://127.0.0.1:8000",
+      "liveness_url": "http://127.0.0.1:8000/livez",
       "health_url": "http://127.0.0.1:8000/health",
       "required_environment": {
         "APP_ENV": "production",
@@ -39,6 +40,10 @@
         "ADMIN_PASSWORD": "<admin-password>",
         "ADMIN_AUTH_SECRET": "<long-random-token-signing-secret>",
         "ADMIN_AUTH_TTL_HOURS": "12",
+        "ADMIN_DB_MIN_CONNECTIONS": "2",
+        "ADMIN_DB_MAX_CONNECTIONS": "10",
+        "ADMIN_DB_CONNECT_TIMEOUT_SECONDS": "30",
+        "ADMIN_SHUTDOWN_GRACE_SECONDS": "15",
         "ANTD_URL": "http://127.0.0.1:8082",
         "ANTD_PAYMENT_MODE": "auto",
         "ANTD_METADATA_PAYMENT_MODE": "merkle",
@@ -62,6 +67,7 @@
     "rust_stream": {
       "role": "HLS playlist generation and Autonomi segment proxy for playback.",
       "bind_url": "http://127.0.0.1:8081",
+      "liveness_url": "http://127.0.0.1:8081/livez",
       "health_url": "http://127.0.0.1:8081/health",
       "required_environment": {
         "ANTD_URL": "http://127.0.0.1:8082",
@@ -79,6 +85,7 @@
       "role": "Autonomi gateway daemon for storage, retrieval, wallet, and payment operations.",
       "rest_url": "http://127.0.0.1:8082",
       "grpc_url": "http://127.0.0.1:50051",
+      "liveness_url": "http://127.0.0.1:8082/livez",
       "health_url": "http://127.0.0.1:8082/health"
     },
     "postgres": {
@@ -102,6 +109,9 @@
     }
   },
   "health_checks": [
+    "http://127.0.0.1:8082/livez",
+    "http://127.0.0.1:8000/livez",
+    "http://127.0.0.1:8081/livez",
     "http://127.0.0.1:8082/health",
     "http://127.0.0.1:8000/health",
     "http://127.0.0.1:8081/health"

@@ -105,11 +105,11 @@ state across restarts for a short-lived demo.
 Use this mode when you want `antd` to connect to the configured Autonomi
 network and pay with a real wallet.
 
-For hardened deployments, pin image references by digest in a local production
-overlay after publishing tested images. The current Dockerfiles still use
-runtime images with shells and package managers where needed; a follow-up
-hardening pass should evaluate distroless or similarly minimized runtime
-images for services that no longer need shell tooling at runtime.
+For hardened deployments, use immutable image tags or digest-pinned references
+in a local production image override after publishing tested images. Published
+images include SBOM/provenance attestations; the stream service uses a
+distroless runtime, and the Rust/antd service images do not include `curl`
+solely for health checks.
 
 ```bash
 cp .env.production.example .env.production
@@ -206,15 +206,10 @@ docker compose --env-file .env.production \
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec antd curl -fsS http://127.0.0.1:8082/health
+  exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  exec antd curl -fsS -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"data":"aGV5"}' \
-    http://127.0.0.1:8082/v1/data/cost
+# For readiness and write-cost probes, use any HTTP client from the Compose
+# network against http://antd:8082/health and /v1/data/cost.
 ```
 
 If `/health` reports `peer_count: 0` or the cost probe returns
@@ -267,20 +262,23 @@ Only expose the app through Nginx or a trusted upstream that overwrites
 
 Metrics endpoints emit Prometheus text on the internal Compose network. The
 public Nginx proxy intentionally blocks `/api/metrics` and `/stream/metrics`.
+Use Prometheus, or run a temporary debug HTTP client on `appnet`, to inspect
+raw metrics; the production Rust/antd runtime images intentionally do not ship
+`curl`.
 
 ```bash
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec rust_admin curl -fsS http://127.0.0.1:8000/metrics
+  exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec rust_stream curl -fsS http://127.0.0.1:8081/metrics
+  exec rust_admin rust_admin --healthcheck 127.0.0.1:8000 /livez
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec antd curl -fsS http://127.0.0.1:8082/metrics
+  exec rust_stream /usr/local/bin/rust_stream --healthcheck 127.0.0.1:8081 /livez
 ```
 
 These metrics are intentionally internal. Do not expose the `antd` service port
@@ -296,6 +294,7 @@ docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.monitoring.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   up --build -d
 ```
 

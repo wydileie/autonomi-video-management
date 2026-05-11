@@ -58,12 +58,12 @@ small write quote:
 docker compose --env-file .env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
-  exec rust_admin curl -fsS http://antd:8082/health
+  exec antd curl -fsS http://127.0.0.1:8082/health
 
 docker compose --env-file .env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
-  exec rust_admin sh -ceu '
+  exec antd sh -ceu '
     token="$(cat "$ANTD_INTERNAL_TOKEN_FILE" 2>/dev/null || printf %s "$ANTD_INTERNAL_TOKEN")"
     curl -fsS -X POST \
       -H "Authorization: Bearer $token" \
@@ -92,16 +92,12 @@ quotes or uploads. Confirm peer state and try a small cost probe:
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec antd curl -fsS http://127.0.0.1:8082/health
-
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  exec antd curl -fsS -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"data":"aGV5"}' \
-    http://127.0.0.1:8082/v1/data/cost
+  exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 ```
+
+For production write-cost probes, run any temporary HTTP client on the Compose
+network and call `http://antd:8082/health` and `POST /v1/data/cost`; the
+production `antd` image intentionally does not include `curl`.
 
 If peer count remains low, verify outbound UDP/QUIC from the host and set a
 known-good `PROD_AUTONOMI_PEERS` list.

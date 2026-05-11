@@ -34,6 +34,10 @@ mod state;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if autvid_common::run_healthcheck_from_args(env::args())? {
+        return Ok(());
+    }
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer())

@@ -1,7 +1,6 @@
 use std::{fs, time::Duration as StdDuration};
 
 use sqlx::Row;
-use tokio::time::sleep;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -39,10 +38,15 @@ pub(crate) async fn cleanup_expired_approvals(state: &AppState) -> anyhow::Resul
 
 pub(crate) async fn approval_cleanup_loop(state: AppState) {
     loop {
-        sleep(StdDuration::from_secs(
-            state.config.approval_cleanup_interval_seconds,
-        ))
-        .await;
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                info!("Approval cleanup loop stopping after shutdown signal");
+                break;
+            }
+            _ = tokio::time::sleep(StdDuration::from_secs(
+                state.config.approval_cleanup_interval_seconds,
+            )) => {}
+        }
         if let Err(err) = cleanup_expired_approvals(&state).await {
             warn!("Approval cleanup failed: {}", err);
         }

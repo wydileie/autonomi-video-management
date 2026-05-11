@@ -1,12 +1,13 @@
 use std::{
-    fs,
+    env, fs,
     sync::{atomic::AtomicU64, Arc},
+    time::{Duration as StdDuration, Instant},
 };
 
 use sqlx::postgres::PgPoolOptions;
-use tokio::{net::TcpListener, sync::Mutex, sync::Semaphore};
+use tokio::{net::TcpListener, sync::Mutex, sync::Semaphore, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::antd_client::AntdRestClient;
@@ -39,6 +40,10 @@ pub(crate) use constants::*;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if autvid_common::run_healthcheck_from_args(env::args())? {
+        return Ok(());
+    }
+
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer())
@@ -46,8 +51,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Arc::new(Config::from_env()?);
     let pool = PgPoolOptions::new()
-        .min_connections(2)
-        .max_connections(10)
+        .min_connections(config.admin_db_min_connections)
+        .max_connections(config.admin_db_max_connections)
+        .acquire_timeout(config::duration_from_secs_f64(
+            config.admin_db_connect_timeout_seconds,
+        ))
         .connect(&config.db_dsn)
         .await?;
     ensure_schema(&pool).await?;
@@ -80,16 +88,27 @@ async fn main() -> anyhow::Result<()> {
     };
     cleanup_expired_approvals(&state).await?;
     recover_interrupted_jobs(state.clone()).await?;
-    start_job_workers(&state);
-    tokio::spawn(approval_cleanup_loop(state.clone()));
+    let mut background_tasks = start_job_workers(&state);
+    background_tasks.push((
+        "approval-cleanup".to_string(),
+        tokio::spawn(approval_cleanup_loop(state.clone())),
+    ));
 
     let app = routes::router(&config, state)?;
 
     let listener = TcpListener::bind(config.bind_addr).await?;
     info!("rust_admin listening on {}", config.bind_addr);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await?;
+    let shutdown_signal_token = shutdown.clone();
+    let server_result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_signal_token))
+        .await;
+    shutdown.cancel();
+    wait_for_background_tasks(
+        background_tasks,
+        config::duration_from_secs_f64(config.admin_shutdown_grace_seconds),
+    )
+    .await;
+    server_result?;
     Ok(())
 }
 
@@ -97,6 +116,34 @@ async fn shutdown_signal(shutdown: CancellationToken) {
     autvid_common::shutdown_signal().await;
     info!("shutdown signal received");
     shutdown.cancel();
+}
+
+async fn wait_for_background_tasks(
+    tasks: Vec<(String, JoinHandle<()>)>,
+    grace_period: StdDuration,
+) {
+    if tasks.is_empty() {
+        return;
+    }
+    let deadline = Instant::now() + grace_period;
+    for (name, task) in tasks {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            warn!(
+                task = %name,
+                "background task did not stop before shutdown grace elapsed"
+            );
+            continue;
+        }
+        match tokio::time::timeout(remaining, task).await {
+            Ok(Ok(())) => info!(task = %name, "background task stopped"),
+            Ok(Err(err)) => warn!(task = %name, "background task failed during shutdown: {}", err),
+            Err(_) => warn!(
+                task = %name,
+                "background task did not stop before shutdown grace elapsed"
+            ),
+        }
+    }
 }
 
 async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow::Result<()> {

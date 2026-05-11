@@ -3,6 +3,8 @@ use std::{
     error::Error,
     fmt::{self, Write as _},
     fs,
+    io::{Read, Write},
+    net::TcpStream,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Mutex,
@@ -286,6 +288,66 @@ pub fn constant_time_eq(left: &str, right: &str) -> bool {
     left.as_bytes().ct_eq(right.as_bytes()).into()
 }
 
+pub fn run_http_healthcheck(addr: &str, path: &str) -> anyhow::Result<()> {
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let timeout = Duration::from_secs(5);
+    let mut stream = TcpStream::connect(addr)
+        .map_err(|err| anyhow::anyhow!("healthcheck could not connect to {addr}: {err}"))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|err| anyhow::anyhow!("healthcheck could not set read timeout: {err}"))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|err| anyhow::anyhow!("healthcheck could not set write timeout: {err}"))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|err| anyhow::anyhow!("healthcheck could not write request: {err}"))?;
+
+    let mut response = [0_u8; 128];
+    let read = stream
+        .read(&mut response)
+        .map_err(|err| anyhow::anyhow!("healthcheck could not read response: {err}"))?;
+    let status_line = std::str::from_utf8(&response[..read])
+        .ok()
+        .and_then(|text| text.lines().next())
+        .unwrap_or("");
+    let status = status_line.split_whitespace().nth(1).unwrap_or("");
+    if status.starts_with('2') {
+        return Ok(());
+    }
+    anyhow::bail!("healthcheck {addr}{path} returned {status_line:?}");
+}
+
+pub fn run_healthcheck_from_args<I, S>(args: I) -> anyhow::Result<bool>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+    let Some(command) = args.next() else {
+        return Ok(false);
+    };
+    if command != "--healthcheck" {
+        return Ok(false);
+    }
+    let addr = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: --healthcheck <addr> [path]"))?;
+    let path = args.next().unwrap_or_else(|| "/livez".to_string());
+    if args.next().is_some() {
+        anyhow::bail!("usage: --healthcheck <addr> [path]");
+    }
+    run_http_healthcheck(&addr, &path)?;
+    Ok(true)
+}
+
 pub fn non_empty_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -451,6 +513,25 @@ mod tests {
         assert_eq!(origins.len(), 2);
         assert_eq!(origins[0], "http://localhost");
         assert_eq!(origins[1], "https://example.com");
+    }
+
+    #[test]
+    fn healthcheck_from_args_probes_http_livez() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 256];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        assert!(
+            run_healthcheck_from_args(["service", "--healthcheck", addr.as_str(), "/livez",])
+                .unwrap()
+        );
     }
 
     #[test]

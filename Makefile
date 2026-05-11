@@ -90,8 +90,10 @@ compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
 	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_FULL_COMPOSE_FILES) config >/tmp/autvid-compose-local-full.yml
+	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.monitoring.yml -f docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.backup.yml -f docker-compose.backup.prod.yml config >/tmp/autvid-compose-prod-backup.yml
 
 up-local:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) up --build -d

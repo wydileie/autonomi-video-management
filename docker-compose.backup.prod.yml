@@ -1,0 +1,7 @@
+services:
+  backup_sidecar:
+    environment:
+      PGPASSWORD: !reset null
+      POSTGRES_PASSWORD_FILE: /run/secrets/backup_db_password
+    secrets:
+      - backup_db_password

@@ -504,7 +504,7 @@
           "refId": "A"
         }
       ],
-      "title": "Average HTTP Latency",
+      "title": "P95 HTTP Latency",
       "type": "timeseries"
     },
     {
