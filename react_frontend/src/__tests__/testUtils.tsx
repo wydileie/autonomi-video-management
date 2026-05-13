@@ -39,12 +39,14 @@ const mockAxios = vi.hoisted(() => {
 });
 
 const mockHls = vi.hoisted(() => {
-  const HlsMock = vi.fn().mockImplementation(() => ({
-    attachMedia: vi.fn(),
-    destroy: vi.fn(),
-    loadSource: vi.fn(),
-    on: vi.fn(),
-  })) as TestHlsMock;
+  const HlsMock = vi.fn().mockImplementation(function () {
+    return {
+      attachMedia: vi.fn(),
+      destroy: vi.fn(),
+      loadSource: vi.fn(),
+      on: vi.fn(),
+    };
+  }) as TestHlsMock;
   HlsMock.ErrorTypes = { MEDIA_ERROR: "mediaError", NETWORK_ERROR: "networkError" };
   HlsMock.Events = { ERROR: "hlsError", MANIFEST_PARSED: "manifestParsed" };
   HlsMock.isSupported = vi.fn(() => false);
@@ -195,12 +197,14 @@ beforeEach(() => {
   mockAxios.interceptors.response.use.mockImplementation((onFulfilled) => onFulfilled);
   window.history.replaceState({}, "", "/");
   mockHls.isSupported.mockReturnValue(false);
-  mockHls.mockImplementation(() => ({
-    attachMedia: vi.fn(),
-    destroy: vi.fn(),
-    loadSource: vi.fn(),
-    on: vi.fn(),
-  }));
+  mockHls.mockImplementation(function () {
+    return {
+      attachMedia: vi.fn(),
+      destroy: vi.fn(),
+      loadSource: vi.fn(),
+      on: vi.fn(),
+    };
+  });
   window.localStorage.clear();
   document.cookie = "autvid_csrf=; Max-Age=0; path=/";
   if (!URL.createObjectURL) {

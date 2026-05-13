@@ -1,4 +1,4 @@
-FROM postgres:16
+FROM postgres:18
 
 COPY backup-sidecar.sh /usr/local/bin/backup-sidecar
 
