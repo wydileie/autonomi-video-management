@@ -101,7 +101,7 @@ jobs:
           CI: "true"
 
       - name: Upload frontend coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: react_frontend/coverage/lcov.info
           flags: frontend
@@ -130,7 +130,7 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
       - name: Upload Rust coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           flags: rust
