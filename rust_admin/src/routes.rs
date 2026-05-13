@@ -47,25 +47,25 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         .route("/videos", get(public::list_videos))
         .route("/admin/videos", get(admin::admin_list_videos))
         .route(
-            "/videos/:video_id",
+            "/videos/{video_id}",
             get(public::get_video).delete(admin::delete_video),
         )
         .route(
-            "/admin/videos/:video_id",
+            "/admin/videos/{video_id}",
             get(admin::admin_get_video).delete(admin::delete_video),
         )
-        .route("/videos/:video_id/status", get(public::video_status))
-        .route("/videos/:video_id/approve", post(upload::approve_video))
+        .route("/videos/{video_id}/status", get(public::video_status))
+        .route("/videos/{video_id}/approve", post(upload::approve_video))
         .route(
-            "/admin/videos/:video_id/approve",
+            "/admin/videos/{video_id}/approve",
             post(upload::approve_video),
         )
         .route(
-            "/admin/videos/:video_id/visibility",
+            "/admin/videos/{video_id}/visibility",
             patch(admin::update_video_visibility),
         )
         .route(
-            "/admin/videos/:video_id/publication",
+            "/admin/videos/{video_id}/publication",
             patch(admin::update_video_publication),
         )
         .route_layer(default_timeout)
