@@ -35,19 +35,19 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/metrics", get(metrics))
         .route("/stream/metrics", get(metrics))
         .route(
-            "/stream/manifest/:manifest_address/:resolution/playlist.m3u8",
+            "/stream/manifest/{manifest_address}/{resolution}/playlist.m3u8",
             get(hls_manifest_by_address),
         )
         .route(
-            "/stream/manifest/:manifest_address/:resolution/:segment_index",
+            "/stream/manifest/{manifest_address}/{resolution}/{segment_index}",
             get(hls_segment_by_address),
         )
         .route(
-            "/stream/:video_id/:resolution/playlist.m3u8",
+            "/stream/{video_id}/{resolution}/playlist.m3u8",
             get(hls_manifest),
         )
         .route(
-            "/stream/:video_id/:resolution/:segment_index",
+            "/stream/{video_id}/{resolution}/{segment_index}",
             get(hls_segment),
         )
 }

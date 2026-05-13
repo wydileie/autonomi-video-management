@@ -2,7 +2,7 @@ use std::time::Duration as StdDuration;
 
 use axum::{
     extract::DefaultBodyLimit,
-    http::{Request, Response},
+    http::{Request, Response, StatusCode},
     routing::{get, patch, post},
     Router,
 };
@@ -26,11 +26,14 @@ mod upload;
 
 pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
     let service_metrics = state.metrics.clone();
-    let default_timeout =
-        TimeoutLayer::new(duration_from_secs_f64(config.admin_request_timeout_seconds));
-    let upload_timeout = TimeoutLayer::new(duration_from_secs_f64(
-        config.admin_upload_request_timeout_seconds,
-    ));
+    let default_timeout = TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        duration_from_secs_f64(config.admin_request_timeout_seconds),
+    );
+    let upload_timeout = TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        duration_from_secs_f64(config.admin_upload_request_timeout_seconds),
+    );
     Ok(Router::new()
         .route("/livez", get(health::livez))
         .route("/health", get(health::health))
@@ -44,25 +47,25 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
         .route("/videos", get(public::list_videos))
         .route("/admin/videos", get(admin::admin_list_videos))
         .route(
-            "/videos/:video_id",
+            "/videos/{video_id}",
             get(public::get_video).delete(admin::delete_video),
         )
         .route(
-            "/admin/videos/:video_id",
+            "/admin/videos/{video_id}",
             get(admin::admin_get_video).delete(admin::delete_video),
         )
-        .route("/videos/:video_id/status", get(public::video_status))
-        .route("/videos/:video_id/approve", post(upload::approve_video))
+        .route("/videos/{video_id}/status", get(public::video_status))
+        .route("/videos/{video_id}/approve", post(upload::approve_video))
         .route(
-            "/admin/videos/:video_id/approve",
+            "/admin/videos/{video_id}/approve",
             post(upload::approve_video),
         )
         .route(
-            "/admin/videos/:video_id/visibility",
+            "/admin/videos/{video_id}/visibility",
             patch(admin::update_video_visibility),
         )
         .route(
-            "/admin/videos/:video_id/publication",
+            "/admin/videos/{video_id}/publication",
             patch(admin::update_video_publication),
         )
         .route_layer(default_timeout)
