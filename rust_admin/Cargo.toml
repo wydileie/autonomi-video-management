@@ -22,7 +22,7 @@ sha2 = "0.11"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
-tower-http = { version = "0.5", features = ["cors", "request-id", "timeout", "trace", "util"] }
+tower-http = { version = "0.6", features = ["cors", "request-id", "timeout", "trace", "util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
