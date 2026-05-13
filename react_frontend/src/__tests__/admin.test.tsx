@@ -148,7 +148,9 @@ test("uses the manifest-address stream route for admin preview before publishing
     loadSource: vi.fn(),
     on: vi.fn(),
   };
-  Hls.mockImplementation(() => hlsInstance);
+  Hls.mockImplementation(function () {
+    return hlsInstance;
+  });
   const adminVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Operators only",
