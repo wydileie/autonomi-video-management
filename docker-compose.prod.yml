@@ -58,7 +58,7 @@ services:
     networks:
       - appnet
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/livez"]
+      test: ["CMD", "/usr/local/bin/antd", "--healthcheck", "127.0.0.1:8082", "/livez"]
       interval: 10s
       timeout: 5s
       retries: 12

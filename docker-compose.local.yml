@@ -49,7 +49,7 @@ services:
     volumes:
       - autonomi_devnet_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/livez"]
+      test: ["CMD", "/usr/local/bin/autvid-antd-gateway", "--healthcheck", "127.0.0.1:8082", "/livez"]
       interval: 10s
       timeout: 5s
       retries: 24

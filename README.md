@@ -78,11 +78,12 @@ authenticated `/api` requests also require the double-submit `autvid_csrf`
 cookie value in the `X-CSRF-Token` header.
 
 Internal Prometheus-style metrics remain available on the service-local
-`/metrics` endpoints. The public Nginx proxy blocks `/api/metrics` and
+`/metrics` endpoints, including latency histograms for p95 queries. The public Nginx proxy blocks `/api/metrics` and
 `/stream/metrics`; Prometheus should scrape `rust_admin:8000`,
 `rust_stream:8081`, `antd:8082`, and `node_exporter:9100` on the Compose
 network when the monitoring override is enabled. The backup sidecar can emit
 Prometheus textfile metrics for node-exporter via `BACKUP_TEXTFILE_HOST_PATH`.
+Monitoring and logging overlay ports bind to localhost by default.
 
 ---
 
@@ -315,8 +316,11 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `ADMIN_REFRESH_TOKEN_TTL_HOURS` | No | HttpOnly refresh-cookie session lifetime. Default: `720` |
 | `ADMIN_AUTH_COOKIE_SAME_SITE` | No | SameSite attribute for admin access and refresh cookies: `Strict`, `Lax`, or `None`. Default: `Lax`; `None` requires secure cookies |
 | `ADMIN_AUTH_COOKIE_SECURE` | No | Whether the HttpOnly admin cookie includes `Secure`. Defaults to `true` when `APP_ENV=production`, otherwise `false` |
+| `ADMIN_DB_MIN_CONNECTIONS` / `ADMIN_DB_MAX_CONNECTIONS` | No | Rust admin Postgres pool bounds. Defaults: `2` / `10` |
+| `ADMIN_DB_CONNECT_TIMEOUT_SECONDS` | No | Rust admin Postgres acquire/connect timeout. Default: `30` |
 | `ADMIN_REQUEST_TIMEOUT_SECONDS` | No | Default `rust_admin` route timeout for non-upload requests. Default: `120` |
 | `ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `rust_admin` source upload route timeout. Default: `3600` |
+| `ADMIN_SHUTDOWN_GRACE_SECONDS` | No | Time `rust_admin` waits for job workers and cleanup tasks to stop after graceful shutdown. Default: `15` |
 | `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart. A one-shot Compose init container creates and chowns it for the non-root admin service user |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
@@ -435,6 +439,7 @@ catalog manifest
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/livez` | Liveness check |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Internal Prometheus-style metrics |
 | `POST` | `/auth/login` | Sign in as the single admin user |
@@ -477,6 +482,7 @@ curl -X POST http://localhost/api/videos/upload \
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/livez` | Liveness check |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Internal Prometheus-style metrics |
 | `GET` | `/stream/{video_id}/{resolution}/playlist.m3u8` | HLS manifest |
@@ -565,6 +571,7 @@ autonomi-video-management/
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
+├── docker-compose.backup.prod.yml # Production backup secret-file overlay
 ├── .env.local.example
 ├── .env.production.example
 └── .env.example

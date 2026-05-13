@@ -127,6 +127,9 @@ future native runtimes. Its surface implements:
 Container and native hosts should verify the same service checks:
 
 ```bash
+curl http://127.0.0.1:8082/livez
+curl http://127.0.0.1:8000/livez
+curl http://127.0.0.1:8081/livez
 curl http://127.0.0.1:8082/health
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8081/health

@@ -50,8 +50,12 @@ pub(crate) struct Config {
     pub(crate) catalog_bootstrap_address: Option<String>,
     pub(crate) cors_allowed_origins: Vec<HeaderValue>,
     pub(crate) bind_addr: SocketAddr,
+    pub(crate) admin_db_min_connections: u32,
+    pub(crate) admin_db_max_connections: u32,
+    pub(crate) admin_db_connect_timeout_seconds: f64,
     pub(crate) admin_request_timeout_seconds: f64,
     pub(crate) admin_upload_request_timeout_seconds: f64,
+    pub(crate) admin_shutdown_grace_seconds: f64,
     pub(crate) upload_temp_dir: PathBuf,
     pub(crate) upload_max_file_bytes: u64,
     pub(crate) upload_min_free_bytes: u64,
@@ -100,6 +104,22 @@ impl Config {
             .unwrap_or(DEFAULT_API_PORT);
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
 
+        let admin_db_min_connections = parse_u32_env("ADMIN_DB_MIN_CONNECTIONS", 2)?;
+        let admin_db_max_connections = parse_u32_env("ADMIN_DB_MAX_CONNECTIONS", 10)?;
+        if admin_db_max_connections == 0 {
+            anyhow::bail!("ADMIN_DB_MAX_CONNECTIONS must be greater than zero");
+        }
+        if admin_db_min_connections > admin_db_max_connections {
+            anyhow::bail!(
+                "ADMIN_DB_MIN_CONNECTIONS must be less than or equal to ADMIN_DB_MAX_CONNECTIONS"
+            );
+        }
+        let admin_db_connect_timeout_seconds =
+            parse_f64_env("ADMIN_DB_CONNECT_TIMEOUT_SECONDS", 30.0)?;
+        if admin_db_connect_timeout_seconds <= 0.0 {
+            anyhow::bail!("ADMIN_DB_CONNECT_TIMEOUT_SECONDS must be greater than zero");
+        }
+
         let admin_username = env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
         let admin_password = optional_secret_env("ADMIN_PASSWORD", "ADMIN_PASSWORD_FILE")?
             .unwrap_or_else(|| "admin".into());
@@ -135,6 +155,10 @@ impl Config {
             parse_f64_env("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS", 3600.0)?;
         if admin_upload_request_timeout_seconds <= 0.0 {
             anyhow::bail!("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS must be greater than zero");
+        }
+        let admin_shutdown_grace_seconds = parse_f64_env("ADMIN_SHUTDOWN_GRACE_SECONDS", 15.0)?;
+        if admin_shutdown_grace_seconds <= 0.0 {
+            anyhow::bail!("ADMIN_SHUTDOWN_GRACE_SECONDS must be greater than zero");
         }
         validate_admin_auth_config(
             &admin_username,
@@ -297,8 +321,12 @@ impl Config {
             catalog_bootstrap_address: non_empty_env("CATALOG_ADDRESS"),
             cors_allowed_origins: cors_allowed_origins()?,
             bind_addr,
+            admin_db_min_connections,
+            admin_db_max_connections,
+            admin_db_connect_timeout_seconds,
             admin_request_timeout_seconds,
             admin_upload_request_timeout_seconds,
+            admin_shutdown_grace_seconds,
             upload_temp_dir: PathBuf::from(
                 env::var("UPLOAD_TEMP_DIR").unwrap_or_else(|_| "/tmp/video_uploads".into()),
             ),
@@ -403,6 +431,13 @@ fn parse_u64_env(name: &str, default_value: u64) -> anyhow::Result<u64> {
     env::var(name)
         .unwrap_or_else(|_| default_value.to_string())
         .parse::<u64>()
+        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
+}
+
+fn parse_u32_env(name: &str, default_value: u32) -> anyhow::Result<u32> {
+    env::var(name)
+        .unwrap_or_else(|_| default_value.to_string())
+        .parse::<u32>()
         .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
 }
 

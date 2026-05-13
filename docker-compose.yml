@@ -66,8 +66,12 @@ services:
       ADMIN_REFRESH_TOKEN_TTL_HOURS: "${ADMIN_REFRESH_TOKEN_TTL_HOURS:-720}"
       ADMIN_AUTH_COOKIE_SAME_SITE: "${ADMIN_AUTH_COOKIE_SAME_SITE:-Lax}"
       ADMIN_AUTH_COOKIE_SECURE: "${ADMIN_AUTH_COOKIE_SECURE:-}"
+      ADMIN_DB_MIN_CONNECTIONS: "${ADMIN_DB_MIN_CONNECTIONS:-2}"
+      ADMIN_DB_MAX_CONNECTIONS: "${ADMIN_DB_MAX_CONNECTIONS:-10}"
+      ADMIN_DB_CONNECT_TIMEOUT_SECONDS: "${ADMIN_DB_CONNECT_TIMEOUT_SECONDS:-30}"
       ADMIN_REQUEST_TIMEOUT_SECONDS: "${ADMIN_REQUEST_TIMEOUT_SECONDS:-60}"
       ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS: "${ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS:-3600}"
+      ADMIN_SHUTDOWN_GRACE_SECONDS: "${ADMIN_SHUTDOWN_GRACE_SECONDS:-15}"
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
       ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
@@ -125,7 +129,7 @@ services:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/livez"]
+      test: ["CMD", "/usr/local/bin/rust_admin", "--healthcheck", "127.0.0.1:8000", "/livez"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -167,7 +171,7 @@ services:
     volumes:
       - catalog_state:/catalog:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/livez"]
+      test: ["CMD", "/usr/local/bin/rust_stream", "--healthcheck", "127.0.0.1:8081", "/livez"]
       interval: 10s
       timeout: 5s
       retries: 12

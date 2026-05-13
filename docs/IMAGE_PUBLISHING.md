@@ -30,6 +30,8 @@ The workflow runs on:
 
 The `latest` tag is only produced for the default branch or a semver release
 tag. Prefer immutable semver or `sha-<short-sha>` tags for production rollouts.
+The workflow also asks BuildKit to publish SBOM and provenance attestations for
+each image.
 
 ## Permissions
 
@@ -77,6 +79,9 @@ For a commit-pinned image, use the workflow's SHA tag:
 ```bash
 docker pull ghcr.io/${OWNER}/autonomi-video-management-rust-admin:sha-abc1234
 ```
+
+For the strictest production pin, resolve a tested tag to a digest and use
+`image@sha256:...` in an uncommitted production image override.
 
 ## Compose Overrides
 

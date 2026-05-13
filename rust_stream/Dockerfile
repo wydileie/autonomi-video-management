@@ -27,19 +27,10 @@ COPY rust_stream/src rust_stream/src
 RUN touch common/src/lib.rs rust_stream/src/main.rs && cargo build --release -p rust_stream
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 COPY --from=builder /app/target/release/rust_stream /usr/local/bin/rust_stream
 
-RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin appuser
-USER appuser
-
 EXPOSE 8081
 
-CMD ["rust_stream"]
+CMD ["/usr/local/bin/rust_stream"]

@@ -11,7 +11,7 @@ pub(crate) use scheduling::{
 };
 
 #[cfg(all(test, feature = "db-tests"))]
-use lease_worker::{acquire_next_job, mark_job_failed};
+use lease_worker::{acquire_next_job, mark_job_failed, mark_job_interrupted};
 #[cfg(test)]
 use recovery::{decode_requested_resolutions, recover_source_path};
 #[cfg(test)]
@@ -91,8 +91,8 @@ mod db_tests {
     use uuid::Uuid;
 
     use super::{
-        acquire_next_job, mark_job_failed, recover_interrupted_jobs, schedule_processing_job,
-        schedule_upload_job,
+        acquire_next_job, mark_job_failed, mark_job_interrupted, recover_interrupted_jobs,
+        schedule_processing_job, schedule_upload_job,
     };
     use crate::{
         antd_client::AntdRestClient, config::Config, db::ensure_schema, metrics::AdminMetrics,
@@ -194,8 +194,12 @@ mod db_tests {
             catalog_bootstrap_address: None,
             cors_allowed_origins: vec![HeaderValue::from_static("http://localhost")],
             bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            admin_db_min_connections: 1,
+            admin_db_max_connections: 5,
+            admin_db_connect_timeout_seconds: 5.0,
             admin_request_timeout_seconds: 120.0,
             admin_upload_request_timeout_seconds: 3600.0,
+            admin_shutdown_grace_seconds: 1.0,
             upload_temp_dir,
             upload_max_file_bytes: 20 * 1024 * 1024,
             upload_min_free_bytes: 0,
@@ -375,6 +379,53 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(owner, "worker-b");
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_graceful_shutdown_requeues_active_lease() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        let video_id = insert_video(&state.pool, STATUS_PENDING, &root_dir).await;
+
+        schedule_processing_job(&state, &video_id.to_string())
+            .await
+            .unwrap();
+        let leased = acquire_next_job(&state, "worker-a").await.unwrap().unwrap();
+        mark_job_interrupted(&state, leased.id, "worker-a")
+            .await
+            .unwrap();
+
+        let row = sqlx::query(
+            r#"
+            SELECT status, lease_owner, lease_expires_at, last_error
+            FROM video_jobs
+            WHERE id=$1
+            "#,
+        )
+        .bind(leased.id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.try_get::<String, _>("status").unwrap(),
+            JOB_STATUS_QUEUED
+        );
+        assert!(row
+            .try_get::<Option<String>, _>("lease_owner")
+            .unwrap()
+            .is_none());
+        assert!(row
+            .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_expires_at")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            row.try_get::<String, _>("last_error").unwrap(),
+            "Interrupted by graceful shutdown; job was requeued."
+        );
 
         let _ = fs::remove_dir_all(root_dir);
         db.cleanup().await;

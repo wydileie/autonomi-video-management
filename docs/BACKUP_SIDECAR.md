@@ -33,6 +33,7 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   up --build -d
 ```
 
@@ -47,6 +48,7 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   run --rm backup_sidecar run
 ```
 
@@ -75,8 +77,10 @@ database role configured by `BACKUP_DB_USER` and `BACKUP_DB_PASS`. New
 Postgres volumes create that role during database initialization. Do not commit
 real `.env.production` files or backup artifacts.
 
-For secret-file based database passwords, set `BACKUP_DB_PASS_FILE` in Compose
-or mount a file and set `POSTGRES_PASSWORD_FILE` inside `backup_sidecar`. When
+For production secret-file based database passwords, include
+`docker-compose.backup.prod.yml` with `docker-compose.prod.yml`. It resets
+`PGPASSWORD`, mounts the production `backup_db_password` secret, and sets
+`POSTGRES_PASSWORD_FILE=/run/secrets/backup_db_password`. When
 `POSTGRES_PASSWORD_FILE` is set, it wins over `PGPASSWORD`.
 
 ## Metrics
@@ -122,12 +126,14 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   ps backup_sidecar
 
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   logs -f backup_sidecar
 ```
 
@@ -138,5 +144,6 @@ docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
   -f docker-compose.backup.yml \
+  -f docker-compose.backup.prod.yml \
   stop backup_sidecar
 ```
