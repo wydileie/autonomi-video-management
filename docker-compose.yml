@@ -129,7 +129,7 @@ services:
       - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
       - catalog_state:/catalog
     healthcheck:
-      test: ["CMD", "rust_admin", "--healthcheck", "127.0.0.1:8000", "/livez"]
+      test: ["CMD", "/usr/local/bin/rust_admin", "--healthcheck", "127.0.0.1:8000", "/livez"]
       interval: 10s
       timeout: 5s
       retries: 12

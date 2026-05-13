@@ -274,7 +274,7 @@ docker compose --env-file .env.production \
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec rust_admin rust_admin --healthcheck 127.0.0.1:8000 /livez
+  exec rust_admin /usr/local/bin/rust_admin --healthcheck 127.0.0.1:8000 /livez
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \

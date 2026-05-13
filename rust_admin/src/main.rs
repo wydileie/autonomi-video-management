@@ -1,11 +1,17 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     sync::{atomic::AtomicU64, Arc},
     time::{Duration as StdDuration, Instant},
 };
 
 use sqlx::postgres::PgPoolOptions;
-use tokio::{net::TcpListener, sync::Mutex, sync::Semaphore, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::Mutex,
+    sync::Semaphore,
+    task::{JoinHandle, JoinSet},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -50,14 +56,20 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
-    let pool = PgPoolOptions::new()
+    let db_connect_timeout =
+        config::duration_from_secs_f64(config.admin_db_connect_timeout_seconds);
+    let pool_options = PgPoolOptions::new()
         .min_connections(config.admin_db_min_connections)
         .max_connections(config.admin_db_max_connections)
-        .acquire_timeout(config::duration_from_secs_f64(
-            config.admin_db_connect_timeout_seconds,
-        ))
-        .connect(&config.db_dsn)
-        .await?;
+        .acquire_timeout(db_connect_timeout);
+    let pool = tokio::time::timeout(db_connect_timeout, pool_options.connect(&config.db_dsn))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Postgres pool connection timed out after {:.3}s",
+                config.admin_db_connect_timeout_seconds
+            )
+        })??;
     ensure_schema(&pool).await?;
 
     fs::create_dir_all(&config.upload_temp_dir)?;
@@ -125,24 +137,44 @@ async fn wait_for_background_tasks(
     if tasks.is_empty() {
         return;
     }
-    let deadline = Instant::now() + grace_period;
+
+    let mut pending = tasks
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut joins = JoinSet::new();
     for (name, task) in tasks {
+        joins.spawn(async move { (name, task.await) });
+    }
+
+    let deadline = Instant::now() + grace_period;
+    while !pending.is_empty() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            warn!(
-                task = %name,
-                "background task did not stop before shutdown grace elapsed"
-            );
-            continue;
+            break;
         }
-        match tokio::time::timeout(remaining, task).await {
-            Ok(Ok(())) => info!(task = %name, "background task stopped"),
-            Ok(Err(err)) => warn!(task = %name, "background task failed during shutdown: {}", err),
-            Err(_) => warn!(
-                task = %name,
-                "background task did not stop before shutdown grace elapsed"
-            ),
+        match tokio::time::timeout(remaining, joins.join_next()).await {
+            Ok(Some(Ok((name, Ok(()))))) => {
+                pending.remove(&name);
+                info!(task = %name, "background task stopped");
+            }
+            Ok(Some(Ok((name, Err(err))))) => {
+                pending.remove(&name);
+                warn!(task = %name, "background task failed during shutdown: {}", err);
+            }
+            Ok(Some(Err(err))) => {
+                warn!("background task monitor failed during shutdown: {}", err);
+            }
+            Ok(None) => break,
+            Err(_) => break,
         }
+    }
+
+    for name in pending {
+        warn!(
+            task = %name,
+            "background task did not stop before shutdown grace elapsed"
+        );
     }
 }
 

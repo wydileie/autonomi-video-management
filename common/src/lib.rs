@@ -289,6 +289,8 @@ pub fn constant_time_eq(left: &str, right: &str) -> bool {
 }
 
 pub fn run_http_healthcheck(addr: &str, path: &str) -> anyhow::Result<()> {
+    validate_healthcheck_input("addr", addr)?;
+    validate_healthcheck_input("path", path)?;
     let path = if path.starts_with('/') {
         path.to_string()
     } else {
@@ -309,19 +311,47 @@ pub fn run_http_healthcheck(addr: &str, path: &str) -> anyhow::Result<()> {
     )
     .map_err(|err| anyhow::anyhow!("healthcheck could not write request: {err}"))?;
 
-    let mut response = [0_u8; 128];
-    let read = stream
-        .read(&mut response)
-        .map_err(|err| anyhow::anyhow!("healthcheck could not read response: {err}"))?;
-    let status_line = std::str::from_utf8(&response[..read])
-        .ok()
-        .and_then(|text| text.lines().next())
-        .unwrap_or("");
+    let mut response = Vec::with_capacity(128);
+    let mut buffer = [0_u8; 64];
+    while response.len() < 256 {
+        let remaining = 256 - response.len();
+        let read_len = remaining.min(buffer.len());
+        let read = stream
+            .read(&mut buffer[..read_len])
+            .map_err(|err| anyhow::anyhow!("healthcheck could not read response: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        response.extend_from_slice(&buffer[..read]);
+        if response.windows(2).any(|window| window == b"\r\n") {
+            break;
+        }
+    }
+
+    let status_line_end = response
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or_else(|| anyhow::anyhow!("healthcheck response did not include a status line"))?;
+    let status_line = std::str::from_utf8(&response[..status_line_end])
+        .map_err(|err| anyhow::anyhow!("healthcheck status line was not UTF-8: {err}"))?;
     let status = status_line.split_whitespace().nth(1).unwrap_or("");
     if status.starts_with('2') {
         return Ok(());
     }
     anyhow::bail!("healthcheck {addr}{path} returned {status_line:?}");
+}
+
+fn validate_healthcheck_input(name: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("healthcheck {name} must not be empty");
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        anyhow::bail!("healthcheck {name} must not contain whitespace or control characters");
+    }
+    Ok(())
 }
 
 pub fn run_healthcheck_from_args<I, S>(args: I) -> anyhow::Result<bool>
@@ -517,21 +547,68 @@ mod tests {
 
     #[test]
     fn healthcheck_from_args_probes_http_livez() {
+        let addr = spawn_healthcheck_server(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
+
+        assert!(
+            run_healthcheck_from_args(["service", "--healthcheck", addr.as_str(), "/livez",])
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn healthcheck_handles_fragmented_status_line() {
+        let addr =
+            spawn_healthcheck_server(vec![b"HTTP/1.1", b" 200 OK\r\nContent-Length: 0\r\n\r\n"]);
+
+        run_http_healthcheck(&addr, "/livez").unwrap();
+    }
+
+    #[test]
+    fn healthcheck_fails_on_server_error() {
+        let addr = spawn_healthcheck_server(vec![
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+        ]);
+
+        let err = run_http_healthcheck(&addr, "/livez").unwrap_err();
+        assert!(err.to_string().contains("503 Service Unavailable"));
+    }
+
+    #[test]
+    fn healthcheck_fails_on_connection_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+
+        let err = run_http_healthcheck(&addr, "/livez").unwrap_err();
+        assert!(err.to_string().contains("could not connect"));
+    }
+
+    #[test]
+    fn healthcheck_rejects_header_injection_inputs() {
+        let err = run_healthcheck_from_args([
+            "service",
+            "--healthcheck",
+            "127.0.0.1:80",
+            "/livez\r\nX-Test: injected",
+        ])
+        .unwrap_err();
+
+        assert!(err.to_string().contains("whitespace or control characters"));
+    }
+
+    fn spawn_healthcheck_server(chunks: Vec<&'static [u8]>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 256];
             let _ = stream.read(&mut request).unwrap();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                .unwrap();
+            for chunk in chunks {
+                stream.write_all(chunk).unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
         });
-
-        assert!(
-            run_healthcheck_from_args(["service", "--healthcheck", addr.as_str(), "/livez",])
-                .unwrap()
-        );
+        addr
     }
 
     #[test]
