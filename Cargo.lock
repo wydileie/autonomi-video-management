@@ -881,9 +881,9 @@ dependencies = [
 
 [[package]]
 name = "ant-node"
-version = "0.11.1"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ad3423a87bbcffa977940d0cf64f39252c4816884a24ea4d774a691e1fe2ee2"
+checksum = "b2c7ef05a407a4e9b233a8716b5bfabeceec2ce419a0d22a6daf32069cffdce8"
 dependencies = [
  "aes-gcm-siv",
  "ant-protocol",
