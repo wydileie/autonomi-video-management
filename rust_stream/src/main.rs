@@ -8,7 +8,7 @@
 use std::{env, path::PathBuf, sync::Arc, time::Duration as StdDuration};
 
 use autvid_common::{secret_env, shutdown_signal as wait_for_shutdown_signal};
-use axum::http::{header, HeaderName, Method, Request, Response};
+use axum::http::{header, HeaderName, Method, Request, Response, StatusCode};
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -91,7 +91,10 @@ async fn main() -> anyhow::Result<()> {
 
     let service_metrics = state.metrics.clone();
     let app = routes::router()
-        .layer(TimeoutLayer::new(request_timeout))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            request_timeout,
+        ))
         .layer(cors)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(
@@ -255,10 +258,10 @@ mod tests {
         let app = Router::new()
             .route("/health", get(mock_health))
             .route(
-                "/v1/data/public/:address/raw",
+                "/v1/data/public/{address}/raw",
                 get(mock_data_get_public_raw),
             )
-            .route("/v1/data/public/:address", get(mock_data_get_public))
+            .route("/v1/data/public/{address}", get(mock_data_get_public))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

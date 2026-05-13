@@ -620,7 +620,7 @@ mod tests {
             .route("/v1/wallet/approve", post(mock_wallet_approve))
             .route("/v1/data/cost", post(mock_data_cost))
             .route("/v1/data/public", post(mock_data_put_public))
-            .route("/v1/data/public/:address", get(mock_data_get_public))
+            .route("/v1/data/public/{address}", get(mock_data_get_public))
             .route("/v1/file/public", post(mock_file_put_public))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -58,7 +58,9 @@ test("shows a playback error when HLS segment loading fails", async () => {
     recoverMediaError: vi.fn(),
     startLoad: vi.fn(),
   };
-  Hls.mockImplementation(() => hlsInstance);
+  Hls.mockImplementation(function () {
+    return hlsInstance;
+  });
   const publicVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Public description only",
@@ -101,7 +103,9 @@ test("configures hls.js retries and recovers fatal network and media errors", as
     recoverMediaError: vi.fn(),
     startLoad: vi.fn(),
   };
-  Hls.mockImplementation(() => hlsInstance);
+  Hls.mockImplementation(function () {
+    return hlsInstance;
+  });
   const publicVideo = {
     created_at: "2026-04-27T12:00:00Z",
     description: "Public description only",
@@ -148,7 +152,7 @@ test("configures hls.js retries and recovers fatal network and media errors", as
 test("passes the current playback position to hls.js when changing resolution", async () => {
   Hls.isSupported.mockReturnValue(true);
   const hlsInstances = [];
-  Hls.mockImplementation(() => {
+  Hls.mockImplementation(function () {
     const hlsInstance = {
       attachMedia: vi.fn((media) => {
         hlsInstance.media = media;
@@ -221,7 +225,7 @@ test("passes the current playback position to hls.js when changing resolution", 
 test("honors a manual scrub to the beginning while hls.js reloads after a resolution change", async () => {
   Hls.isSupported.mockReturnValue(true);
   const hlsInstances = [];
-  Hls.mockImplementation(() => {
+  Hls.mockImplementation(function () {
     const hlsInstance = {
       attachMedia: vi.fn((media) => {
         hlsInstance.media = media;
