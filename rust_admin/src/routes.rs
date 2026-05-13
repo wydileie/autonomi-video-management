@@ -2,7 +2,7 @@ use std::time::Duration as StdDuration;
 
 use axum::{
     extract::DefaultBodyLimit,
-    http::{Request, Response},
+    http::{Request, Response, StatusCode},
     routing::{get, patch, post},
     Router,
 };
@@ -26,11 +26,14 @@ mod upload;
 
 pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
     let service_metrics = state.metrics.clone();
-    let default_timeout =
-        TimeoutLayer::new(duration_from_secs_f64(config.admin_request_timeout_seconds));
-    let upload_timeout = TimeoutLayer::new(duration_from_secs_f64(
-        config.admin_upload_request_timeout_seconds,
-    ));
+    let default_timeout = TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        duration_from_secs_f64(config.admin_request_timeout_seconds),
+    );
+    let upload_timeout = TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        duration_from_secs_f64(config.admin_upload_request_timeout_seconds),
+    );
     Ok(Router::new()
         .route("/livez", get(health::livez))
         .route("/health", get(health::health))
