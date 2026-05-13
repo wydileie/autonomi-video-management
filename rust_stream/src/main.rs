@@ -255,10 +255,10 @@ mod tests {
         let app = Router::new()
             .route("/health", get(mock_health))
             .route(
-                "/v1/data/public/:address/raw",
+                "/v1/data/public/{address}/raw",
                 get(mock_data_get_public_raw),
             )
-            .route("/v1/data/public/:address", get(mock_data_get_public))
+            .route("/v1/data/public/{address}", get(mock_data_get_public))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
