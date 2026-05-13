@@ -19,7 +19,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -57,7 +57,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Run rust_admin DB integration tests
         run: cargo test -p rust_admin --features db-tests db_tests -- --test-threads=1
@@ -121,7 +121,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -164,7 +164,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.0
+        uses: Swatinem/rust-cache@v2.9.1
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked || echo "::warning::cargo-audit installation failed; Rust audit will be skipped"
