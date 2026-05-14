@@ -3,6 +3,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
 };
 
+use chrono::Utc;
 use serde_json::Value;
 use sqlx::Row;
 use tracing::{info, warn};
@@ -18,18 +19,20 @@ use crate::{
 };
 
 pub(crate) async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
+    let now = Utc::now();
     let reset_jobs = sqlx::query(
         r#"
         UPDATE video_jobs
         SET status=$1,
             lease_owner=NULL,
             lease_expires_at=NULL,
-            run_after=NOW(),
-            updated_at=NOW()
-        WHERE status=$2
+            run_after=$2,
+            updated_at=$2
+        WHERE status=$3
         "#,
     )
     .bind(JOB_STATUS_QUEUED)
+    .bind(now)
     .bind(JOB_STATUS_RUNNING)
     .execute(&state.pool)
     .await?;

@@ -25,14 +25,14 @@ Browser
 ### Upload flow
 1. User drops or selects a video file; the browser detects its source resolution and offers standard adaptive renditions from 8K down to 144p without upscaling by default.
 2. The React frontend POSTs the file to the Rust admin service.
-3. Rust admin saves it to the configured processing bind mount, records the durable job inputs in Postgres, and queues a worker task.
+3. Rust admin saves it to the configured app-data directory, records durable job inputs in SQLite, and queues a worker task.
 4. FFmpeg transcodes the video into small HLS `.ts` segments at each resolution.
 5. Rust admin sums the actual transcoded segment sizes, optionally includes the original source file, and asks `antd` for a final quote using the real bytes.
 6. The job pauses as `awaiting_approval`; the frontend shows the final quote and expiry time.
 7. After approval, every segment and the optional original source file are streamed to the Autonomi network through the `antd` daemon file endpoint; small JSON metadata still uses the data endpoint.
 8. A video manifest JSON containing resolution, segment order, durations, optional original-file metadata, and Autonomi addresses is stored on Autonomi.
 9. The job status flips to `ready`. Admins can then publish or unpublish the video from the public library, or choose automatic publishing during upload.
-10. Publishing stores a catalog JSON containing the public video list and manifest addresses on Autonomi. Until `antd` exposes mutable pointers/scratchpads, the latest catalog address is bookmarked in the shared `catalog_state` volume.
+10. Publishing stores two portable catalog JSON snapshots on Autonomi: a public catalog and an unlisted all-ready-videos catalog. The latest addresses are bookmarked in app data.
 
 ### Playback flow
 1. The HLS player (hls.js) requests `/stream/{video_id}/{resolution}/playlist.m3u8`.
@@ -51,7 +51,6 @@ Browser
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
 | `react_frontend` | React | 80 | Upload UI, video library, HLS player |
 | `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
-| `db` | PostgreSQL 16 | 5432 | Upload job/status cache and worker recovery state |
 
 ### URL routing (via Nginx)
 
@@ -131,10 +130,8 @@ workflow that runs the same service-level gates.
 make test-rust
 make test-rust-admin
 
-# Run Postgres-backed durable-job integration tests.
-# TEST_DATABASE_URL should point at a maintenance database where temporary
-# per-test databases can be created and dropped.
-TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres make test-rust-db
+# Run SQLite-backed durable-job and route integration tests.
+make test-rust-db
 
 # Install, build, and test the React frontend
 make install-react
@@ -153,8 +150,8 @@ make audit
 
 The Rust targets run from the root Cargo workspace and cover `rust_admin`,
 `rust_stream`, and `antd_service`. The React target runs the Vite/Vitest test
-command once. CI also runs a Postgres service for the feature-gated
-`rust_admin` durable-job integration tests. Non-blocking advisory scans run
+command once. CI also runs the feature-gated `rust_admin` durable-job
+integration tests against temporary SQLite databases. Non-blocking advisory scans run
 with `cargo audit`, `npm audit --omit=dev`, and Trivy filesystem scanning.
 Optional scanner install failures are reported as warnings so findings can be
 triaged before those gates become blocking.
@@ -198,9 +195,9 @@ plus one overlay:
 - `docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
 
 Compose remains the supported deployment runtime. The repo also documents the
-service boundary expected by a future native packaged host so native work can
-reuse the same Rust admin, Rust stream, `antd`, Postgres, endpoint, and
-storage-path contracts without changing current containers. See
+service boundary used by the native launcher so local packages can reuse the
+same Rust admin, Rust stream, `antd`, endpoint, and app-data contracts without
+changing current containers. See
 [`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
 [`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
 
@@ -209,12 +206,12 @@ storage-path contracts without changing current containers. See
 ```bash
 cp .env.local.example .env.local
 
-# Optional but recommended for large uploads: point processing files at a
-# large, persistent host disk.
-# VIDEO_PROCESSING_HOST_PATH=/mnt/video-processing/autvid
+# Optional but recommended for large uploads: point app data at a large,
+# persistent host disk.
+# AUTVID_DATA_HOST_PATH=/mnt/autvid/app-data
 #
 # Local devnet defaults set UPLOAD_MIN_FREE_BYTES=0, so uploads are only
-# limited by the actual free space on VIDEO_PROCESSING_HOST_PATH.
+# limited by the actual free space on AUTVID_DATA_HOST_PATH.
 
 docker compose --env-file .env.local \
   -f docker-compose.yml \
@@ -272,17 +269,13 @@ docker compose --env-file .env.production \
   up --build -d
 ```
 
-Production Compose uses Docker Compose file-backed secrets for Postgres, the
-admin database password, the admin login password, the auth signing secret, the
-internal service bearer token, the backup read-only database password, and the
-Autonomi wallet key. The containers receive only `_FILE` environment variables
-for these values. A minimal local secret-file setup looks like:
+Production Compose uses Docker Compose file-backed secrets for the admin login
+password, auth signing secret, internal service bearer token, and Autonomi
+wallet key. The containers receive only `_FILE` environment variables for these
+values. A minimal local secret-file setup looks like:
 
 ```bash
 install -d -m 0700 secrets
-printf '%s\n' '<postgres root password>' > secrets/postgres_root_password
-printf '%s\n' '<admin database password>' > secrets/admin_db_password
-printf '%s\n' '<backup read-only database password>' > secrets/backup_db_password
 printf '%s\n' '<admin login password>' > secrets/admin_login_password
 printf '%s\n' '<long auth signing secret>' > secrets/admin_auth_secret
 printf '%s\n' '<internal bearer token>' > secrets/antd_internal_token
@@ -305,23 +298,21 @@ for deployment. `.env.example` contains the full variable set in one file.
 
 | Variable | Required | Description |
 |---|---|---|
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Yes | PostgreSQL root credentials |
-| `ADMIN_DB` / `ADMIN_USER` / `ADMIN_PASS` | Yes | App database credentials |
-| `BACKUP_DB_USER` / `BACKUP_DB_PASS` | Backup | Read-only Postgres role used by the backup sidecar. Production should provide the password via `BACKUP_DB_PASSWORD_SECRET_FILE` |
 | `APP_ENV` | Production | Set to `production` in deployments. Production mode rejects default or weak admin credentials at startup |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
-| `POSTGRES_ROOT_PASSWORD_SECRET_FILE` / `ADMIN_DB_PASSWORD_SECRET_FILE` / `ADMIN_LOGIN_PASSWORD_SECRET_FILE` / `ADMIN_AUTH_SECRET_SECRET_FILE` / `ANTD_INTERNAL_TOKEN_SECRET_FILE` / `AUTONOMI_WALLET_KEY_SECRET_FILE` | Production | Host paths used by `docker-compose.prod.yml` for file-backed Docker secrets |
+| `ADMIN_LOGIN_PASSWORD_SECRET_FILE` / `ADMIN_AUTH_SECRET_SECRET_FILE` / `ANTD_INTERNAL_TOKEN_SECRET_FILE` / `AUTONOMI_WALLET_KEY_SECRET_FILE` | Production | Host paths used by `docker-compose.prod.yml` for file-backed Docker secrets |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `ADMIN_REFRESH_TOKEN_TTL_HOURS` | No | HttpOnly refresh-cookie session lifetime. Default: `720` |
 | `ADMIN_AUTH_COOKIE_SAME_SITE` | No | SameSite attribute for admin access and refresh cookies: `Strict`, `Lax`, or `None`. Default: `Lax`; `None` requires secure cookies |
 | `ADMIN_AUTH_COOKIE_SECURE` | No | Whether the HttpOnly admin cookie includes `Secure`. Defaults to `true` when `APP_ENV=production`, otherwise `false` |
-| `ADMIN_DB_MIN_CONNECTIONS` / `ADMIN_DB_MAX_CONNECTIONS` | No | Rust admin Postgres pool bounds. Defaults: `2` / `10` |
-| `ADMIN_DB_CONNECT_TIMEOUT_SECONDS` | No | Rust admin Postgres acquire/connect timeout. Default: `30` |
+| `AUTVID_DATA_HOST_PATH` | Recommended | Host app-data path containing `autvid.sqlite3`, catalog state, and processing files. A one-shot Compose init container creates and chowns it for the non-root admin service user |
+| `AUTVID_DATA_DIR` / `ADMIN_DB_PATH` / `CATALOG_STATE_PATH` | Native/non-Compose | Local paths for app data, SQLite, and catalog state. Compose sets stable in-container values automatically |
+| `ADMIN_DB_MIN_CONNECTIONS` / `ADMIN_DB_MAX_CONNECTIONS` | No | Rust admin SQLite pool bounds. Defaults: `2` / `10` |
+| `ADMIN_DB_CONNECT_TIMEOUT_SECONDS` | No | Rust admin SQLite acquire/connect timeout. Default: `30` |
 | `ADMIN_REQUEST_TIMEOUT_SECONDS` | No | Default `rust_admin` route timeout for non-upload requests. Default: `120` |
 | `ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS` | No | `rust_admin` source upload route timeout. Default: `3600` |
 | `ADMIN_SHUTDOWN_GRACE_SECONDS` | No | Time `rust_admin` waits for job workers and cleanup tasks to stop after graceful shutdown. Default: `15` |
-| `VIDEO_PROCESSING_HOST_PATH` | Recommended | Host path bind-mounted for original uploads and transcoded segment files while jobs are processing, awaiting approval, or resuming after a restart. A one-shot Compose init container creates and chowns it for the non-root admin service user |
 | `DOMAIN` | No | Domain label for external proxies or deployment tooling |
 | `APP_HTTP_PORT` | No | Host port for Nginx, the only app-facing port published by the production compose path |
 | `ADMIN_HTTP_PORT` / `STREAM_HTTP_PORT` | Local/debug only | Direct host ports for the admin and stream services when using a local/debug compose override |
@@ -390,14 +381,14 @@ The base Compose files stay self-contained for local development. Optional
 production and operations overlays live in separate docs:
 
 - [Image publishing](docs/IMAGE_PUBLISHING.md) covers GHCR image builds and tags.
-- [Backup sidecar](docs/BACKUP_SIDECAR.md) covers scheduled Postgres/catalog backups.
+- [Backup sidecar](docs/BACKUP_SIDECAR.md) covers scheduled SQLite/catalog backups.
 - [Observability](docs/OBSERVABILITY.md) covers Prometheus, Grafana, and Alertmanager.
 
 ---
 
 ## Database schema
 
-Managed by the Rust admin service on startup and seeded by [`postgres-init/init-dbs.sh`](postgres-init/init-dbs.sh). Postgres is no longer the source of truth for ready video playback; it is a processing/status cache and recovery log for interrupted local jobs.
+Managed by the Rust admin service on startup via SQLite migrations. SQLite stores admin metadata, durable jobs, auth sessions, and the local recovery log; Autonomi remains the durable playback source of truth for ready video manifests and segments.
 
 ```
 videos
@@ -418,7 +409,7 @@ On startup the admin service scans for `pending`, `processing`, and `uploading`
 rows. Interrupted transcodes are restarted from the saved source file and
 requested resolutions; interrupted uploads resume from persisted segment rows and
 skip segments that already have Autonomi addresses. This requires
-`VIDEO_PROCESSING_HOST_PATH` to point at persistent host storage, because the
+`AUTVID_DATA_HOST_PATH` to point at persistent host storage, because the
 admin container must still be able to read the original upload and transcoded
 segments after a restart.
 
@@ -561,17 +552,15 @@ autonomi-video-management/
 │       └── utils/              # Formatting, status, and resolution helpers
 ├── nginx/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
-├── postgres-init/
-│   └── init-dbs.sh             # Creates databases and users; Rust services apply SQLx migrations
+├── standalone_launcher/        # Linux/macOS local web launcher
 ├── docs/
 │   ├── DEPLOYMENT.md           # Production deployment guide
-│   ├── RUNTIME_MODES.md        # Containerized and future native runtime boundaries
+│   ├── RUNTIME_MODES.md        # Compose and standalone runtime boundaries
 │   └── runtime-contract.example.json # Example native host endpoint/path contract
 ├── docker-compose.yml          # Base app services
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
-├── docker-compose.backup.prod.yml # Production backup secret-file overlay
 ├── .env.local.example
 ├── .env.production.example
 └── .env.example

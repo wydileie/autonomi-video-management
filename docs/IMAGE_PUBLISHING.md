@@ -11,7 +11,6 @@ Dockerfiles owned by the Compose stack:
 | Production `antd` gateway | `antd_service/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-antd-service` |
 | Nginx reverse proxy | `nginx/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-nginx` |
 | React frontend | `react_frontend/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-react-frontend` |
-| Postgres with init scripts | `postgres-init/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-postgres-init` |
 | Local Autonomi devnet | `autonomi_devnet/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-autonomi-devnet` |
 
 Replace `OWNER` with the lower-case GitHub user or organization that owns the
@@ -70,7 +69,6 @@ docker pull ghcr.io/${OWNER}/autonomi-video-management-rust-stream:${TAG}
 docker pull ghcr.io/${OWNER}/autonomi-video-management-antd-service:${TAG}
 docker pull ghcr.io/${OWNER}/autonomi-video-management-nginx:${TAG}
 docker pull ghcr.io/${OWNER}/autonomi-video-management-react-frontend:${TAG}
-docker pull ghcr.io/${OWNER}/autonomi-video-management-postgres-init:${TAG}
 docker pull ghcr.io/${OWNER}/autonomi-video-management-autonomi-devnet:${TAG}
 ```
 
@@ -94,10 +92,6 @@ Common base override:
 ```yaml
 # docker-compose.images.yml
 services:
-  db:
-    image: ${AUTVID_IMAGE_PREFIX}-postgres-init:${AUTVID_IMAGE_TAG:-latest}
-    build: !reset null
-
   rust_admin:
     image: ${AUTVID_IMAGE_PREFIX}-rust-admin:${AUTVID_IMAGE_TAG:-latest}
     build: !reset null

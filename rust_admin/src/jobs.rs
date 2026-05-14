@@ -85,8 +85,12 @@ mod db_tests {
     };
 
     use axum::http::HeaderValue;
+    use chrono::{Duration, Utc};
     use serde_json::json;
-    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use sqlx::{
+        sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+        Row, SqlitePool,
+    };
     use tokio::sync::{Mutex, Semaphore};
     use uuid::Uuid;
 
@@ -101,86 +105,42 @@ mod db_tests {
     };
 
     struct TestDb {
-        pool: PgPool,
-        maintenance_url: String,
-        database_name: String,
+        pool: SqlitePool,
+        db_path: PathBuf,
     }
 
     impl TestDb {
         async fn new() -> Self {
-            let maintenance_url = std::env::var("TEST_DATABASE_URL")
-                .expect("TEST_DATABASE_URL must be set for db-tests");
-            let database_name = format!("autvid_test_{}", Uuid::new_v4().simple());
-            let test_url = database_url_for_name(&maintenance_url, &database_name);
-            let admin_pool = PgPoolOptions::new()
-                .max_connections(1)
-                .connect(&maintenance_url)
-                .await
-                .expect("connect maintenance database");
-            sqlx::query(&format!(r#"CREATE DATABASE "{database_name}""#))
-                .execute(&admin_pool)
-                .await
-                .expect("create test database");
-            admin_pool.close().await;
-
-            let pool = PgPoolOptions::new()
+            let db_path = std::env::temp_dir()
+                .join(format!("autvid_test_{}.sqlite3", Uuid::new_v4().simple()));
+            let connect_options = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .foreign_keys(true);
+            let pool = SqlitePoolOptions::new()
                 .max_connections(5)
-                .connect(&test_url)
+                .connect_with(connect_options)
                 .await
                 .expect("connect test database");
             ensure_schema(&pool).await.expect("run migrations");
-            Self {
-                pool,
-                maintenance_url,
-                database_name,
-            }
+            Self { pool, db_path }
         }
 
         async fn cleanup(self) {
             self.pool.close().await;
-            let admin_pool = PgPoolOptions::new()
-                .max_connections(1)
-                .connect(&self.maintenance_url)
-                .await
-                .expect("connect maintenance database for cleanup");
-            let _ = sqlx::query(
-                r#"
-                SELECT pg_terminate_backend(pid)
-                FROM pg_stat_activity
-                WHERE datname=$1 AND pid <> pg_backend_pid()
-                "#,
-            )
-            .bind(&self.database_name)
-            .execute(&admin_pool)
-            .await;
-            let _ = sqlx::query(&format!(
-                r#"DROP DATABASE IF EXISTS "{}""#,
-                self.database_name
-            ))
-            .execute(&admin_pool)
-            .await;
-            admin_pool.close().await;
-        }
-    }
-
-    fn database_url_for_name(base_url: &str, database_name: &str) -> String {
-        let (without_query, query) = base_url
-            .split_once('?')
-            .map(|(base, query)| (base, Some(query)))
-            .unwrap_or((base_url, None));
-        let slash_index = without_query
-            .rfind('/')
-            .expect("database URL must include a database path");
-        let prefix = &without_query[..slash_index + 1];
-        match query {
-            Some(query) => format!("{prefix}{database_name}?{query}"),
-            None => format!("{prefix}{database_name}"),
+            for path in [
+                self.db_path.clone(),
+                self.db_path.with_extension("sqlite3-wal"),
+                self.db_path.with_extension("sqlite3-shm"),
+            ] {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 
     fn test_config(catalog_state_path: PathBuf, upload_temp_dir: PathBuf) -> Config {
         Config {
-            db_dsn: "postgresql://example".to_string(),
+            db_path: catalog_state_path.with_file_name("autvid.sqlite3"),
             antd_url: "http://127.0.0.1:9".to_string(),
             antd_internal_token: None,
             antd_payment_mode: "auto".to_string(),
@@ -192,6 +152,7 @@ mod db_tests {
             admin_auth_cookie_secure: false,
             catalog_state_path,
             catalog_bootstrap_address: None,
+            all_catalog_bootstrap_address: None,
             cors_allowed_origins: vec![HeaderValue::from_static("http://localhost")],
             bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             admin_db_min_connections: 1,
@@ -234,7 +195,7 @@ mod db_tests {
         }
     }
 
-    fn test_state(pool: PgPool, root_dir: &std::path::Path) -> AppState {
+    fn test_state(pool: SqlitePool, root_dir: &std::path::Path) -> AppState {
         let metrics = Arc::new(AdminMetrics::default());
         AppState {
             config: Arc::new(test_config(
@@ -249,10 +210,11 @@ mod db_tests {
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
+            job_notify_tx: tokio::sync::watch::channel(0).0,
         }
     }
 
-    async fn insert_video(pool: &PgPool, status: &str, root_dir: &std::path::Path) -> Uuid {
+    async fn insert_video(pool: &SqlitePool, status: &str, root_dir: &std::path::Path) -> Uuid {
         let video_id = Uuid::new_v4();
         let job_dir = root_dir.join(video_id.to_string());
         fs::create_dir_all(&job_dir).unwrap();
@@ -262,7 +224,7 @@ mod db_tests {
             r#"
             INSERT INTO videos
                 (id, title, original_filename, status, job_dir, job_source_path, requested_resolutions)
-            VALUES ($1, 'DB Test', 'source.mp4', $2, $3, $4, $5::jsonb)
+            VALUES ($1, 'DB Test', 'source.mp4', $2, $3, $4, $5)
             "#,
         )
         .bind(video_id)
@@ -360,11 +322,12 @@ mod db_tests {
         sqlx::query(
             r#"
             UPDATE video_jobs
-            SET lease_expires_at=NOW() - INTERVAL '1 second'
+            SET lease_expires_at=$2
             WHERE id=$1
             "#,
         )
         .bind(first.id)
+        .bind(Utc::now() - Duration::seconds(1))
         .execute(&state.pool)
         .await
         .unwrap();
@@ -466,8 +429,9 @@ mod db_tests {
             .unwrap()
             .is_none());
 
-        sqlx::query("UPDATE video_jobs SET run_after=NOW() WHERE id=$1")
+        sqlx::query("UPDATE video_jobs SET run_after=$2 WHERE id=$1")
             .bind(first.id)
+            .bind(Utc::now())
             .execute(&state.pool)
             .await
             .unwrap();
@@ -518,12 +482,16 @@ mod db_tests {
 
         sqlx::query(
             r#"
-            INSERT INTO video_jobs (job_kind, status, attempts, max_attempts, lease_owner, lease_expires_at)
-            VALUES ($1, $2, 1, 2, 'old-worker', NOW() + INTERVAL '1 hour')
+            INSERT INTO video_jobs
+                (id, job_kind, status, attempts, max_attempts, lease_owner, lease_expires_at, run_after)
+            VALUES ($1, $2, $3, 1, 2, 'old-worker', $4, $5)
             "#,
         )
+        .bind(Uuid::new_v4())
         .bind(JOB_KIND_PUBLISH_CATALOG)
         .bind(JOB_STATUS_RUNNING)
+        .bind(Utc::now() + Duration::hours(1))
+        .bind(Utc::now())
         .execute(&state.pool)
         .await
         .unwrap();

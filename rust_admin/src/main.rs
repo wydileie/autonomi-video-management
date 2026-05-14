@@ -5,7 +5,7 @@ use std::{
     time::{Duration as StdDuration, Instant},
 };
 
-use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tokio::{
     net::TcpListener,
     sync::Mutex,
@@ -56,20 +56,33 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
+    if let Some(parent) = config.db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let db_connect_timeout =
         config::duration_from_secs_f64(config.admin_db_connect_timeout_seconds);
-    let pool_options = PgPoolOptions::new()
+    let connect_options = SqliteConnectOptions::new()
+        .filename(&config.db_path)
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(db_connect_timeout);
+    let pool_options = SqlitePoolOptions::new()
         .min_connections(config.admin_db_min_connections)
         .max_connections(config.admin_db_max_connections)
         .acquire_timeout(db_connect_timeout);
-    let pool = tokio::time::timeout(db_connect_timeout, pool_options.connect(&config.db_dsn))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Postgres pool connection timed out after {:.3}s",
-                config.admin_db_connect_timeout_seconds
-            )
-        })??;
+    let pool = tokio::time::timeout(
+        db_connect_timeout,
+        pool_options.connect_with(connect_options),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "SQLite pool connection timed out after {:.3}s",
+            config.admin_db_connect_timeout_seconds
+        )
+    })??;
     ensure_schema(&pool).await?;
 
     fs::create_dir_all(&config.upload_temp_dir)?;
@@ -79,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
     let metrics = Arc::new(metrics::AdminMetrics::default());
     let shutdown = CancellationToken::new();
+    let (job_notify_tx, _) = tokio::sync::watch::channel(0_u64);
     let antd = AntdRestClient::new(
         &config.antd_url,
         config.antd_upload_timeout_seconds.max(60.0) + 30.0,
@@ -97,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
         catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
         upload_save_semaphore: Arc::new(Semaphore::new(config.upload_max_concurrent_saves)),
         shutdown: shutdown.clone(),
+        job_notify_tx,
     };
     cleanup_expired_approvals(&state).await?;
     recover_interrupted_jobs(state.clone()).await?;

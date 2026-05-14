@@ -217,6 +217,66 @@
   box-shadow: none;
 }
 
+.catalog-address-panel {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 14px;
+}
+
+.catalog-address-head,
+.catalog-address-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+}
+
+.catalog-address-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.catalog-address-head strong,
+.catalog-address-head span {
+  display: block;
+}
+
+.catalog-address-head strong {
+  color: var(--charcoal-strong);
+  font-size: 15px;
+  font-weight: 950;
+}
+
+.catalog-address-head span,
+.catalog-address-row > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.catalog-address-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.catalog-address-row {
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+}
+
+.catalog-address-row code {
+  background: rgba(237, 241, 243, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--charcoal);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 9px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .detail-footer {
   align-items: center;

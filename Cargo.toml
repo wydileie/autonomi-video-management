@@ -4,6 +4,7 @@ members = [
     "antd_service",
     "rust_admin",
     "rust_stream",
+    "standalone_launcher",
 ]
 resolver = "2"
 

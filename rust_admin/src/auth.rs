@@ -207,6 +207,7 @@ async fn rotate_refresh_session(
 ) -> Result<IssuedRefreshToken, ApiError> {
     let token_hash = refresh_token_hash(token);
     let refresh = new_refresh_token(state);
+    let now = Utc::now();
     let mut tx = state.pool.begin().await.map_err(db_error)?;
     let row = sqlx::query(
         r#"
@@ -214,11 +215,11 @@ async fn rotate_refresh_session(
         FROM admin_refresh_sessions
         WHERE token_hash=$1
             AND revoked_at IS NULL
-            AND expires_at > NOW()
-        FOR UPDATE
+            AND expires_at > $2
         "#,
     )
     .bind(&token_hash)
+    .bind(now)
     .fetch_optional(&mut *tx)
     .await
     .map_err(db_error)?;
@@ -248,13 +249,14 @@ async fn rotate_refresh_session(
     sqlx::query(
         r#"
         UPDATE admin_refresh_sessions
-        SET revoked_at=NOW(),
-            last_used_at=NOW(),
-            replaced_by_session_id=$2
+        SET revoked_at=$2,
+            last_used_at=$2,
+            replaced_by_session_id=$3
         WHERE id=$1
         "#,
     )
     .bind(previous_session_id)
+    .bind(now)
     .bind(refresh.session_id)
     .execute(&mut *tx)
     .await
@@ -265,16 +267,18 @@ async fn rotate_refresh_session(
 
 async fn revoke_refresh_session(state: &AppState, token: &str) -> Result<(), ApiError> {
     let token_hash = refresh_token_hash(token);
+    let now = Utc::now();
     sqlx::query(
         r#"
         UPDATE admin_refresh_sessions
-        SET revoked_at=COALESCE(revoked_at, NOW()),
-            last_used_at=NOW()
+        SET revoked_at=COALESCE(revoked_at, $2),
+            last_used_at=$2
         WHERE token_hash=$1
             AND revoked_at IS NULL
         "#,
     )
     .bind(&token_hash)
+    .bind(now)
     .execute(&state.pool)
     .await
     .map_err(db_error)?;

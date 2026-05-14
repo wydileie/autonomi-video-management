@@ -69,7 +69,6 @@ pub(super) async fn approve_video(
         SELECT status, approval_expires_at, job_dir, final_quote
         FROM videos
         WHERE id=$1
-        FOR UPDATE
         "#,
     )
     .bind(video_uuid)
@@ -98,16 +97,18 @@ pub(super) async fn approve_video(
         row.try_get("approval_expires_at").ok().flatten();
     if approval_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()) {
         expired_job_dir = job_dir.clone();
+        let now = Utc::now();
         sqlx::query(
             r#"
             UPDATE videos
             SET status='expired',
                 error_message='Final quote approval window expired; local files were deleted.',
-                updated_at=NOW()
+                updated_at=$2
             WHERE id=$1
             "#,
         )
         .bind(video_uuid)
+        .bind(now)
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -129,11 +130,12 @@ pub(super) async fn approve_video(
         sqlx::query(
             r#"
             UPDATE videos
-            SET status='uploading', error_message=NULL, updated_at=NOW()
+            SET status='uploading', error_message=NULL, updated_at=$2
             WHERE id=$1
             "#,
         )
         .bind(video_uuid)
+        .bind(Utc::now())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;

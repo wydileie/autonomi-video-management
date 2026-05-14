@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::Row;
+use sqlx::{sqlite::SqliteRow, Row};
 use uuid::Uuid;
 
 use super::state_file::read_catalog_address;
@@ -43,9 +43,24 @@ pub(crate) async fn get_db_video(
     db_video_to_out(state, &row, include_segments).await
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum CatalogKind {
+    Published,
+    All,
+}
+
+impl CatalogKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Published => "published",
+            Self::All => "all",
+        }
+    }
+}
+
 pub(crate) async fn db_video_to_out(
     state: &AppState,
-    row: &sqlx::postgres::PgRow,
+    row: &SqliteRow,
     include_segments: bool,
 ) -> Result<VideoOut, ApiError> {
     let video_id: Uuid = row.try_get("id").map_err(db_error)?;
@@ -148,7 +163,10 @@ pub(crate) fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<
             None
         },
         catalog_address: catalog_address.map(str::to_string),
-        is_public: true,
+        is_public: entry
+            .get("is_public")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         show_original_filename: false,
         show_manifest_address,
         upload_original: false,
@@ -317,7 +335,7 @@ pub(crate) fn apply_catalog_visibility(
     video.original_file_byte_size = None;
 }
 
-fn original_file_manifest_from_row(row: &sqlx::postgres::PgRow) -> Option<ManifestOriginalFile> {
+fn original_file_manifest_from_row(row: &SqliteRow) -> Option<ManifestOriginalFile> {
     let address = row
         .try_get::<Option<String>, _>("original_file_address")
         .ok()
@@ -346,7 +364,7 @@ pub(super) async fn build_ready_manifest_from_db(
     let video_uuid = parse_video_uuid(video_id)?;
     let video_row = sqlx::query(
         r#"
-        SELECT title, original_filename, description, created_at,
+        SELECT title, original_filename, description, created_at, updated_at,
                show_original_filename, show_manifest_address,
                upload_original, original_file_address, original_file_byte_size,
                original_file_autonomi_cost_atto, original_file_autonomi_payment_mode
@@ -458,7 +476,10 @@ pub(super) async fn build_ready_manifest_from_db(
             .try_get::<DateTime<Utc>, _>("created_at")
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
-        updated_at: Utc::now().to_rfc3339(),
+        updated_at: video_row
+            .try_get::<DateTime<Utc>, _>("updated_at")
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         show_original_filename: false,
         show_manifest_address: video_row
             .try_get::<bool, _>("show_manifest_address")
@@ -476,7 +497,7 @@ async fn build_catalog_entry_from_db(
     let video_uuid = parse_video_uuid(video_id)?;
     let video_row = sqlx::query(
         r#"
-        SELECT title, original_filename, description, created_at,
+        SELECT title, original_filename, description, created_at, updated_at, is_public,
                show_original_filename, show_manifest_address,
                upload_original, original_file_address, original_file_byte_size
         FROM videos WHERE id=$1
@@ -511,8 +532,12 @@ async fn build_catalog_entry_from_db(
             .try_get::<DateTime<Utc>, _>("created_at")
             .map(|value| value.to_rfc3339())
             .unwrap_or_else(|_| Utc::now().to_rfc3339()),
-        updated_at: Utc::now().to_rfc3339(),
+        updated_at: video_row
+            .try_get::<DateTime<Utc>, _>("updated_at")
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|_| Utc::now().to_rfc3339()),
         manifest_address,
+        is_public: video_row.try_get::<bool, _>("is_public").unwrap_or(false),
         show_original_filename: false,
         show_manifest_address: video_row
             .try_get::<bool, _>("show_manifest_address")
@@ -542,20 +567,38 @@ async fn build_catalog_entry_from_db(
 pub(super) async fn build_public_catalog_from_db(
     state: &AppState,
 ) -> Result<PublicCatalogDocument, ApiError> {
-    let rows = sqlx::query(
+    build_catalog_from_db(state, CatalogKind::Published).await
+}
+
+pub(super) async fn build_all_catalog_from_db(
+    state: &AppState,
+) -> Result<PublicCatalogDocument, ApiError> {
+    build_catalog_from_db(state, CatalogKind::All).await
+}
+
+async fn build_catalog_from_db(
+    state: &AppState,
+    kind: CatalogKind,
+) -> Result<PublicCatalogDocument, ApiError> {
+    let visibility_filter = match kind {
+        CatalogKind::Published => "AND is_public=1",
+        CatalogKind::All => "",
+    };
+    let sql = format!(
         r#"
         SELECT id, manifest_address
         FROM videos
         WHERE status=$1
-          AND is_public=TRUE
+          {visibility_filter}
           AND manifest_address IS NOT NULL
-        ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-        "#,
-    )
-    .bind(STATUS_READY)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(db_error)?;
+        ORDER BY updated_at DESC, created_at DESC
+        "#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(STATUS_READY)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_error)?;
 
     let mut videos = Vec::with_capacity(rows.len());
     for row in rows {
@@ -572,10 +615,13 @@ pub(super) async fn build_public_catalog_from_db(
         );
     }
 
+    let generated_at = Utc::now().to_rfc3339();
     Ok(PublicCatalogDocument {
         schema_version: 1,
         content_type: CATALOG_CONTENT_TYPE.to_string(),
-        updated_at: Utc::now().to_rfc3339(),
+        catalog_kind: kind.as_str().to_string(),
+        generated_at: generated_at.clone(),
+        updated_at: generated_at,
         videos,
     })
 }

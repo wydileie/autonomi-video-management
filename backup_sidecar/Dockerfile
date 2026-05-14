@@ -1,4 +1,6 @@
-FROM postgres:18
+FROM alpine:3.20
+
+RUN apk add --no-cache bash coreutils findutils sqlite
 
 COPY backup-sidecar.sh /usr/local/bin/backup-sidecar
 

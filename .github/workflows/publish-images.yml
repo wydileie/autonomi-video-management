@@ -53,11 +53,6 @@ jobs:
             description: Autonomi Video Management browser UI
             context: ./react_frontend
             file: ./react_frontend/Dockerfile
-          - image: postgres-init
-            title: Postgres init
-            description: Autonomi Video Management Postgres image with init scripts
-            context: ./postgres-init
-            file: ./postgres-init/Dockerfile
           - image: autonomi-devnet
             title: Autonomi devnet
             description: Autonomi Video Management local devnet and gateway

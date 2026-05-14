@@ -9,7 +9,7 @@ LOCAL_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.local.yml
 LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f docker-compose.monitoring.yml
 LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f docker-compose.logging.yml
 PROD_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.prod.yml
-CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend db
+CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend
 MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki promtail
 
 help:
@@ -18,7 +18,7 @@ help:
 	@echo "  make test-rust-workspace Run all Rust cargo tests"
 	@echo "  make test-rust-stream Run Rust stream cargo tests"
 	@echo "  make test-rust-admin Run Rust admin cargo tests"
-	@echo "  make test-rust-db    Run rust_admin Postgres-backed integration tests"
+	@echo "  make test-rust-db    Run rust_admin SQLite-backed integration tests"
 	@echo "  make test-antd       Run antd service cargo tests"
 	@echo "  make clippy-rust     Run all Rust clippy checks"
 	@echo "  make clippy-rust-workspace Run all Rust clippy checks"
@@ -35,7 +35,7 @@ help:
 	@echo "  make logs            Follow local core service logs"
 	@echo "  make logs-prod       Follow production core service logs"
 	@echo "  make logs-monitoring Follow local monitoring service logs"
-	@echo "  make backup-production Create a timestamped production DB/catalog backup"
+	@echo "  make backup-production Create a timestamped production SQLite/catalog backup"
 	@echo "  make restore-production ARGS='--backup-dir backups/autvid-... --yes' Restore a production backup"
 	@echo "  make install-react   Install React frontend dependencies"
 	@echo "  make lint-react      Run React ESLint checks"
@@ -63,7 +63,6 @@ test-rust-admin:
 	$(CARGO) test -p rust_admin
 
 test-rust-db:
-	@test -n "$$TEST_DATABASE_URL" || { echo "Set TEST_DATABASE_URL to a maintenance Postgres database"; exit 2; }
 	$(CARGO) test -p rust_admin --features db-tests db_tests -- --test-threads=1
 
 test-antd:
@@ -93,7 +92,7 @@ compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.monitoring.yml -f docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
-	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.backup.yml -f docker-compose.backup.prod.yml config >/tmp/autvid-compose-prod-backup.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.backup.yml config >/tmp/autvid-compose-prod-backup.yml
 
 up-local:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) up --build -d

@@ -46,11 +46,6 @@ updates:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /postgres-init
-    schedule:
-      interval: weekly
-
-  - package-ecosystem: docker
     directory: /autonomi_devnet
     schedule:
       interval: weekly

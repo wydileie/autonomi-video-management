@@ -29,6 +29,8 @@
   .quote-panel,
   .final-quote-panel,
   .video-summary,
+  .catalog-address-head,
+  .catalog-address-row,
   .detail-footer {
     align-items: stretch;
     display: flex;

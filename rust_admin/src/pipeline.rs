@@ -9,7 +9,7 @@ use std::{
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
-use sqlx::{Postgres, QueryBuilder, Row};
+use sqlx::{QueryBuilder, Row, Sqlite};
 use tokio::{fs as tokio_fs, sync::Semaphore, task::JoinSet};
 use tracing::{info, instrument};
 use uuid::Uuid;
@@ -83,15 +83,17 @@ pub(crate) async fn process_video_inner(
     .await?;
 
     for rendition in renditions {
+        let variant_id = Uuid::new_v4();
         let variant_row = sqlx::query(
             r#"
             INSERT INTO video_variants
-                (video_id, resolution, width, height, video_bitrate, audio_bitrate,
+                (id, video_id, resolution, width, height, video_bitrate, audio_bitrate,
                  segment_duration, total_duration, segment_count)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             RETURNING id
         "#,
         )
+        .bind(variant_id)
         .bind(video_uuid)
         .bind(&rendition.resolution)
         .bind(rendition.width)
@@ -106,14 +108,15 @@ pub(crate) async fn process_video_inner(
         .map_err(db_error)?;
         let variant_id: Uuid = variant_row.try_get("id").map_err(db_error)?;
 
-        let mut builder = QueryBuilder::<Postgres>::new(
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
             INSERT INTO video_segments
-                (variant_id, segment_index, duration, byte_size, local_path)
+                (id, variant_id, segment_index, duration, byte_size, local_path)
             "#,
         );
         builder.push_values(rendition.segments.iter(), |mut row, segment| {
-            row.push_bind(variant_id)
+            row.push_bind(Uuid::new_v4())
+                .push_bind(variant_id)
                 .push_bind(segment.segment_index)
                 .push_bind(segment.duration)
                 .push_bind(segment.byte_size)
@@ -858,7 +861,7 @@ async fn upload_original_file_if_needed(
     state: &AppState,
     video_uuid: Uuid,
     video_id: &str,
-    video_row: &sqlx::postgres::PgRow,
+    video_row: &sqlx::sqlite::SqliteRow,
 ) -> Result<Option<ManifestOriginalFile>, ApiError> {
     if let Some(address) = video_row
         .try_get::<Option<String>, _>("original_file_address")
@@ -973,14 +976,15 @@ async fn upload_original_file_if_needed(
             original_file_byte_size=$2,
             original_file_autonomi_cost_atto=$3,
             original_file_autonomi_payment_mode=$4,
-            updated_at=NOW()
-        WHERE id=$5
+            updated_at=$5
+        WHERE id=$6
         "#,
     )
     .bind(&address)
     .bind(byte_size)
     .bind(cost.as_deref())
     .bind(&payment_mode)
+    .bind(Utc::now())
     .bind(video_uuid)
     .execute(&state.pool)
     .await

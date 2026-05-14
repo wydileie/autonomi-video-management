@@ -6,7 +6,10 @@ pub(crate) use db_document::{
     apply_catalog_visibility, catalog_entry_to_video_out, db_video_to_out, get_db_video,
     manifest_to_video_out,
 };
-pub(crate) use state_file::{read_catalog_address, read_catalog_state_value};
+pub(crate) use state_file::{
+    read_all_catalog_address, read_catalog_address, read_catalog_documents,
+    read_catalog_state_value,
+};
 pub(crate) use sync::{
     ensure_video_manifest_address, load_catalog, load_json_from_autonomi,
     load_video_manifest_by_id, publish_current_catalog_to_network, refresh_local_catalog_from_db,
@@ -23,7 +26,7 @@ mod tests {
 
     use axum::http::HeaderValue;
     use serde_json::{json, Value};
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::{Mutex, Semaphore};
     use uuid::Uuid;
 
@@ -40,7 +43,7 @@ mod tests {
 
     fn test_config(catalog_state_path: PathBuf) -> Config {
         Config {
-            db_dsn: "postgresql://example".to_string(),
+            db_path: catalog_state_path.with_file_name("autvid.sqlite3"),
             antd_url: "http://127.0.0.1:0".to_string(),
             antd_internal_token: None,
             antd_payment_mode: "auto".to_string(),
@@ -52,6 +55,7 @@ mod tests {
             admin_auth_cookie_secure: false,
             catalog_state_path,
             catalog_bootstrap_address: None,
+            all_catalog_bootstrap_address: None,
             cors_allowed_origins: vec![HeaderValue::from_static("http://localhost")],
             bind_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             admin_db_min_connections: 1,
@@ -98,8 +102,8 @@ mod tests {
         let metrics = Arc::new(AdminMetrics::default());
         AppState {
             config: Arc::new(config),
-            pool: PgPoolOptions::new()
-                .connect_lazy("postgresql://postgres:postgres@localhost/postgres")
+            pool: SqlitePoolOptions::new()
+                .connect_lazy("sqlite::memory:")
                 .unwrap(),
             antd: AntdRestClient::new("http://127.0.0.1:9", 1.0, metrics.clone(), None).unwrap(),
             metrics,
@@ -108,6 +112,7 @@ mod tests {
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
+            job_notify_tx: tokio::sync::watch::channel(0).0,
         }
     }
 
@@ -134,6 +139,8 @@ mod tests {
         let catalog = PublicCatalogDocument {
             schema_version: 1,
             content_type: CATALOG_CONTENT_TYPE.to_string(),
+            catalog_kind: "published".to_string(),
+            generated_at: "2026-05-05T00:00:00Z".to_string(),
             updated_at: "2026-05-05T00:00:00Z".to_string(),
             videos: vec![PublicCatalogVideo {
                 id: "video-1".to_string(),
@@ -144,6 +151,7 @@ mod tests {
                 created_at: "2026-05-05T00:00:00Z".to_string(),
                 updated_at: "2026-05-05T00:00:01Z".to_string(),
                 manifest_address: "manifest-address".to_string(),
+                is_public: true,
                 show_original_filename: false,
                 show_manifest_address: false,
                 variants: vec![PublicCatalogVariant {
@@ -156,12 +164,24 @@ mod tests {
             }],
         };
 
-        write_catalog_state(&config, Some("catalog-address"), Some(&catalog), true).unwrap();
+        write_catalog_state(
+            &config,
+            Some("catalog-address"),
+            Some("all-catalog-address"),
+            Some(&catalog),
+            Some(&catalog),
+            true,
+        )
+        .unwrap();
 
         let payload: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(payload["catalog_address"], "catalog-address");
+        assert_eq!(payload["published_catalog_address"], "catalog-address");
+        assert_eq!(payload["all_catalog_address"], "all-catalog-address");
         assert_eq!(payload["publish_pending"], true);
         assert_eq!(payload["catalog"]["videos"][0]["id"], "video-1");
+        assert_eq!(payload["published_catalog"]["videos"][0]["id"], "video-1");
+        assert_eq!(payload["all_catalog"]["videos"][0]["id"], "video-1");
         assert!(!path.with_extension("tmp").exists());
         let _ = fs::remove_dir_all(dir);
     }

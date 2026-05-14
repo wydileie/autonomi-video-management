@@ -12,12 +12,7 @@ Usage:
   backup-sidecar run
 
 Environment:
-  POSTGRES_HOST              Postgres hostname (default: db)
-  POSTGRES_PORT              Postgres port (default: 5432)
-  POSTGRES_DB                Database to dump (required)
-  POSTGRES_USER              Database user (required)
-  PGPASSWORD                 Database password, or use POSTGRES_PASSWORD_FILE
-  POSTGRES_PASSWORD_FILE     Optional file containing the database password
+  SQLITE_DB_PATH             SQLite database path (default: /var/lib/autvid/autvid.sqlite3)
   BACKUP_DIR                 Backup parent directory (default: /backups)
   BACKUP_PREFIX              Backup directory prefix (default: autvid)
   BACKUP_SCHEDULE            daily@HH:MM, interval:SECONDS, or once
@@ -28,9 +23,9 @@ Environment:
   BACKUP_RETENTION_COUNT     Keep only newest N matching backups; 0 disables
                              (default: 0)
   BACKUP_CATALOG             Copy CATALOG_PATH when present (default: true)
-  CATALOG_PATH               Catalog bookmark path (default: /catalog/catalog.json)
+  CATALOG_PATH               Catalog state path (default: /var/lib/autvid/catalog/catalog.json)
   BACKUP_FILE_OWNER          Optional numeric owner for completed backups, UID:GID
-  BACKUP_DB_WAIT_SECONDS     Seconds to wait for Postgres readiness (default: 120)
+  BACKUP_SQLITE_WAIT_SECONDS Seconds to wait for the SQLite database (default: 120)
   BACKUP_TEXTFILE_DIR        Optional node-exporter textfile collector directory
   BACKUP_TEXTFILE_NAME       Metric filename in BACKUP_TEXTFILE_DIR
                              (default: autvid_backup.prom)
@@ -58,22 +53,7 @@ require_nonnegative_integer() {
   fi
 }
 
-load_password() {
-  if [[ -n "${POSTGRES_PASSWORD_FILE:-}" ]]; then
-    if [[ ! -r "${POSTGRES_PASSWORD_FILE}" ]]; then
-      log "POSTGRES_PASSWORD_FILE is not readable: ${POSTGRES_PASSWORD_FILE}"
-      exit 2
-    fi
-    IFS= read -r PGPASSWORD < "${POSTGRES_PASSWORD_FILE}"
-    export PGPASSWORD
-  fi
-}
-
 validate_config() {
-  : "${POSTGRES_DB:?POSTGRES_DB is required}"
-  : "${POSTGRES_USER:?POSTGRES_USER is required}"
-  : "${PGPASSWORD:?PGPASSWORD or POSTGRES_PASSWORD_FILE is required}"
-
   if [[ "${BACKUP_DIR}" == "/" ]]; then
     log "Refusing to use / as BACKUP_DIR"
     exit 2
@@ -86,7 +66,7 @@ validate_config() {
 
   require_nonnegative_integer BACKUP_RETENTION_DAYS "${BACKUP_RETENTION_DAYS}"
   require_nonnegative_integer BACKUP_RETENTION_COUNT "${BACKUP_RETENTION_COUNT}"
-  require_nonnegative_integer BACKUP_DB_WAIT_SECONDS "${BACKUP_DB_WAIT_SECONDS}"
+  require_nonnegative_integer BACKUP_SQLITE_WAIT_SECONDS "${BACKUP_SQLITE_WAIT_SECONDS}"
 
   if [[ -n "${BACKUP_FILE_OWNER:-}" && ! "${BACKUP_FILE_OWNER}" =~ ^[0-9]+:[0-9]+$ ]]; then
     log "BACKUP_FILE_OWNER must be numeric UID:GID when set"
@@ -99,19 +79,15 @@ validate_config() {
   fi
 }
 
-wait_for_postgres() {
+wait_for_sqlite() {
   local started_at
   local now
 
   started_at="$(date -u +%s)"
-  while ! pg_isready \
-    -h "${POSTGRES_HOST}" \
-    -p "${POSTGRES_PORT}" \
-    -U "${POSTGRES_USER}" \
-    -d "${POSTGRES_DB}" >/dev/null 2>&1; do
+  while [[ ! -r "${SQLITE_DB_PATH}" ]]; do
     now="$(date -u +%s)"
-    if (( now - started_at >= BACKUP_DB_WAIT_SECONDS )); then
-      log "Postgres did not become ready within ${BACKUP_DB_WAIT_SECONDS}s"
+    if (( now - started_at >= BACKUP_SQLITE_WAIT_SECONDS )); then
+      log "SQLite database did not become readable within ${BACKUP_SQLITE_WAIT_SECONDS}s: ${SQLITE_DB_PATH}"
       return 1
     fi
     sleep 2
@@ -126,11 +102,8 @@ write_manifest() {
   cat > "${backup_dir}/manifest.env" <<EOF
 BACKUP_CREATED_UTC=${timestamp}
 BACKUP_PREFIX=${BACKUP_PREFIX}
-POSTGRES_HOST=${POSTGRES_HOST}
-POSTGRES_PORT=${POSTGRES_PORT}
-POSTGRES_DB=${POSTGRES_DB}
-POSTGRES_USER=${POSTGRES_USER}
-POSTGRES_DUMP=postgres.dump
+SQLITE_DB_PATH=${SQLITE_DB_PATH}
+SQLITE_DB_FILE=autvid.sqlite3
 CATALOG_PATH=${CATALOG_PATH}
 CATALOG_STATUS=${catalog_status}
 CATALOG_FILE=catalog.json
@@ -146,9 +119,9 @@ write_checksums() {
   (
     cd "${backup_dir}" || exit 1
     if [[ -f catalog.json ]]; then
-      sha256sum postgres.dump catalog.json manifest.env > SHA256SUMS || exit 1
+      sha256sum autvid.sqlite3 catalog.json manifest.env > SHA256SUMS || exit 1
     else
-      sha256sum postgres.dump manifest.env > SHA256SUMS || exit 1
+      sha256sum autvid.sqlite3 manifest.env > SHA256SUMS || exit 1
     fi
   )
 }
@@ -174,19 +147,11 @@ run_backup() {
   mkdir -p "${tmp_dir}" || return 1
   trap 'rm -rf "${tmp_dir:-}"' RETURN
 
-  log "Waiting for Postgres at ${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
-  wait_for_postgres || return 1
+  log "Waiting for SQLite database at ${SQLITE_DB_PATH}"
+  wait_for_sqlite || return 1
 
-  log "Writing Postgres dump to ${backup_dir}/postgres.dump"
-  pg_dump \
-    --format=custom \
-    --no-owner \
-    --no-acl \
-    -h "${POSTGRES_HOST}" \
-    -p "${POSTGRES_PORT}" \
-    -U "${POSTGRES_USER}" \
-    "${POSTGRES_DB}" \
-    > "${tmp_dir}/postgres.dump" || return 1
+  log "Writing SQLite backup to ${backup_dir}/autvid.sqlite3"
+  sqlite3 "${SQLITE_DB_PATH}" ".backup '${tmp_dir}/autvid.sqlite3'" || return 1
 
   catalog_status="disabled"
   if is_true "${BACKUP_CATALOG}"; then
@@ -363,7 +328,6 @@ run_backup_cycle() {
 }
 
 run_once() {
-  load_password
   validate_config
   run_backup_cycle
 }
@@ -416,7 +380,6 @@ next_sleep_seconds() {
 schedule_loop() {
   local sleep_seconds
 
-  load_password
   validate_config
 
   if [[ "${BACKUP_SCHEDULE}" == "once" ]]; then
@@ -443,8 +406,7 @@ schedule_loop() {
 }
 
 main() {
-  export POSTGRES_HOST="${POSTGRES_HOST:-db}"
-  export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+  export SQLITE_DB_PATH="${SQLITE_DB_PATH:-/var/lib/autvid/autvid.sqlite3}"
   export BACKUP_DIR="${BACKUP_DIR:-/backups}"
   export BACKUP_PREFIX="${BACKUP_PREFIX:-autvid}"
   export BACKUP_SCHEDULE="${BACKUP_SCHEDULE:-daily@02:00}"
@@ -452,8 +414,8 @@ main() {
   export BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
   export BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-0}"
   export BACKUP_CATALOG="${BACKUP_CATALOG:-true}"
-  export CATALOG_PATH="${CATALOG_PATH:-/catalog/catalog.json}"
-  export BACKUP_DB_WAIT_SECONDS="${BACKUP_DB_WAIT_SECONDS:-120}"
+  export CATALOG_PATH="${CATALOG_PATH:-/var/lib/autvid/catalog/catalog.json}"
+  export BACKUP_SQLITE_WAIT_SECONDS="${BACKUP_SQLITE_WAIT_SECONDS:-120}"
   export BACKUP_TEXTFILE_DIR="${BACKUP_TEXTFILE_DIR:-}"
   export BACKUP_TEXTFILE_NAME="${BACKUP_TEXTFILE_NAME:-autvid_backup.prom}"
 

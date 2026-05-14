@@ -10,7 +10,7 @@ use crate::{JOB_KIND_PROCESS_VIDEO, JOB_KIND_PUBLISH_CATALOG, JOB_KIND_UPLOAD_VI
 pub(crate) struct HealthResponse {
     pub(crate) ok: bool,
     pub(crate) autonomi: AutonomiHealth,
-    pub(crate) postgres: PostgresHealth,
+    pub(crate) database: DatabaseHealth,
     pub(crate) write_ready: bool,
     pub(crate) payment_mode: String,
     pub(crate) final_quote_approval_ttl_seconds: i64,
@@ -26,7 +26,7 @@ pub(crate) struct AutonomiHealth {
 }
 
 #[derive(Serialize)]
-pub(crate) struct PostgresHealth {
+pub(crate) struct DatabaseHealth {
     pub(crate) ok: bool,
     pub(crate) error: Option<String>,
 }
@@ -100,6 +100,8 @@ pub(crate) struct VideoOut {
 pub(crate) struct PublicCatalogDocument {
     pub(crate) schema_version: i32,
     pub(crate) content_type: String,
+    pub(crate) catalog_kind: String,
+    pub(crate) generated_at: String,
     pub(crate) updated_at: String,
     #[serde(default)]
     pub(crate) videos: Vec<PublicCatalogVideo>,
@@ -115,6 +117,7 @@ pub(crate) struct PublicCatalogVideo {
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
     pub(crate) manifest_address: String,
+    pub(crate) is_public: bool,
     pub(crate) show_original_filename: bool,
     pub(crate) show_manifest_address: bool,
     #[serde(default)]
@@ -324,6 +327,8 @@ mod tests {
         let catalog = PublicCatalogDocument {
             schema_version: 1,
             content_type: "application/vnd.autonomi.video.catalog+json;v=1".to_string(),
+            catalog_kind: "published".to_string(),
+            generated_at: "2026-05-05T00:00:00Z".to_string(),
             updated_at: "2026-05-05T00:00:00Z".to_string(),
             videos: vec![PublicCatalogVideo {
                 id: "video-1".to_string(),
@@ -334,6 +339,7 @@ mod tests {
                 created_at: "2026-05-05T00:00:00Z".to_string(),
                 updated_at: "2026-05-05T00:00:00Z".to_string(),
                 manifest_address: "abc123".to_string(),
+                is_public: true,
                 show_original_filename: false,
                 show_manifest_address: true,
                 variants: vec![PublicCatalogVariant {
@@ -352,6 +358,8 @@ mod tests {
             json!({
                 "schema_version": 1,
                 "content_type": "application/vnd.autonomi.video.catalog+json;v=1",
+                "catalog_kind": "published",
+                "generated_at": "2026-05-05T00:00:00Z",
                 "updated_at": "2026-05-05T00:00:00Z",
                 "videos": [{
                     "id": "video-1",
@@ -362,6 +370,7 @@ mod tests {
                     "created_at": "2026-05-05T00:00:00Z",
                     "updated_at": "2026-05-05T00:00:00Z",
                     "manifest_address": "abc123",
+                    "is_public": true,
                     "show_original_filename": false,
                     "show_manifest_address": true,
                     "variants": [{

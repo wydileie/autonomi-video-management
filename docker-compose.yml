@@ -1,30 +1,6 @@
 services:
 
-  # 1) Postgres
-  db:
-    image: autonomi-video-management-postgres
-    build:
-      context: ./postgres-init
-    container_name: postgres_db
-    environment:
-      POSTGRES_USER: "${POSTGRES_USER}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-      ADMIN_DB: "${ADMIN_DB}"
-      ADMIN_USER: "${ADMIN_USER}"
-      ADMIN_PASS: "${ADMIN_PASS}"
-      BACKUP_USER: "${BACKUP_DB_USER:-autvid_backup}"
-      BACKUP_PASS: "${BACKUP_DB_PASS:-autvid_backup_dev_pass}"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - appnet
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  # 2) One-shot permissions init for non-root app containers
+  # 1) One-shot permissions init for non-root app containers
   init_permissions:
     image: alpine:3.20
     container_name: autvid_init_permissions
@@ -34,16 +10,15 @@ services:
       - sh
       - -ceu
       - |
-        mkdir -p /var/lib/autvid/processing /catalog
-        chown -R 1000:1000 /var/lib/autvid/processing /catalog
-        chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid/processing /catalog
+        mkdir -p /var/lib/autvid/processing /var/lib/autvid/catalog
+        chown -R 1000:1000 /var/lib/autvid
+        chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid
     volumes:
-      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
-      - catalog_state:/catalog
+      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid
     security_opt:
       - no-new-privileges:true
 
-  # 3) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
+  # 2) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
   rust_admin:
     build:
       context: .
@@ -51,12 +26,8 @@ services:
     container_name: rust_admin
     environment:
       APP_ENV: "${APP_ENV:-development}"
-      ADMIN_DB_HOST: db
-      ADMIN_DB_PORT: "5432"
-      ADMIN_DB_NAME: "${ADMIN_DB}"
-      ADMIN_DB_USER: "${ADMIN_USER}"
-      ADMIN_DB_PASS: "${ADMIN_PASS}"
-      ADMIN_DB_PASS_FILE: "${ADMIN_DB_PASS_FILE:-}"
+      AUTVID_DATA_DIR: "/var/lib/autvid"
+      ADMIN_DB_PATH: "/var/lib/autvid/autvid.sqlite3"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin}"
       ADMIN_PASSWORD_FILE: "${ADMIN_PASSWORD_FILE:-}"
@@ -107,8 +78,10 @@ services:
       UPLOAD_QUOTE_MAX_SAMPLE_BYTES: "${UPLOAD_QUOTE_MAX_SAMPLE_BYTES:-16777216}"
       FINAL_QUOTE_APPROVAL_TTL_SECONDS: "${FINAL_QUOTE_APPROVAL_TTL_SECONDS:-14400}"
       APPROVAL_CLEANUP_INTERVAL_SECONDS: "${APPROVAL_CLEANUP_INTERVAL_SECONDS:-300}"
+      PUBLISHED_CATALOG_ADDRESS: "${PUBLISHED_CATALOG_ADDRESS:-}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
-      CATALOG_STATE_PATH: "/catalog/catalog.json"
+      ALL_CATALOG_ADDRESS: "${ALL_CATALOG_ADDRESS:-}"
+      CATALOG_STATE_PATH: "/var/lib/autvid/catalog/catalog.json"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_ADMIN_PORT: "8000"
       RUST_LOG: "info,sqlx=warn,hyper=warn,tower_http=info"
@@ -117,8 +90,6 @@ services:
       TMP: "/var/lib/autvid/processing"
       TEMP: "/var/lib/autvid/processing"
     depends_on:
-      db:
-        condition: service_healthy
       init_permissions:
         condition: service_completed_successfully
     networks:
@@ -126,8 +97,7 @@ services:
     expose:
       - "8000"
     volumes:
-      - ${VIDEO_PROCESSING_HOST_PATH:-./.autvid/video_processing}:/var/lib/autvid/processing
-      - catalog_state:/catalog
+      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid
     healthcheck:
       test: ["CMD", "/usr/local/bin/rust_admin", "--healthcheck", "127.0.0.1:8000", "/livez"]
       interval: 10s
@@ -142,7 +112,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
 
-  # 4) Rust streaming — HLS manifest generation + Autonomi segment proxy
+  # 3) Rust streaming — HLS manifest generation + Autonomi segment proxy
   rust_stream:
     build:
       context: .
@@ -152,13 +122,15 @@ services:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
       ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
       ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
+      PUBLISHED_CATALOG_ADDRESS: "${PUBLISHED_CATALOG_ADDRESS:-}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
-      CATALOG_STATE_PATH: "/catalog/catalog.json"
+      CATALOG_STATE_PATH: "/var/lib/autvid/catalog/catalog.json"
       STREAM_CATALOG_CACHE_TTL_SECONDS: "${STREAM_CATALOG_CACHE_TTL_SECONDS:-10}"
       STREAM_MANIFEST_CACHE_TTL_SECONDS: "${STREAM_MANIFEST_CACHE_TTL_SECONDS:-300}"
       STREAM_SEGMENT_CACHE_TTL_SECONDS: "${STREAM_SEGMENT_CACHE_TTL_SECONDS:-3600}"
       STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
       STREAM_REQUEST_TIMEOUT_SECONDS: "${STREAM_REQUEST_TIMEOUT_SECONDS:-60}"
+      RUST_STREAM_PORT: "8081"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_LOG: "info,sqlx=warn,hyper=warn,tower_http=info"
     depends_on:
@@ -169,7 +141,7 @@ services:
     expose:
       - "8081"
     volumes:
-      - catalog_state:/catalog:ro
+      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/rust_stream", "--healthcheck", "127.0.0.1:8081", "/livez"]
       interval: 10s
@@ -184,7 +156,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
 
-  # 5) React front end
+  # 4) React front end
   react_frontend:
     build:
       context: ./react_frontend
@@ -214,7 +186,7 @@ services:
       - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
       - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
 
-  # 6) Nginx Reverse Proxy
+  # 5) Nginx Reverse Proxy
   nginx:
     image: autonomi-video-management-nginx
     build:
@@ -246,10 +218,6 @@ services:
     tmpfs:
       - /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
       - /var/run:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=1770
-
-volumes:
-  postgres_data:
-  catalog_state:
 
 networks:
   appnet:

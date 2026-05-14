@@ -9,11 +9,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::{
     metrics::JobMetricsSnapshot,
-    models::{AutonomiHealth, HealthResponse, PostgresHealth},
+    models::{AutonomiHealth, DatabaseHealth, HealthResponse},
     state::AppState,
     MIN_ANTD_SELF_ENCRYPTION_BYTES,
 };
@@ -64,14 +65,11 @@ async fn load_job_metrics_uncached(state: &AppState) -> Option<JobMetricsSnapsho
     let row = sqlx::query(
         r#"
         SELECT
-            COUNT(*) FILTER (WHERE status='queued') AS queued,
-            COUNT(*) FILTER (WHERE status='running') AS running,
-            COUNT(*) FILTER (WHERE status='failed') AS failed,
-            COUNT(*) FILTER (WHERE status='succeeded') AS succeeded,
-            COALESCE(
-                EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status='queued'))),
-                0
-            )::double precision AS oldest_queued_age_seconds
+            COALESCE(SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END), 0) AS queued,
+            COALESCE(SUM(CASE WHEN status='running' THEN 1 ELSE 0 END), 0) AS running,
+            COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) AS failed,
+            COALESCE(SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END), 0) AS succeeded,
+            MIN(CASE WHEN status='queued' THEN created_at END) AS oldest_queued_created_at
         FROM video_jobs
         "#,
     )
@@ -79,16 +77,24 @@ async fn load_job_metrics_uncached(state: &AppState) -> Option<JobMetricsSnapsho
     .await
     .ok()?;
 
+    let oldest_queued_age_seconds = row
+        .try_get::<Option<DateTime<Utc>>, _>("oldest_queued_created_at")
+        .ok()
+        .flatten()
+        .map(|created_at| {
+            Utc::now()
+                .signed_duration_since(created_at)
+                .num_seconds()
+                .max(0) as u64
+        })
+        .unwrap_or(0);
+
     Some(JobMetricsSnapshot {
         queued: row.try_get::<i64, _>("queued").ok()?.max(0) as u64,
         running: row.try_get::<i64, _>("running").ok()?.max(0) as u64,
         failed: row.try_get::<i64, _>("failed").ok()?.max(0) as u64,
         succeeded: row.try_get::<i64, _>("succeeded").ok()?.max(0) as u64,
-        oldest_queued_age_seconds: row
-            .try_get::<f64, _>("oldest_queued_age_seconds")
-            .ok()
-            .unwrap_or(0.0)
-            .max(0.0) as u64,
+        oldest_queued_age_seconds,
     })
 }
 
@@ -105,15 +111,15 @@ pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
             error: Some(err.to_string()),
         },
     };
-    let postgres = match sqlx::query_scalar::<_, i32>("SELECT 1")
+    let database = match sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.pool)
         .await
     {
-        Ok(_) => PostgresHealth {
+        Ok(_) => DatabaseHealth {
             ok: true,
             error: None,
         },
-        Err(err) => PostgresHealth {
+        Err(err) => DatabaseHealth {
             ok: false,
             error: Some(err.to_string()),
         },
@@ -127,7 +133,7 @@ pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         autonomi.ok
     };
-    let ok = autonomi.ok && postgres.ok && write_ready;
+    let ok = autonomi.ok && database.ok && write_ready;
     let status = if ok {
         StatusCode::OK
     } else {
@@ -139,7 +145,7 @@ pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
         Json(HealthResponse {
             ok,
             autonomi,
-            postgres,
+            database,
             write_ready,
             payment_mode: state.config.antd_payment_mode.clone(),
             final_quote_approval_ttl_seconds: state.config.final_quote_approval_ttl_seconds,
