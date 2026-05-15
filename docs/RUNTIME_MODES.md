@@ -45,7 +45,7 @@ Launcher responsibilities:
 2. Create `processing`, `catalog`, and SQLite database locations.
 3. Start `antd` or the local devnet script, `rust_admin`, and `rust_stream`.
 4. Serve the built frontend and proxy `/api` and `/stream`.
-5. Write and serve runtime frontend config.
+5. Serve runtime frontend config.
 6. Poll health checks, open the browser, and stop child processes on shutdown.
 
 Useful overrides:
@@ -58,6 +58,7 @@ Useful overrides:
 | `AUTVID_DEVNET_CMD` | Local devnet launcher script. |
 | `AUTVID_LAUNCHER_PORT` | Local browser port, default `8080`. |
 | `RUST_ADMIN_PORT` / `RUST_STREAM_PORT` / `ANTD_REST_PORT` | Child service ports. |
+| `ADMIN_SHUTDOWN_GRACE_SECONDS` | Reused as the launcher's child-process shutdown grace period. |
 
 ## Health Checks
 

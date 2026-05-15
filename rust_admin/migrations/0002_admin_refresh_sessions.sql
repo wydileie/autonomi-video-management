@@ -1,1 +1,0 @@
--- SQLite baseline schema is consolidated in 0001_initial.sql.

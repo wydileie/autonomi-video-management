@@ -184,6 +184,10 @@ pub(super) async fn update_video_publication(
             .flatten();
         match existing_manifest_address {
             Some(address) => Some(address),
+            // Keep the Autonomi write outside the SQLite writer transaction. The
+            // transaction below rechecks row state before storing this address,
+            // so a concurrent status/delete change can only leave an unreferenced
+            // manifest, not publish an invalid row.
             None => Some(ensure_video_manifest_address(&state, &video_id).await?),
         }
     } else {

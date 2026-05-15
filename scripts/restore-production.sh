@@ -111,6 +111,9 @@ mkdir -p "$(dirname "${target_db}")"
 
 echo "Restoring SQLite database to ${target_db}"
 cp "${db_file}" "${target_db}"
+# Repo-created backups contain only the online-backup .sqlite3 file. Keep
+# sidecar handling for legacy/manual backups, and remove stale sidecars when
+# they are absent from the backup.
 for suffix in -wal -shm; do
   source_sidecar="$(dirname "${db_file}")/$(basename "${db_file}")${suffix}"
   if [[ -r "${source_sidecar}" ]]; then
