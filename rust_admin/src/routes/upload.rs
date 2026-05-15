@@ -12,7 +12,7 @@ use sqlx::Row;
 use crate::{
     auth::{require_admin, require_csrf},
     catalog::get_db_video,
-    db::{db_error, parse_video_uuid, set_status},
+    db::{begin_immediate, db_error, parse_video_uuid, set_status},
     errors::ApiError,
     jobs::{
         cleanup_expired_approvals, fetch_job_dir, schedule_processing_job, schedule_upload_job,
@@ -63,7 +63,7 @@ pub(super) async fn approve_video(
     let video_uuid = parse_video_uuid(&video_id)?;
 
     let mut expired_job_dir = None;
-    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let mut tx = begin_immediate(&state.pool).await?;
     let row = sqlx::query(
         r#"
         SELECT status, approval_expires_at, job_dir, final_quote

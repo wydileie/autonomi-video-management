@@ -53,6 +53,7 @@ docker compose --env-file .env.production \
 | `BACKUP_RETENTION_COUNT` | `0` | Keeps only the newest N matching backup directories. Set `0` to disable. |
 | `BACKUP_CATALOG` | `true` | Set `false` to skip the catalog state copy. |
 | `BACKUP_SQLITE_WAIT_SECONDS` | `120` | How long each run waits for the SQLite database file to exist. |
+| `BACKUP_DB_WAIT_SECONDS` | unset | Legacy alias used only when `BACKUP_SQLITE_WAIT_SECONDS` is unset. |
 | `BACKUP_TEXTFILE_HOST_PATH` | `./monitoring/textfile` | Host directory shared with node-exporter for backup Prometheus textfile metrics. |
 | `BACKUP_TEXTFILE_DIR` | `/var/lib/node_exporter/textfile_collector` | In-container textfile collector directory. Leave empty to disable metric emission. |
 | `BACKUP_TEXTFILE_NAME` | `autvid_backup.prom` | Metric filename written atomically after each backup attempt. |
@@ -66,5 +67,6 @@ scripts/restore-production.sh \
 ```
 
 Stop the stack before restoring so SQLite sidecar files are not in use. The
-restore script replaces `autvid.sqlite3`, restores WAL/SHM sidecars when they
-exist, and overwrites `catalog.json` when the backup contains one.
+restore script replaces `autvid.sqlite3`, removes stale WAL/SHM sidecars when
+the backup does not contain legacy copies of them, and overwrites `catalog.json`
+when the backup contains one.

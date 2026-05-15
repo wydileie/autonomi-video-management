@@ -38,7 +38,7 @@ mod tests {
         metrics::AdminMetrics,
         models::{PublicCatalogDocument, PublicCatalogVariant, PublicCatalogVideo},
         state::AppState,
-        CATALOG_CONTENT_TYPE, STATUS_READY,
+        CATALOG_CONTENT_TYPE, CATALOG_SCHEMA_VERSION, STATUS_READY,
     };
 
     fn test_config(catalog_state_path: PathBuf) -> Config {
@@ -137,7 +137,7 @@ mod tests {
         let path = dir.join("catalog.json");
         let config = test_config(path.clone());
         let catalog = PublicCatalogDocument {
-            schema_version: 1,
+            schema_version: CATALOG_SCHEMA_VERSION,
             content_type: CATALOG_CONTENT_TYPE.to_string(),
             catalog_kind: "published".to_string(),
             generated_at: "2026-05-05T00:00:00Z".to_string(),

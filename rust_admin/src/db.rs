@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 use crate::{errors::ApiError, state::AppState, STATUS_READY};
@@ -9,6 +9,12 @@ use crate::{errors::ApiError, state::AppState, STATUS_READY};
 pub(crate) async fn ensure_schema(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
+}
+
+pub(crate) async fn begin_immediate(
+    pool: &SqlitePool,
+) -> Result<Transaction<'_, Sqlite>, ApiError> {
+    pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_error)
 }
 
 pub(crate) async fn set_status(

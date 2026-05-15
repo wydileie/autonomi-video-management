@@ -6,11 +6,11 @@ usage() {
 Usage: scripts/backup-production.sh [--output-dir DIR] [--timestamp TIMESTAMP]
 
 Creates a timestamped production backup directory containing:
-  - autvid.sqlite3     SQLite database copy
-  - autvid.sqlite3-wal SQLite WAL file, when present
-  - autvid.sqlite3-shm SQLite shared-memory file, when present
+  - autvid.sqlite3     Consistent online SQLite database backup
   - catalog.json       Latest catalog state, when present
   - manifest.env       Backup metadata
+
+This script requires sqlite3 and local read access to AUTVID_DATA_HOST_PATH.
 
 Environment overrides:
   BACKUP_OUTPUT_DIR    Backup parent directory (default: ./backups)
@@ -81,14 +81,15 @@ if [[ ! -r "${db_path}" ]]; then
   echo "SQLite database is not readable: ${db_path}" >&2
   exit 1
 fi
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 is required to create a consistent online SQLite backup" >&2
+  exit 2
+fi
 
 echo "Writing SQLite backup to ${backup_dir}/${sqlite_db_name}"
-cp "${db_path}" "${backup_dir}/${sqlite_db_name}"
-for suffix in -wal -shm; do
-  if [[ -r "${db_path}${suffix}" ]]; then
-    cp "${db_path}${suffix}" "${backup_dir}/${sqlite_db_name}${suffix}"
-  fi
-done
+sqlite_backup_path="${backup_dir}/${sqlite_db_name}"
+sqlite_backup_path_escaped="${sqlite_backup_path//\"/\"\"}"
+sqlite3 "${db_path}" ".backup main \"${sqlite_backup_path_escaped}\""
 
 echo "Writing catalog state to ${backup_dir}/catalog.json when present"
 if [[ -r "${catalog_path}" ]]; then

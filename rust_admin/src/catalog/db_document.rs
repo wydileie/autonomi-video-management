@@ -14,7 +14,7 @@ use crate::{
         VideoOut,
     },
     state::AppState,
-    CATALOG_CONTENT_TYPE, STATUS_READY, VIDEO_MANIFEST_CONTENT_TYPE,
+    CATALOG_CONTENT_TYPE, CATALOG_SCHEMA_VERSION, STATUS_READY, VIDEO_MANIFEST_CONTENT_TYPE,
 };
 
 pub(crate) async fn get_db_video(
@@ -617,7 +617,7 @@ async fn build_catalog_from_db(
 
     let generated_at = Utc::now().to_rfc3339();
     Ok(PublicCatalogDocument {
-        schema_version: 1,
+        schema_version: CATALOG_SCHEMA_VERSION,
         content_type: CATALOG_CONTENT_TYPE.to_string(),
         catalog_kind: kind.as_str().to_string(),
         generated_at: generated_at.clone(),

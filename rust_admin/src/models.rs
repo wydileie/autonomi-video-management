@@ -302,7 +302,10 @@ mod tests {
         JobKind, ManifestSegment, ManifestVariant, PublicCatalogDocument, PublicCatalogVariant,
         PublicCatalogVideo, VideoManifestDocument,
     };
-    use crate::{JOB_KIND_PROCESS_VIDEO, JOB_KIND_PUBLISH_CATALOG, JOB_KIND_UPLOAD_VIDEO};
+    use crate::{
+        CATALOG_SCHEMA_VERSION, JOB_KIND_PROCESS_VIDEO, JOB_KIND_PUBLISH_CATALOG,
+        JOB_KIND_UPLOAD_VIDEO,
+    };
     use serde_json::json;
 
     #[test]
@@ -325,8 +328,8 @@ mod tests {
     #[test]
     fn public_catalog_document_preserves_json_contract_shape() {
         let catalog = PublicCatalogDocument {
-            schema_version: 1,
-            content_type: "application/vnd.autonomi.video.catalog+json;v=1".to_string(),
+            schema_version: CATALOG_SCHEMA_VERSION,
+            content_type: "application/vnd.autonomi.video.catalog+json;v=2".to_string(),
             catalog_kind: "published".to_string(),
             generated_at: "2026-05-05T00:00:00Z".to_string(),
             updated_at: "2026-05-05T00:00:00Z".to_string(),
@@ -356,8 +359,8 @@ mod tests {
         assert_eq!(
             value,
             json!({
-                "schema_version": 1,
-                "content_type": "application/vnd.autonomi.video.catalog+json;v=1",
+                "schema_version": CATALOG_SCHEMA_VERSION,
+                "content_type": "application/vnd.autonomi.video.catalog+json;v=2",
                 "catalog_kind": "published",
                 "generated_at": "2026-05-05T00:00:00Z",
                 "updated_at": "2026-05-05T00:00:00Z",

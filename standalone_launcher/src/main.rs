@@ -17,7 +17,7 @@ use axum::{
 use reqwest::Client;
 use tokio::{
     process::{Child, Command},
-    time::sleep,
+    time::{sleep, Instant},
 };
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{info, warn};
@@ -69,11 +69,6 @@ async fn main() -> anyhow::Result<()> {
     let runtime_config_js =
         "window.__AUTONOMI_VIDEO_CONFIG__ = { apiBaseUrl: '/api', streamBaseUrl: '/stream' };\n"
             .to_string();
-    let runtime_config_path = data_dir.join("frontend-runtime").join("runtime-config.js");
-    if let Some(parent) = runtime_config_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    tokio::fs::write(&runtime_config_path, &runtime_config_js).await?;
 
     let mut children = Vec::new();
     children.push(start_antd(options.mode, &data_dir, antd_port).await?);
@@ -323,6 +318,15 @@ fn env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn env_duration(name: &str, default: Duration) -> Duration {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(Duration::from_secs_f64)
+        .unwrap_or(default)
+}
+
 fn open_browser(url: &str) {
     let opener = if cfg!(target_os = "macos") {
         "open"
@@ -335,14 +339,65 @@ fn open_browser(url: &str) {
 }
 
 async fn stop_children(children: &mut [Child]) {
+    let shutdown_grace = env_duration("ADMIN_SHUTDOWN_GRACE_SECONDS", Duration::from_secs(15));
     for child in children.iter_mut() {
-        if let Err(err) = child.start_kill() {
+        if let Err(err) = terminate_child(child) {
             warn!("Could not signal child shutdown: {}", err);
         }
     }
+
+    let deadline = Instant::now() + shutdown_grace;
+    let mut running = vec![true; children.len()];
+    while running.iter().any(|is_running| *is_running) && Instant::now() < deadline {
+        for (index, child) in children.iter_mut().enumerate() {
+            if !running[index] {
+                continue;
+            }
+            match child.try_wait() {
+                Ok(Some(_status)) => running[index] = false,
+                Ok(None) => {}
+                Err(err) => {
+                    warn!("Could not check child shutdown status: {}", err);
+                    running[index] = false;
+                }
+            }
+        }
+        if running.iter().any(|is_running| *is_running) {
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     for child in children.iter_mut() {
+        match child.try_wait() {
+            Ok(Some(_status)) => {}
+            Ok(None) => {
+                warn!("Child did not stop within {:?}; killing it", shutdown_grace);
+                if let Err(err) = child.start_kill() {
+                    warn!("Could not kill child process: {}", err);
+                }
+            }
+            Err(err) => warn!("Could not check child status before kill: {}", err),
+        }
         let _ = child.wait().await;
     }
+}
+
+#[cfg(unix)]
+fn terminate_child(child: &mut Child) -> std::io::Result<()> {
+    let Some(pid) = child.id() else {
+        return Ok(());
+    };
+    let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child(child: &mut Child) -> std::io::Result<()> {
+    child.start_kill()
 }
 
 async fn runtime_config(State(state): State<ProxyState>) -> impl IntoResponse {
@@ -413,19 +468,14 @@ async fn proxy_to(
                     response_builder = response_builder.header(name, value);
                 }
             }
-            match response.bytes().await {
-                Ok(bytes) => response_builder
-                    .body(Body::from(bytes))
-                    .unwrap_or_else(|err| {
-                        text_response(
-                            StatusCode::BAD_GATEWAY,
-                            format!("proxy response error: {err}"),
-                        )
-                    }),
-                Err(err) => {
-                    text_response(StatusCode::BAD_GATEWAY, format!("proxy read error: {err}"))
-                }
-            }
+            response_builder
+                .body(Body::from_stream(response.bytes_stream()))
+                .unwrap_or_else(|err| {
+                    text_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!("proxy response error: {err}"),
+                    )
+                })
         }
         Err(err) => text_response(StatusCode::BAD_GATEWAY, format!("proxy error: {err}")),
     }

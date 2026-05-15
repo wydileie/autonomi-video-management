@@ -643,6 +643,59 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn db_manual_catalog_publish_queues_job_without_network_publish() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));
+        fs::create_dir_all(&root_dir).unwrap();
+        let state = test_state(db.pool.clone(), &root_dir);
+        let video_id = insert_ready_video(&state.pool, &root_dir).await;
+        sqlx::query("UPDATE videos SET is_public=TRUE WHERE id=$1")
+            .bind(video_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let base_url = spawn_admin(state.clone()).await;
+        let client = reqwest::Client::new();
+        let auth = login(&client, &base_url).await;
+
+        let body: Value = client
+            .post(format!("{base_url}/admin/catalogs/publish"))
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            body["published_catalog"]["videos"][0]["id"],
+            video_id.to_string()
+        );
+        assert_eq!(body["all_catalog"]["videos"][0]["id"], video_id.to_string());
+
+        let publish_jobs: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM video_jobs WHERE job_kind=$1 AND status=$2")
+                .bind(JOB_KIND_PUBLISH_CATALOG)
+                .bind(JOB_STATUS_QUEUED)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(publish_jobs, 1);
+
+        let catalog_state: Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(catalog_state["publish_pending"], true);
+
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn db_publication_and_delete_routes_update_catalog_and_jobs() {
         let db = TestDb::new().await;
         let root_dir = std::env::temp_dir().join(format!("autvid_db_routes_{}", Uuid::new_v4()));

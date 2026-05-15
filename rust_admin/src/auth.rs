@@ -14,7 +14,12 @@ use uuid::Uuid;
 
 use autvid_common::constant_time_eq;
 
-use crate::{config::AuthCookieSameSite, db::db_error, errors::ApiError, AppState};
+use crate::{
+    config::AuthCookieSameSite,
+    db::{begin_immediate, db_error},
+    errors::ApiError,
+    AppState,
+};
 
 const ADMIN_AUTH_COOKIE: &str = "autvid_admin";
 const ADMIN_REFRESH_COOKIE: &str = "autvid_admin_refresh";
@@ -208,7 +213,7 @@ async fn rotate_refresh_session(
     let token_hash = refresh_token_hash(token);
     let refresh = new_refresh_token(state);
     let now = Utc::now();
-    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let mut tx = begin_immediate(&state.pool).await?;
     let row = sqlx::query(
         r#"
         SELECT id, username

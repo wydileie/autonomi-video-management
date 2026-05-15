@@ -26,6 +26,7 @@ Environment:
   CATALOG_PATH               Catalog state path (default: /var/lib/autvid/catalog/catalog.json)
   BACKUP_FILE_OWNER          Optional numeric owner for completed backups, UID:GID
   BACKUP_SQLITE_WAIT_SECONDS Seconds to wait for the SQLite database (default: 120)
+                             BACKUP_DB_WAIT_SECONDS is accepted as a legacy alias.
   BACKUP_TEXTFILE_DIR        Optional node-exporter textfile collector directory
   BACKUP_TEXTFILE_NAME       Metric filename in BACKUP_TEXTFILE_DIR
                              (default: autvid_backup.prom)
@@ -415,7 +416,7 @@ main() {
   export BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-0}"
   export BACKUP_CATALOG="${BACKUP_CATALOG:-true}"
   export CATALOG_PATH="${CATALOG_PATH:-/var/lib/autvid/catalog/catalog.json}"
-  export BACKUP_SQLITE_WAIT_SECONDS="${BACKUP_SQLITE_WAIT_SECONDS:-120}"
+  export BACKUP_SQLITE_WAIT_SECONDS="${BACKUP_SQLITE_WAIT_SECONDS:-${BACKUP_DB_WAIT_SECONDS:-120}}"
   export BACKUP_TEXTFILE_DIR="${BACKUP_TEXTFILE_DIR:-}"
   export BACKUP_TEXTFILE_NAME="${BACKUP_TEXTFILE_NAME:-autvid_backup.prom}"
 

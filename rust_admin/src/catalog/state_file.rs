@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tracing::warn;
 
-use crate::{config::Config, errors::ApiError, CATALOG_CONTENT_TYPE};
+use crate::{config::Config, errors::ApiError, CATALOG_CONTENT_TYPE, CATALOG_SCHEMA_VERSION};
 
 pub(crate) fn read_catalog_state_value(config: &Config) -> Option<Value> {
     let raw = match fs::read_to_string(&config.catalog_state_path) {
@@ -131,7 +131,7 @@ pub(super) fn empty_catalog() -> Value {
 
 pub(super) fn empty_catalog_kind(kind: &str) -> Value {
     json!({
-        "schema_version": 1,
+        "schema_version": CATALOG_SCHEMA_VERSION,
         "content_type": CATALOG_CONTENT_TYPE,
         "catalog_kind": kind,
         "generated_at": Utc::now().to_rfc3339(),
