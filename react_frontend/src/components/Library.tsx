@@ -1,19 +1,5 @@
-import { useCallback, useEffect, useState, type MouseEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-
-import {
-  approveVideoUpload,
-  deleteVideoRecord,
-  getAdminCatalogs,
-  getVideoDetails,
-  listVideos,
-  publishAdminCatalogs,
-  requestErrorMessage,
-  updateVideoPublication,
-  updateVideoVisibility,
-} from "../api/client";
-import type { AdminCatalogs, VideoDetail, VideoSummary, VisibilityUpdate } from "../types";
-import { isActiveStatus, statusLabel } from "../utils/status";
+import { useVideoLibrary } from "../hooks/useVideoLibrary";
+import { statusLabel } from "../utils/status";
 import FinalQuotePanel from "./FinalQuotePanel";
 import VideoPlayer from "./VideoPlayer";
 
@@ -21,218 +7,30 @@ interface LibraryProps {
   admin?: boolean;
 }
 
-interface PlayingState {
-  resolution: string;
-  videoId: string;
-}
-
 export default function Library({ admin = false }: LibraryProps) {
-  const navigate = useNavigate();
-  const { videoId: routeVideoId } = useParams<{ videoId?: string }>();
-  const detailBasePath = admin ? "/manage" : "/library";
-  const [videos, setVideos] = useState<VideoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [playing, setPlaying] = useState<PlayingState | null>(null);
-  const [detail, setDetail] = useState<VideoDetail | null>(null);
-  const [approving, setApproving] = useState<string | null>(null);
-  const [publishing, setPublishing] = useState<string | null>(null);
-  const [catalogs, setCatalogs] = useState<AdminCatalogs | null>(null);
-  const [catalogPublishing, setCatalogPublishing] = useState(false);
-  const [catalogCopied, setCatalogCopied] = useState("");
-  const [loadError, setLoadError] = useState("");
-  const [detailError, setDetailError] = useState("");
-  const [actionError, setActionError] = useState("");
-  const [catalogError, setCatalogError] = useState("");
-  const activeDetailId = detail?.id;
-  const activeDetailStatus = detail?.status;
-
-  const load = useCallback(async () => {
-    try {
-      const data = await listVideos({ admin });
-      setVideos(data);
-      setLoadError("");
-    } catch (err) {
-      setLoadError(requestErrorMessage(err, "Could not load the video catalog."));
-    } finally {
-      setLoading(false);
-    }
-  }, [admin]);
-
-  const loadDetail = useCallback(async (videoId: string) => {
-    setDetailError("");
-    setActionError("");
-    try {
-      const data = await getVideoDetails({ admin, videoId });
-      setDetail(data);
-    } catch (err) {
-      setDetailError(requestErrorMessage(err, "Could not load video details."));
-    }
-  }, [admin]);
-
-  const loadCatalogs = useCallback(async () => {
-    if (!admin) return;
-    try {
-      const data = await getAdminCatalogs();
-      setCatalogs(data);
-      setCatalogError("");
-    } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Could not load catalog addresses."));
-    }
-  }, [admin]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    loadCatalogs();
-  }, [loadCatalogs]);
-
-  useEffect(() => {
-    if (!routeVideoId) {
-      setDetail(null);
-      return;
-    }
-
-    let active = true;
-    setDetailError("");
-    setActionError("");
-    getVideoDetails({ admin, videoId: routeVideoId })
-      .then((data) => {
-        if (active) setDetail(data);
-      })
-      .catch((err) => {
-        if (active) {
-          setDetail(null);
-          setDetailError(requestErrorMessage(err, "Could not load video details."));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [admin, routeVideoId]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (videos.some((video) => isActiveStatus(video.status))) {
-        load();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [videos, load]);
-
-  useEffect(() => {
-    if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
-    const interval = setInterval(async () => {
-      try {
-        const data = await getVideoDetails({ admin, videoId: activeDetailId });
-        setDetail(data);
-        setDetailError("");
-      } catch (err) {
-        setDetailError(requestErrorMessage(err, "Could not refresh video details."));
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [activeDetailId, activeDetailStatus, admin]);
-
-  const openDetail = async (videoId: string) => {
-    if (routeVideoId === videoId && detail?.id === videoId) {
-      navigate(detailBasePath);
-      return;
-    }
-    if (routeVideoId === videoId) {
-      await loadDetail(videoId);
-      return;
-    }
-    navigate(`${detailBasePath}/${encodeURIComponent(videoId)}`);
-  };
-
-  const deleteVideo = async (videoId: string, event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
-    setActionError("");
-    try {
-      await deleteVideoRecord(videoId);
-      setVideos((prev) => prev.filter((video) => video.id !== videoId));
-      await loadCatalogs();
-      if (detail?.id === videoId) {
-        setDetail(null);
-        navigate(detailBasePath, { replace: true });
-      }
-      if (playing?.videoId === videoId) setPlaying(null);
-    } catch (err) {
-      setActionError(requestErrorMessage(err, "Delete failed."));
-    }
-  };
-
-  const approveVideo = async (videoId: string) => {
-    setApproving(videoId);
-    setActionError("");
-    try {
-      const data = await approveVideoUpload(videoId);
-      setDetail(data);
-      await load();
-      await loadCatalogs();
-    } catch (err) {
-      const message = requestErrorMessage(err, "Approval failed.");
-      setActionError(message);
-      window.alert(message);
-    } finally {
-      setApproving(null);
-    }
-  };
-
-  const updateVisibility = async (videoId: string, next: VisibilityUpdate) => {
-    setActionError("");
-    try {
-      const data = await updateVideoVisibility(videoId, next);
-      setDetail(data);
-      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
-      await loadCatalogs();
-    } catch (err) {
-      setActionError(requestErrorMessage(err, "Visibility update failed."));
-    }
-  };
-
-  const updatePublication = async (videoId: string, isPublic: boolean) => {
-    setPublishing(videoId);
-    setActionError("");
-    try {
-      const data = await updateVideoPublication(videoId, isPublic);
-      setDetail(data);
-      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
-      await loadCatalogs();
-    } catch (err) {
-      setActionError(requestErrorMessage(err, isPublic ? "Publish failed." : "Unpublish failed."));
-    } finally {
-      setPublishing(null);
-    }
-  };
-
-  const republishCatalogs = async () => {
-    setCatalogPublishing(true);
-    setCatalogError("");
-    setCatalogCopied("");
-    try {
-      const data = await publishAdminCatalogs();
-      setCatalogs(data);
-    } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Catalog publish failed."));
-    } finally {
-      setCatalogPublishing(false);
-    }
-  };
-
-  const copyAddress = async (label: string, address?: string | null) => {
-    if (!address) return;
-    try {
-      await navigator.clipboard.writeText(address);
-      setCatalogCopied(label);
-    } catch {
-      setCatalogError("Could not copy the catalog address.");
-    }
-  };
+  const {
+    actionError,
+    approveVideo,
+    approving,
+    catalogCopied,
+    catalogError,
+    catalogPublishing,
+    catalogs,
+    copyAddress,
+    deleteVideo,
+    detail,
+    detailError,
+    loadError,
+    loading,
+    openDetail,
+    playing,
+    publishing,
+    republishCatalogs,
+    setPlaying,
+    updatePublication,
+    updateVisibility,
+    videos,
+  } = useVideoLibrary(admin);
 
   if (loading) {
     return (
