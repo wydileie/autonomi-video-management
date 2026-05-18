@@ -850,7 +850,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmp-serde",
  "self-replace",
- "self_encryption",
+ "self_encryption 0.35.0",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -912,7 +912,7 @@ dependencies = [
  "saorsa-core",
  "saorsa-pqc 0.5.1",
  "self-replace",
- "self_encryption",
+ "self_encryption 0.35.0",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -964,7 +964,7 @@ dependencies = [
  "futures-util",
  "hex",
  "rmp-serde",
- "self_encryption",
+ "self_encryption 0.36.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5861,6 +5861,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "self_encryption"
+version = "0.36.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47ab904569f88dcbde4f0feadb693c184577dc81e8243f96bb725e72a779c637"
+dependencies = [
+ "bincode",
+ "blake3",
+ "brotli",
+ "bytes",
+ "chacha20poly1305",
+ "hex",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "xor_name",
+]
+
+[[package]]
 name = "semver"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6596,7 +6618,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -7479,7 +7501,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
