@@ -3,7 +3,9 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub(crate) struct CatalogState {
     pub(crate) catalog_address: Option<String>,
+    pub(crate) published_catalog_address: Option<String>,
     pub(crate) catalog: Option<Catalog>,
+    pub(crate) published_catalog: Option<Catalog>,
 }
 
 #[derive(Clone, Deserialize)]

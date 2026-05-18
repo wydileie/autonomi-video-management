@@ -76,6 +76,42 @@ export interface VideoDetail extends VideoSummary {
   variants: VideoVariant[];
 }
 
+export interface CatalogVariantSummary {
+  height: number;
+  resolution: string;
+  segment_count: number;
+  total_duration?: number | null;
+  width: number;
+}
+
+export interface CatalogVideoSummary {
+  created_at: string;
+  description?: string | null;
+  id: string;
+  is_public: boolean;
+  manifest_address: string;
+  status: string;
+  title: string;
+  updated_at: string;
+  variants: CatalogVariantSummary[];
+}
+
+export interface PortableCatalogDocument {
+  catalog_kind: "published" | "all";
+  content_type: string;
+  generated_at: string;
+  schema_version: number;
+  updated_at: string;
+  videos: CatalogVideoSummary[];
+}
+
+export interface AdminCatalogs {
+  all_catalog: PortableCatalogDocument | null;
+  all_catalog_address: string | null;
+  published_catalog: PortableCatalogDocument | null;
+  published_catalog_address: string | null;
+}
+
 export interface UploadQuoteRequest {
   duration_seconds: number;
   resolutions: string[];

@@ -8,20 +8,16 @@ Usage:
   scripts/restore-production.sh --db-file FILE [--catalog-file FILE] --yes
 
 Restores production state from explicit backup files. This is destructive:
-Postgres objects in ADMIN_DB are dropped/replaced, and the catalog bookmark is
-overwritten when --catalog-file is provided or DIR/catalog.json exists.
+the SQLite database is replaced, and the catalog state is overwritten when
+--catalog-file is provided or DIR/catalog.json exists. Stop the stack first.
 
 Required safety flag:
   --yes                 Confirm the destructive restore
 
 Environment overrides:
-  DOCKER_COMPOSE        Compose command (default: docker compose)
-  COMPOSE_ENV_FILE      Compose env file (default: .env.production)
-  COMPOSE_FILES         Space-separated compose files
-                        (default: docker-compose.yml docker-compose.prod.yml)
-  DB_SERVICE            Compose Postgres service (default: db)
-  CATALOG_SERVICE       Compose service with catalog volume (default: init_permissions)
-  CATALOG_PATH          Catalog bookmark path in container (default: /catalog/catalog.json)
+  AUTVID_DATA_HOST_PATH Host app-data path (default: ./.autvid/app_data)
+  SQLITE_DB_NAME        SQLite database filename (default: autvid.sqlite3)
+  CATALOG_PATH          Catalog state path (default: AUTVID_DATA_HOST_PATH/catalog/catalog.json)
 EOF
 }
 
@@ -74,7 +70,7 @@ fi
 
 if [[ -n "${backup_dir}" ]]; then
   [[ -z "${db_file}" ]] || { echo "Use either --backup-dir or --db-file, not both" >&2; exit 2; }
-  db_file="${backup_dir%/}/postgres.dump"
+  db_file="${backup_dir%/}/${SQLITE_DB_NAME:-autvid.sqlite3}"
   if [[ -z "${catalog_file}" && -f "${backup_dir%/}/catalog.json" ]]; then
     catalog_file="${backup_dir%/}/catalog.json"
   fi
@@ -87,7 +83,7 @@ if [[ -z "${db_file}" ]]; then
 fi
 
 if [[ ! -r "${db_file}" ]]; then
-  echo "Postgres backup is not readable: ${db_file}" >&2
+  echo "SQLite backup is not readable: ${db_file}" >&2
   exit 1
 fi
 db_file="$(cd "$(dirname "${db_file}")" && pwd)/$(basename "${db_file}")"
@@ -100,33 +96,39 @@ if [[ -n "${catalog_file}" ]]; then
   catalog_file="$(cd "$(dirname "${catalog_file}")" && pwd)/$(basename "${catalog_file}")"
 fi
 
-docker_compose="${DOCKER_COMPOSE:-docker compose}"
-compose_env_file="${COMPOSE_ENV_FILE:-.env.production}"
-compose_files="${COMPOSE_FILES:-docker-compose.yml docker-compose.prod.yml}"
-db_service="${DB_SERVICE:-db}"
-catalog_service="${CATALOG_SERVICE:-init_permissions}"
-catalog_path="${CATALOG_PATH:-/catalog/catalog.json}"
-
-read -r -a compose_cmd <<< "${docker_compose}"
-compose=("${compose_cmd[@]}" --env-file "${compose_env_file}")
-for compose_file in ${compose_files}; do
-  compose+=(-f "${compose_file}")
-done
-
 cd "${repo_root}"
 
-echo "Restoring Postgres from ${db_file}"
-"${compose[@]}" exec -T "${db_service}" sh -ceu \
-  'pg_restore --clean --if-exists --no-owner --no-acl -U "$ADMIN_USER" -d "$ADMIN_DB"' \
-  < "${db_file}"
+data_host_path="${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}"
+sqlite_db_name="${SQLITE_DB_NAME:-autvid.sqlite3}"
+case "${data_host_path}" in
+  /*) ;;
+  *) data_host_path="${repo_root}/${data_host_path}" ;;
+esac
+target_db="${data_host_path%/}/${sqlite_db_name}"
+catalog_path="${CATALOG_PATH:-${data_host_path}/catalog/catalog.json}"
+
+mkdir -p "$(dirname "${target_db}")"
+
+echo "Restoring SQLite database to ${target_db}"
+cp "${db_file}" "${target_db}"
+# Repo-created backups contain only the online-backup .sqlite3 file. Keep
+# sidecar handling for legacy/manual backups, and remove stale sidecars when
+# they are absent from the backup.
+for suffix in -wal -shm; do
+  source_sidecar="$(dirname "${db_file}")/$(basename "${db_file}")${suffix}"
+  if [[ -r "${source_sidecar}" ]]; then
+    cp "${source_sidecar}" "${target_db}${suffix}"
+  else
+    rm -f "${target_db}${suffix}"
+  fi
+done
 
 if [[ -n "${catalog_file}" ]]; then
-  echo "Restoring catalog bookmark from ${catalog_file}"
-  "${compose[@]}" run --rm --no-deps -T --entrypoint sh "${catalog_service}" -ceu \
-    "mkdir -p \"\$(dirname '${catalog_path}')\"; umask 077; cat > '${catalog_path}'; chown 1000:1000 '${catalog_path}'" \
-    < "${catalog_file}"
+  echo "Restoring catalog state from ${catalog_file}"
+  mkdir -p "$(dirname "${catalog_path}")"
+  cp "${catalog_file}" "${catalog_path}"
 else
-  echo "No catalog bookmark file provided; leaving catalog state unchanged"
+  echo "No catalog state file provided; leaving catalog state unchanged"
 fi
 
 echo "Restore complete"

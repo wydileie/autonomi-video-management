@@ -1,8 +1,9 @@
 use std::{fs, path::PathBuf, sync::atomic::Ordering, time::Duration as StdDuration};
 
 use axum::http::StatusCode;
-use chrono::{Duration, Utc};
-use sqlx::{postgres::PgListener, Row};
+use chrono::{DateTime, Duration, Utc};
+use sqlx::Row;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{error, info, instrument, warn};
@@ -40,7 +41,7 @@ pub(crate) fn start_job_workers(state: &AppState) -> Vec<(String, JoinHandle<()>
 }
 
 async fn job_worker_loop(state: AppState, worker_id: String) {
-    let mut listener = job_listener(&state, &worker_id).await;
+    let mut notifications = state.job_notify_tx.subscribe();
     loop {
         if state.shutdown.is_cancelled() {
             info!("Worker {} stopping after shutdown signal", worker_id);
@@ -91,55 +92,29 @@ async fn job_worker_loop(state: AppState, worker_id: String) {
                 }
             }
             Ok(None) => {
-                wait_for_job_signal(&state, &worker_id, &mut listener).await;
+                wait_for_job_signal(&state, &worker_id, &mut notifications).await;
             }
             Err(err) => {
                 warn!("Worker {} could not lease a job: {}", worker_id, err.detail);
-                wait_for_job_signal(&state, &worker_id, &mut listener).await;
+                wait_for_job_signal(&state, &worker_id, &mut notifications).await;
             }
         }
     }
 }
 
-async fn job_listener(state: &AppState, worker_id: &str) -> Option<PgListener> {
-    match PgListener::connect(&state.config.db_dsn).await {
-        Ok(mut listener) => match listener.listen("autvid_jobs").await {
-            Ok(()) => Some(listener),
-            Err(err) => {
-                warn!(
-                    "Worker {} could not LISTEN for job notifications: {}",
-                    worker_id, err
-                );
-                None
-            }
-        },
-        Err(err) => {
-            warn!(
-                "Worker {} could not connect job notification listener: {}",
-                worker_id, err
-            );
-            None
-        }
-    }
-}
-
-async fn wait_for_job_signal(state: &AppState, worker_id: &str, listener: &mut Option<PgListener>) {
+async fn wait_for_job_signal(
+    state: &AppState,
+    worker_id: &str,
+    notifications: &mut watch::Receiver<u64>,
+) {
     let poll_delay = StdDuration::from_secs(state.config.admin_job_poll_interval_seconds);
-    if let Some(active_listener) = listener.as_mut() {
-        tokio::select! {
-            _ = state.shutdown.cancelled() => {},
-            _ = sleep(poll_delay) => {},
-            notification = active_listener.recv() => {
-                if let Err(err) = notification {
-                    warn!("Worker {} job notification listener failed: {}", worker_id, err);
-                    *listener = None;
-                }
+    tokio::select! {
+        _ = state.shutdown.cancelled() => {},
+        _ = sleep(poll_delay) => {},
+        changed = notifications.changed() => {
+            if changed.is_err() {
+                warn!("Worker {} job notification channel closed; falling back to polling", worker_id);
             }
-        }
-    } else {
-        tokio::select! {
-            _ = state.shutdown.cancelled() => {},
-            _ = sleep(poll_delay) => {},
         }
     }
 }
@@ -148,37 +123,37 @@ pub(super) async fn acquire_next_job(
     state: &AppState,
     worker_id: &str,
 ) -> Result<Option<LeasedJob>, ApiError> {
+    let now = Utc::now();
+    let lease_expires_at = now + Duration::seconds(state.config.admin_job_lease_seconds);
     let row = sqlx::query(
         r#"
         UPDATE video_jobs
         SET status=$1,
             attempts=attempts + 1,
             lease_owner=$2,
-            lease_expires_at=NOW() + ($3::bigint * INTERVAL '1 second'),
-            updated_at=NOW()
+            lease_expires_at=$3,
+            updated_at=$4
         WHERE id = (
             SELECT id
             FROM video_jobs
             WHERE (
-                status=$4
-                AND run_after <= NOW()
+                status=$5
+                AND run_after <= $4
             ) OR (
                 status=$1
                 AND lease_expires_at IS NOT NULL
-                AND lease_expires_at <= NOW()
+                AND lease_expires_at <= $4
             )
             ORDER BY run_after, created_at
-            FOR UPDATE SKIP LOCKED
             LIMIT 1
         )
-        RETURNING id, job_kind, video_id, attempts, max_attempts,
-            GREATEST(EXTRACT(EPOCH FROM (NOW() - run_after)) * 1000, 0)::double precision
-                AS pickup_latency_ms
+        RETURNING id, job_kind, video_id, attempts, max_attempts, run_after
         "#,
     )
     .bind(JOB_STATUS_RUNNING)
     .bind(worker_id)
-    .bind(state.config.admin_job_lease_seconds)
+    .bind(lease_expires_at)
+    .bind(now)
     .bind(JOB_STATUS_QUEUED)
     .fetch_optional(&state.pool)
     .await
@@ -188,11 +163,11 @@ pub(super) async fn acquire_next_job(
         return Ok(None);
     };
     let id: Uuid = row.try_get("id").map_err(db_error)?;
-    let pickup_latency_ms = row
-        .try_get::<f64, _>("pickup_latency_ms")
-        .ok()
-        .unwrap_or(0.0)
-        .max(0.0) as u64;
+    let run_after: DateTime<Utc> = row.try_get("run_after").unwrap_or(now);
+    let pickup_latency_ms = now
+        .signed_duration_since(run_after)
+        .num_milliseconds()
+        .max(0) as u64;
     state
         .metrics
         .record_job_pickup_latency(StdDuration::from_millis(pickup_latency_ms));
@@ -323,6 +298,7 @@ async fn run_catalog_publish_job(state: &AppState) -> Result<(), ApiError> {
 
 #[instrument(skip(state), fields(job_id = %job_id))]
 async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiError> {
+    let now = Utc::now();
     sqlx::query(
         r#"
         UPDATE video_jobs
@@ -330,11 +306,12 @@ async fn mark_job_succeeded(state: &AppState, job_id: Uuid) -> Result<(), ApiErr
             lease_owner=NULL,
             lease_expires_at=NULL,
             last_error=NULL,
-            updated_at=NOW()
-        WHERE id=$2
+            updated_at=$2
+        WHERE id=$3
         "#,
     )
     .bind(JOB_STATUS_SUCCEEDED)
+    .bind(now)
     .bind(job_id)
     .execute(&state.pool)
     .await
@@ -348,19 +325,21 @@ pub(super) async fn mark_job_interrupted(
     job_id: Uuid,
     worker_id: &str,
 ) -> Result<(), ApiError> {
+    let now = Utc::now();
     sqlx::query(
         r#"
         UPDATE video_jobs
         SET status=$1,
             lease_owner=NULL,
             lease_expires_at=NULL,
-            run_after=NOW(),
+            run_after=$2,
             last_error='Interrupted by graceful shutdown; job was requeued.',
-            updated_at=NOW()
-        WHERE id=$2 AND status=$3 AND lease_owner=$4
+            updated_at=$2
+        WHERE id=$3 AND status=$4 AND lease_owner=$5
         "#,
     )
     .bind(JOB_STATUS_QUEUED)
+    .bind(now)
     .bind(job_id)
     .bind(JOB_STATUS_RUNNING)
     .bind(worker_id)
@@ -378,6 +357,7 @@ pub(super) async fn mark_job_failed(
 ) -> Result<(), ApiError> {
     let final_failure = job.attempts >= job.max_attempts;
     if final_failure {
+        let now = Utc::now();
         sqlx::query(
             r#"
             UPDATE video_jobs
@@ -385,12 +365,13 @@ pub(super) async fn mark_job_failed(
                 lease_owner=NULL,
                 lease_expires_at=NULL,
                 last_error=$2,
-                updated_at=NOW()
-            WHERE id=$3
+                updated_at=$3
+            WHERE id=$4
             "#,
         )
         .bind(JOB_STATUS_FAILED)
         .bind(detail)
+        .bind(now)
         .bind(job.id)
         .execute(&state.pool)
         .await
@@ -409,7 +390,7 @@ pub(super) async fn mark_job_failed(
             lease_expires_at=NULL,
             run_after=$2,
             last_error=$3,
-            updated_at=NOW()
+            updated_at=$5
         WHERE id=$4
         "#,
     )
@@ -417,6 +398,7 @@ pub(super) async fn mark_job_failed(
     .bind(run_after)
     .bind(detail)
     .bind(job.id)
+    .bind(Utc::now())
     .execute(&state.pool)
     .await
     .map_err(db_error)?;

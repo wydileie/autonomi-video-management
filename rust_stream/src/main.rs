@@ -48,7 +48,8 @@ async fn main() -> anyhow::Result<()> {
     let catalog_state_path = env::var("CATALOG_STATE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp/video_catalog/catalog.json"));
-    let catalog_bootstrap_address = env::var("CATALOG_ADDRESS")
+    let catalog_bootstrap_address = env::var("PUBLISHED_CATALOG_ADDRESS")
+        .or_else(|_| env::var("CATALOG_ADDRESS"))
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -130,9 +131,13 @@ async fn main() -> anyhow::Result<()> {
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state);
 
-    let bind_addr = "0.0.0.0:8081";
+    let bind_port = env::var("RUST_STREAM_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(8081);
+    let bind_addr = format!("0.0.0.0:{bind_port}");
     info!("Listening on {}", bind_addr);
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

@@ -1,4 +1,5 @@
-use tracing::{info, warn};
+use chrono::Utc;
+use tracing::info;
 use uuid::Uuid;
 
 use sqlx::Row;
@@ -29,23 +30,27 @@ async fn enqueue_video_job(
     kind: JobKind,
     video_id: Uuid,
 ) -> Result<(), ApiError> {
+    let job_id = Uuid::new_v4();
+    let now = Utc::now();
     let result = sqlx::query(
         r#"
-        INSERT INTO video_jobs (job_kind, video_id, status, max_attempts, run_after)
-        SELECT $1, $2, $3, $4, NOW()
+        INSERT INTO video_jobs (id, job_kind, video_id, status, max_attempts, run_after)
+        SELECT $1, $2, $3, $4, $5, $6
         WHERE NOT EXISTS (
             SELECT 1 FROM video_jobs
-            WHERE job_kind=$1
-              AND video_id=$2
-              AND status IN ($3, $5)
+            WHERE job_kind=$2
+              AND video_id=$3
+              AND status IN ($4, $7)
         )
         ON CONFLICT DO NOTHING
         "#,
     )
+    .bind(job_id)
     .bind(kind.as_str())
     .bind(video_id)
     .bind(JOB_STATUS_QUEUED)
     .bind(state.config.admin_job_max_attempts)
+    .bind(now)
     .bind(JOB_STATUS_RUNNING)
     .execute(&state.pool)
     .await
@@ -64,21 +69,25 @@ async fn enqueue_video_job(
 }
 
 pub(super) async fn enqueue_catalog_publish_job(state: &AppState) -> Result<(), ApiError> {
+    let job_id = Uuid::new_v4();
+    let now = Utc::now();
     let result = sqlx::query(
         r#"
-        INSERT INTO video_jobs (job_kind, video_id, status, max_attempts, run_after)
-        SELECT $1, NULL::uuid, $2, $3, NOW()
+        INSERT INTO video_jobs (id, job_kind, video_id, status, max_attempts, run_after)
+        SELECT $1, $2, NULL, $3, $4, $5
         WHERE NOT EXISTS (
             SELECT 1 FROM video_jobs
-            WHERE job_kind=$1
-              AND status=$2
+            WHERE job_kind=$2
+              AND status=$3
         )
         ON CONFLICT DO NOTHING
         "#,
     )
+    .bind(job_id)
     .bind(JOB_KIND_PUBLISH_CATALOG)
     .bind(JOB_STATUS_QUEUED)
     .bind(state.config.catalog_publish_job_max_attempts)
+    .bind(now)
     .execute(&state.pool)
     .await
     .map_err(db_error)?;
@@ -93,13 +102,9 @@ pub(super) async fn enqueue_catalog_publish_job(state: &AppState) -> Result<(), 
 }
 
 async fn notify_job_workers(state: &AppState, payload: &str) {
-    if let Err(err) = sqlx::query("SELECT pg_notify('autvid_jobs', $1)")
-        .bind(payload)
-        .execute(&state.pool)
-        .await
-    {
-        warn!("Could not notify durable job workers: {}", err);
-    }
+    let next_epoch = state.job_notify_tx.borrow().saturating_add(1);
+    let _ = state.job_notify_tx.send(next_epoch);
+    info!("Notified durable job workers: {}", payload);
 }
 
 pub(crate) fn job_retry_delay_seconds(attempts: i32) -> i64 {

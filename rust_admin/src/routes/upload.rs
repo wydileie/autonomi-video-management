@@ -12,7 +12,7 @@ use sqlx::Row;
 use crate::{
     auth::{require_admin, require_csrf},
     catalog::get_db_video,
-    db::{db_error, parse_video_uuid, set_status},
+    db::{begin_immediate, db_error, parse_video_uuid, set_status},
     errors::ApiError,
     jobs::{
         cleanup_expired_approvals, fetch_job_dir, schedule_processing_job, schedule_upload_job,
@@ -63,13 +63,12 @@ pub(super) async fn approve_video(
     let video_uuid = parse_video_uuid(&video_id)?;
 
     let mut expired_job_dir = None;
-    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let mut tx = begin_immediate(&state.pool).await?;
     let row = sqlx::query(
         r#"
         SELECT status, approval_expires_at, job_dir, final_quote
         FROM videos
         WHERE id=$1
-        FOR UPDATE
         "#,
     )
     .bind(video_uuid)
@@ -98,16 +97,18 @@ pub(super) async fn approve_video(
         row.try_get("approval_expires_at").ok().flatten();
     if approval_expires_at.is_some_and(|expires_at| expires_at <= Utc::now()) {
         expired_job_dir = job_dir.clone();
+        let now = Utc::now();
         sqlx::query(
             r#"
             UPDATE videos
             SET status='expired',
                 error_message='Final quote approval window expired; local files were deleted.',
-                updated_at=NOW()
+                updated_at=$2
             WHERE id=$1
             "#,
         )
         .bind(video_uuid)
+        .bind(now)
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -129,11 +130,12 @@ pub(super) async fn approve_video(
         sqlx::query(
             r#"
             UPDATE videos
-            SET status='uploading', error_message=NULL, updated_at=NOW()
+            SET status='uploading', error_message=NULL, updated_at=$2
             WHERE id=$1
             "#,
         )
         .bind(video_uuid)
+        .bind(Utc::now())
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;

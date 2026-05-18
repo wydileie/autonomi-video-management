@@ -4,13 +4,15 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   approveVideoUpload,
   deleteVideoRecord,
+  getAdminCatalogs,
   getVideoDetails,
   listVideos,
+  publishAdminCatalogs,
   requestErrorMessage,
   updateVideoPublication,
   updateVideoVisibility,
 } from "../api/client";
-import type { VideoDetail, VideoSummary, VisibilityUpdate } from "../types";
+import type { AdminCatalogs, VideoDetail, VideoSummary, VisibilityUpdate } from "../types";
 import { isActiveStatus, statusLabel } from "../utils/status";
 import FinalQuotePanel from "./FinalQuotePanel";
 import VideoPlayer from "./VideoPlayer";
@@ -34,9 +36,13 @@ export default function Library({ admin = false }: LibraryProps) {
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [approving, setApproving] = useState<string | null>(null);
   const [publishing, setPublishing] = useState<string | null>(null);
+  const [catalogs, setCatalogs] = useState<AdminCatalogs | null>(null);
+  const [catalogPublishing, setCatalogPublishing] = useState(false);
+  const [catalogCopied, setCatalogCopied] = useState("");
   const [loadError, setLoadError] = useState("");
   const [detailError, setDetailError] = useState("");
   const [actionError, setActionError] = useState("");
+  const [catalogError, setCatalogError] = useState("");
   const activeDetailId = detail?.id;
   const activeDetailStatus = detail?.status;
 
@@ -63,9 +69,24 @@ export default function Library({ admin = false }: LibraryProps) {
     }
   }, [admin]);
 
+  const loadCatalogs = useCallback(async () => {
+    if (!admin) return;
+    try {
+      const data = await getAdminCatalogs();
+      setCatalogs(data);
+      setCatalogError("");
+    } catch (err) {
+      setCatalogError(requestErrorMessage(err, "Could not load catalog addresses."));
+    }
+  }, [admin]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    loadCatalogs();
+  }, [loadCatalogs]);
 
   useEffect(() => {
     if (!routeVideoId) {
@@ -134,6 +155,7 @@ export default function Library({ admin = false }: LibraryProps) {
     try {
       await deleteVideoRecord(videoId);
       setVideos((prev) => prev.filter((video) => video.id !== videoId));
+      await loadCatalogs();
       if (detail?.id === videoId) {
         setDetail(null);
         navigate(detailBasePath, { replace: true });
@@ -151,6 +173,7 @@ export default function Library({ admin = false }: LibraryProps) {
       const data = await approveVideoUpload(videoId);
       setDetail(data);
       await load();
+      await loadCatalogs();
     } catch (err) {
       const message = requestErrorMessage(err, "Approval failed.");
       setActionError(message);
@@ -166,6 +189,7 @@ export default function Library({ admin = false }: LibraryProps) {
       const data = await updateVideoVisibility(videoId, next);
       setDetail(data);
       setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
+      await loadCatalogs();
     } catch (err) {
       setActionError(requestErrorMessage(err, "Visibility update failed."));
     }
@@ -178,10 +202,35 @@ export default function Library({ admin = false }: LibraryProps) {
       const data = await updateVideoPublication(videoId, isPublic);
       setDetail(data);
       setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
+      await loadCatalogs();
     } catch (err) {
       setActionError(requestErrorMessage(err, isPublic ? "Publish failed." : "Unpublish failed."));
     } finally {
       setPublishing(null);
+    }
+  };
+
+  const republishCatalogs = async () => {
+    setCatalogPublishing(true);
+    setCatalogError("");
+    setCatalogCopied("");
+    try {
+      const data = await publishAdminCatalogs();
+      setCatalogs(data);
+    } catch (err) {
+      setCatalogError(requestErrorMessage(err, "Catalog publish failed."));
+    } finally {
+      setCatalogPublishing(false);
+    }
+  };
+
+  const copyAddress = async (label: string, address?: string | null) => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCatalogCopied(label);
+    } catch {
+      setCatalogError("Could not copy the catalog address.");
     }
   };
 
@@ -225,6 +274,42 @@ export default function Library({ admin = false }: LibraryProps) {
       {loadError && <div className="error-box">{loadError}</div>}
       {detailError && <div className="error-box">{detailError}</div>}
       {actionError && <div className="error-box">{actionError}</div>}
+      {catalogError && <div className="error-box">{catalogError}</div>}
+
+      {admin && (
+        <div className="catalog-address-panel">
+          <div className="catalog-address-head">
+            <div>
+              <strong>Portable catalogs</strong>
+              <span>
+                Published {catalogs?.published_catalog?.videos.length ?? 0} / all {catalogs?.all_catalog?.videos.length ?? 0}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="secondary-action"
+              disabled={catalogPublishing}
+              onClick={republishCatalogs}
+            >
+              {catalogPublishing ? "Publishing..." : "Republish"}
+            </button>
+          </div>
+          <div className="catalog-address-grid">
+            <CatalogAddress
+              label="Published"
+              address={catalogs?.published_catalog_address}
+              copied={catalogCopied === "published"}
+              onCopy={() => copyAddress("published", catalogs?.published_catalog_address)}
+            />
+            <CatalogAddress
+              label="All"
+              address={catalogs?.all_catalog_address}
+              copied={catalogCopied === "all"}
+              onCopy={() => copyAddress("all", catalogs?.all_catalog_address)}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="video-list">
         {videos.map((video) => (
@@ -344,5 +429,27 @@ export default function Library({ admin = false }: LibraryProps) {
         ))}
       </div>
     </section>
+  );
+}
+
+function CatalogAddress({
+  address,
+  copied,
+  label,
+  onCopy,
+}: {
+  address?: string | null;
+  copied: boolean;
+  label: string;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="catalog-address-row">
+      <span>{label}</span>
+      <code>{address || "Not published yet"}</code>
+      <button type="button" className="secondary-action" disabled={!address} onClick={onCopy}>
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
   );
 }

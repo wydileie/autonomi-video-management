@@ -241,7 +241,7 @@ pub(crate) async fn accept_upload(
             show_original_filename, show_manifest_address,
             upload_original, publish_when_ready, user_id
         )
-        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11, $12)
         "#,
     )
     .bind(video_uuid)

@@ -1,36 +1,23 @@
 # Disaster Recovery
 
-Ready video data is stored on Autonomi. Local recovery focuses on Postgres,
-the latest catalog bookmark, and the processing directory used by jobs that
-were not ready yet.
+Ready video bytes and full playback manifests are stored on Autonomi. Local
+recovery focuses on the app-data directory:
 
-## What To Back Up
+- `autvid.sqlite3`: video rows, job state, auth sessions, and local metadata.
+- `catalog/catalog.json`: latest published and all-videos catalog addresses and snapshots.
+- `processing/`: only needed for uploads that are still processing, awaiting approval, or uploading.
+- `.env.production`: recreate from `.env.production.example` and restore real secrets from a secret manager.
 
-- Postgres database: video rows, job state, auth data, and catalog metadata.
-- Catalog bookmark: `/catalog/catalog.json` in the `catalog_state` volume.
-- Processing bind mount: `VIDEO_PROCESSING_HOST_PATH`, only needed for uploads
-  that are still processing or awaiting approval.
-- `.env.production`: recreate from `.env.production.example` and restore real
-  secrets from a secret manager, not from Git.
-
-The backup sidecar and `scripts/backup-production.sh` capture Postgres and the
-catalog bookmark. See `docs/BACKUP_SIDECAR.md` for scheduled backups.
+The backup sidecar and `scripts/backup-production.sh` capture SQLite and catalog
+state. See `docs/BACKUP_SIDECAR.md` for scheduled backups.
 
 ## Restore To A New Host
 
 1. Install Docker and clone the repository.
 2. Create `.env.production` from `.env.production.example`.
-3. Restore wallet, database, admin auth, domain, and processing path values.
+3. Restore wallet, admin auth, domain, and `AUTVID_DATA_HOST_PATH`.
 4. Copy the chosen backup directory to the host.
-5. Start only Postgres and supporting volumes:
-
-```bash
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  up -d db init_permissions
-```
-
+5. Stop the stack if it is running.
 6. Restore the backup:
 
 ```bash
@@ -53,39 +40,16 @@ curl http://localhost/stream/health
 curl http://localhost/api/videos
 ```
 
-## Restore With A Known Catalog Address
+## Restore With Known Catalog Addresses
 
-If Postgres is unavailable but you know the latest catalog address, set it in
-`.env.production` and start the stack:
+If local app data is unavailable but you know the latest catalog addresses, set
+them in `.env.production` and start the stack:
 
 ```dotenv
-CATALOG_ADDRESS=<latest-catalog-address>
+PUBLISHED_CATALOG_ADDRESS=<published-catalog-address>
+ALL_CATALOG_ADDRESS=<all-videos-catalog-address>
 ```
 
-This can restore public playback discovery while admin metadata is rebuilt or
-restored separately. It does not recover admin users, approval state, or job
+This restores portable playback discovery for viewer applications that know the
+addresses. It does not recover admin auth sessions, approval state, or job
 history.
-
-## Failed Restore
-
-If `pg_restore` fails because the database is in use, stop app services and
-leave only Postgres running:
-
-```bash
-docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  stop rust_admin rust_stream react_frontend nginx antd
-```
-
-Run the restore again. If the catalog bookmark is wrong, restore only the
-catalog file from a known-good backup:
-
-```bash
-scripts/restore-production.sh \
-  --catalog-file /srv/autonomi-video-management/backups/autvid-YYYYMMDDTHHMMSSZ/catalog.json \
-  --yes
-```
-
-After recovery, create a fresh backup and record the catalog address shown in
-the UI or stream logs.

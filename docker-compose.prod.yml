@@ -1,25 +1,4 @@
 services:
-  db:
-    environment:
-      POSTGRES_PASSWORD: !reset null
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_root_password
-      ADMIN_PASS: !reset null
-      ADMIN_PASS_FILE: /run/secrets/admin_db_password
-      BACKUP_PASS: !reset null
-      BACKUP_PASS_FILE: /run/secrets/backup_db_password
-    secrets:
-      - postgres_root_password
-      - admin_db_password
-      - backup_db_password
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-
   antd:
     image: autonomi-video-management-antd-service
     build:
@@ -87,8 +66,6 @@ services:
     environment:
       APP_ENV: "production"
       ANTD_URL: "http://antd:8082"
-      ADMIN_DB_PASS: !reset null
-      ADMIN_DB_PASS_FILE: /run/secrets/admin_db_password
       ADMIN_PASSWORD: !reset null
       ADMIN_PASSWORD_FILE: /run/secrets/admin_login_password
       ADMIN_AUTH_SECRET: !reset null
@@ -97,7 +74,6 @@ services:
       ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
       ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
     secrets:
-      - admin_db_password
       - admin_login_password
       - admin_auth_secret
       - antd_internal_token
@@ -150,12 +126,6 @@ services:
           memory: 128M
 
 secrets:
-  postgres_root_password:
-    file: "${POSTGRES_ROOT_PASSWORD_SECRET_FILE:-./secrets/postgres_root_password}"
-  admin_db_password:
-    file: "${ADMIN_DB_PASSWORD_SECRET_FILE:-./secrets/admin_db_password}"
-  backup_db_password:
-    file: "${BACKUP_DB_PASSWORD_SECRET_FILE:-./secrets/backup_db_password}"
   admin_login_password:
     file: "${ADMIN_LOGIN_PASSWORD_SECRET_FILE:-./secrets/admin_login_password}"
   admin_auth_secret:

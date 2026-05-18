@@ -42,6 +42,20 @@ transient network or 5xx failures with short backoffs of 150 ms and 350 ms.
 If production sits behind a slow cold-starting load balancer, tune the client
 delay constants alongside load balancer health-check and warm-up behavior.
 
+## SQLite Writes
+
+SQLite runs in WAL mode, so readers can continue during writes, but there is
+still only one writer at a time. Admin writes, visibility changes, publication
+changes, durable job leasing, and retry bookkeeping can queue behind each other
+during bursts. `ADMIN_DB_CONNECT_TIMEOUT_SECONDS` also sets SQLite's busy
+timeout; the default gives writers up to 30 seconds to wait before surfacing a
+database busy error.
+
+If busy errors appear, reduce write pressure before increasing worker counts:
+keep `ADMIN_JOB_WORKERS` conservative, avoid bulk visibility/publication flips
+while uploads are active, and check whether long Autonomi or FFmpeg work is
+happening outside database transactions.
+
 ## Stream Cache
 
 The segment cache trades memory for fewer Autonomi reads:
@@ -85,6 +99,5 @@ The production Compose overlay sets resource ceilings for the main services:
 | `antd` | 2 CPU / 2 GB |
 | `rust_admin` | 2 CPU / 2 GB |
 | `rust_stream` | 1 CPU / 512 MB |
-| `db` | 1 CPU / 1 GB |
 | `nginx` | 0.5 CPU / 256 MB |
 | `react_frontend` | 0.5 CPU / 256 MB |

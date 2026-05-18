@@ -5,7 +5,7 @@ requests, admin API calls, stream requests, and worker logs.
 
 ## Stuck Admin Job
 
-Check recent worker logs and database health first:
+Check recent worker logs and admin health first:
 
 ```bash
 make logs-prod
@@ -13,13 +13,13 @@ make logs-prod
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  exec db pg_isready -U "$POSTGRES_USER"
+  exec rust_admin /usr/local/bin/rust_admin --healthcheck 127.0.0.1:8000 /health
 ```
 
 Common causes are an exhausted processing disk, `antd` write quote failures,
 FFmpeg exits, or a worker lease that expired while the container was down.
-Restarting `rust_admin` is safe; durable jobs are recovered from Postgres and
-the processing bind mount.
+Restarting `rust_admin` is safe; durable jobs are recovered from SQLite and the
+app-data processing directory.
 
 ```bash
 docker compose --env-file .env.production \
@@ -32,7 +32,7 @@ docker compose --env-file .env.production \
 
 Uploads waiting for approval use `FINAL_QUOTE_APPROVAL_TTL_SECONDS`. If an
 approval expired, create a new quote from the UI or API rather than approving
-the old one. If the source files were removed from `VIDEO_PROCESSING_HOST_PATH`,
+the old one. If the source files were removed from `AUTVID_DATA_HOST_PATH`,
 upload the video again.
 
 Check cleanup timing:
@@ -131,7 +131,7 @@ ADMIN_JOB_WORKERS=1
 
 If transcodes are slow and CPU and memory are available, increase one setting
 at a time and watch job completion time, container memory, and disk space in
-`VIDEO_PROCESSING_HOST_PATH`.
+`AUTVID_DATA_HOST_PATH`.
 
 ## Useful Validation Commands
 

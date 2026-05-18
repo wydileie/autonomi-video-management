@@ -7,6 +7,7 @@ import axios, {
 
 import { API_BASE_URL } from "../runtimeConfig";
 import type {
+  AdminCatalogs,
   AuthState,
   CurrentUser,
   LoginCredentials,
@@ -327,5 +328,15 @@ export async function updateVideoPublication(
     `/admin/videos/${videoId}/publication`,
     { is_public: isPublic },
   );
+  return res.data;
+}
+
+export async function getAdminCatalogs(): Promise<AdminCatalogs> {
+  const res = await api.get<AdminCatalogs>("/admin/catalogs");
+  return res.data;
+}
+
+export async function publishAdminCatalogs(): Promise<AdminCatalogs> {
+  const res = await api.post<AdminCatalogs>("/admin/catalogs/publish", null);
   return res.data;
 }

@@ -2,7 +2,7 @@
 
 This project is designed to deploy as containers. That is the easiest path
 across Linux, macOS, and Windows because the stack depends on Rust, FFmpeg,
-Postgres, Nginx, and Autonomi tooling.
+Nginx, SQLite app data, and Autonomi tooling.
 
 ## Local Testnet
 
@@ -18,13 +18,13 @@ docker compose --env-file .env.local \
   up --build
 ```
 
-Set `VIDEO_PROCESSING_HOST_PATH` to a host path with enough free disk space for
-original uploads and transcoded segments. This directory is bind-mounted into
-`rust_admin` and is required for interrupted transcode/upload jobs to resume
-after a container restart.
+Set `AUTVID_DATA_HOST_PATH` to a host path with enough free disk space for the
+SQLite database, catalog state, original uploads, and transcoded segments. This
+directory is bind-mounted into `rust_admin` and is required for interrupted
+transcode/upload jobs to resume after a container restart.
 
 ```dotenv
-VIDEO_PROCESSING_HOST_PATH=/mnt/large-disk/autonomi-video-processing
+AUTVID_DATA_HOST_PATH=/mnt/large-disk/autvid/app-data
 ```
 
 The Compose stack runs a one-shot `init_permissions` container before the app
@@ -85,7 +85,7 @@ ADMIN_AUTH_SECRET=<long random token signing secret, at least 32 chars>
 DOMAIN=demo.example.com
 APP_HTTP_PORT=80
 CORS_ALLOWED_ORIGINS=https://demo.example.com,http://demo.example.com
-VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
+AUTVID_DATA_HOST_PATH=/srv/autonomi-video-management/app-data
 ```
 
 Do not add `docker-compose.debug-ports.yml` for a public demo unless you
@@ -134,23 +134,20 @@ PROD_ANTD_NETWORK=default
 PROD_EVM_NETWORK=arbitrum-one
 ANTD_PAYMENT_MODE=auto
 ANTD_APPROVE_ON_STARTUP=true
-VIDEO_PROCESSING_HOST_PATH=/srv/autonomi-video-management/processing
+AUTVID_DATA_HOST_PATH=/srv/autonomi-video-management/app-data
 ```
 
 ### Production Secrets
 
-The production overlay mounts Postgres, admin-login, auth-signing, internal
-service-token, backup-role, and wallet values as Docker Compose file-backed
-secrets under `/run/secrets`. The service containers receive only `_FILE`
-environment variables for those values.
+The production overlay mounts admin-login, auth-signing, internal service-token,
+and wallet values as Docker Compose file-backed secrets under `/run/secrets`.
+The service containers receive only `_FILE` environment variables for those
+values.
 
 Create the files referenced by `.env.production` before starting production:
 
 ```bash
 install -d -m 0700 secrets
-printf '%s\n' '<postgres root password>' > secrets/postgres_root_password
-printf '%s\n' '<admin database password>' > secrets/admin_db_password
-printf '%s\n' '<backup read-only database password>' > secrets/backup_db_password
 printf '%s\n' '<admin login password>' > secrets/admin_login_password
 printf '%s\n' '<long auth signing secret>' > secrets/admin_auth_secret
 printf '%s\n' '<internal bearer token>' > secrets/antd_internal_token
@@ -294,7 +291,6 @@ docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.monitoring.yml \
   -f docker-compose.backup.yml \
-  -f docker-compose.backup.prod.yml \
   up --build -d
 ```
 
@@ -308,24 +304,20 @@ make backup-production
 ```
 
 The backup helper writes a directory such as
-`backups/autvid-20260505T120000Z/` containing a custom-format
-`postgres.dump`, `manifest.env`, and `catalog.json` when the catalog bookmark
-exists.
+`backups/autvid-20260505T120000Z/` containing `autvid.sqlite3`,
+`manifest.env`, and `catalog.json` when catalog state exists.
 
-Restore Postgres and the catalog bookmark into a fresh stack:
+Restore SQLite and catalog state into a fresh app-data directory:
 
 ```bash
 make restore-production ARGS='--backup-dir backups/autvid-YYYYMMDDTHHMMSSZ --yes'
 ```
 
-The restore helper refuses to run without `--yes` because it uses
-`pg_restore --clean --if-exists` against `ADMIN_DB`. To restore only a database
-dump or to point at a different Compose env/file set, call the script directly:
+The restore helper refuses to run without `--yes` because it replaces the local
+SQLite database. To restore only a database file, call the script directly:
 
 ```bash
-COMPOSE_ENV_FILE=.env.production \
-COMPOSE_FILES='docker-compose.yml docker-compose.prod.yml' \
-scripts/restore-production.sh --db-file ./backups/autvid-.../postgres.dump --yes
+scripts/restore-production.sh --db-file ./backups/autvid-.../autvid.sqlite3 --yes
 ```
 
 Stop without deleting data:
@@ -346,14 +338,12 @@ docker compose --env-file .env.local \
   down -v
 ```
 
-Data already written to Autonomi is permanent. `down -v` only removes local
-volumes such as Postgres state, the latest catalog bookmark, and local devnet
-state. The processing bind mount at `VIDEO_PROCESSING_HOST_PATH` is a normal
-host directory, so Compose will not delete it.
+Data already written to Autonomi is permanent. `down -v` removes Docker-managed
+local devnet volumes. The app-data bind mount at `AUTVID_DATA_HOST_PATH` is a
+normal host directory, so Compose will not delete it.
 
 ## Moving Hosts
 
-Ready video manifests and the catalog are stored on Autonomi. The
-`catalog_state` Docker volume stores only the latest catalog address bookmark.
-If you move to another host, set `CATALOG_ADDRESS` to the last catalog address
-to bootstrap the video list from the network.
+Ready video manifests and catalogs are stored on Autonomi. If you move to
+another host, set `PUBLISHED_CATALOG_ADDRESS` and `ALL_CATALOG_ADDRESS` to the
+last known addresses to bootstrap video discovery from the network.

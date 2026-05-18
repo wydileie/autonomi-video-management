@@ -36,7 +36,7 @@ impl AuthCookieSameSite {
 
 #[derive(Clone)]
 pub(crate) struct Config {
-    pub(crate) db_dsn: String,
+    pub(crate) db_path: PathBuf,
     pub(crate) antd_url: String,
     pub(crate) antd_internal_token: Option<String>,
     pub(crate) antd_payment_mode: String,
@@ -48,6 +48,7 @@ pub(crate) struct Config {
     pub(crate) admin_auth_cookie_secure: bool,
     pub(crate) catalog_state_path: PathBuf,
     pub(crate) catalog_bootstrap_address: Option<String>,
+    pub(crate) all_catalog_bootstrap_address: Option<String>,
     pub(crate) cors_allowed_origins: Vec<HeaderValue>,
     pub(crate) bind_addr: SocketAddr,
     pub(crate) admin_db_min_connections: u32,
@@ -91,12 +92,11 @@ pub(crate) struct Config {
 
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Self> {
-        let db_user = required_env("ADMIN_DB_USER")?;
-        let db_pass = required_secret_env("ADMIN_DB_PASS", "ADMIN_DB_PASS_FILE")?;
-        let db_host = required_env("ADMIN_DB_HOST")?;
-        let db_name = required_env("ADMIN_DB_NAME")?;
-        let db_port = env::var("ADMIN_DB_PORT").unwrap_or_else(|_| "5432".into());
-        let db_dsn = format!("postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}");
+        let data_dir =
+            PathBuf::from(env::var("AUTVID_DATA_DIR").unwrap_or_else(|_| ".autvid".to_string()));
+        let db_path = env::var("ADMIN_DB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data_dir.join("autvid.sqlite3"));
 
         let bind_port = env::var("RUST_ADMIN_PORT")
             .ok()
@@ -104,8 +104,8 @@ impl Config {
             .unwrap_or(DEFAULT_API_PORT);
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
 
-        let admin_db_min_connections = parse_u32_env("ADMIN_DB_MIN_CONNECTIONS", 2)?;
-        let admin_db_max_connections = parse_u32_env("ADMIN_DB_MAX_CONNECTIONS", 10)?;
+        let admin_db_min_connections = parse_u32_env("ADMIN_DB_MIN_CONNECTIONS", 1)?;
+        let admin_db_max_connections = parse_u32_env("ADMIN_DB_MAX_CONNECTIONS", 5)?;
         if admin_db_max_connections == 0 {
             anyhow::bail!("ADMIN_DB_MAX_CONNECTIONS must be greater than zero");
         }
@@ -301,7 +301,7 @@ impl Config {
         }
 
         Ok(Self {
-            db_dsn,
+            db_path,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
             antd_internal_token: optional_secret_env(
                 "ANTD_INTERNAL_TOKEN",
@@ -314,11 +314,18 @@ impl Config {
             admin_auth_secret,
             admin_auth_ttl_hours,
             admin_auth_cookie_secure,
-            catalog_state_path: PathBuf::from(
-                env::var("CATALOG_STATE_PATH")
-                    .unwrap_or_else(|_| "/tmp/video_catalog/catalog.json".into()),
-            ),
-            catalog_bootstrap_address: non_empty_env("CATALOG_ADDRESS"),
+            catalog_state_path: PathBuf::from(env::var("CATALOG_STATE_PATH").unwrap_or_else(
+                |_| {
+                    data_dir
+                        .join("catalog")
+                        .join("catalog.json")
+                        .to_string_lossy()
+                        .to_string()
+                },
+            )),
+            catalog_bootstrap_address: non_empty_env("PUBLISHED_CATALOG_ADDRESS")
+                .or_else(|| non_empty_env("CATALOG_ADDRESS")),
+            all_catalog_bootstrap_address: non_empty_env("ALL_CATALOG_ADDRESS"),
             cors_allowed_origins: cors_allowed_origins()?,
             bind_addr,
             admin_db_min_connections,
@@ -328,7 +335,8 @@ impl Config {
             admin_upload_request_timeout_seconds,
             admin_shutdown_grace_seconds,
             upload_temp_dir: PathBuf::from(
-                env::var("UPLOAD_TEMP_DIR").unwrap_or_else(|_| "/tmp/video_uploads".into()),
+                env::var("UPLOAD_TEMP_DIR")
+                    .unwrap_or_else(|_| data_dir.join("processing").to_string_lossy().to_string()),
             ),
             upload_max_file_bytes,
             upload_min_free_bytes,
@@ -406,14 +414,6 @@ pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
         ])
         .allow_credentials(true)
         .expose_headers([HeaderName::from_static("x-request-id")]))
-}
-
-fn required_env(name: &str) -> anyhow::Result<String> {
-    env::var(name).map_err(|_| anyhow::anyhow!("{name} is required"))
-}
-
-fn required_secret_env(name: &str, file_name: &str) -> anyhow::Result<String> {
-    optional_secret_env(name, file_name)?.ok_or_else(|| anyhow::anyhow!("{name} is required"))
 }
 
 fn optional_secret_env(name: &str, file_name: &str) -> anyhow::Result<Option<String>> {

@@ -161,7 +161,8 @@ fn read_catalog_address(state: &AppState) -> Option<String> {
     if let Ok(raw) = fs::read_to_string(&state.catalog_state_path) {
         if let Ok(catalog_state) = serde_json::from_str::<CatalogState>(&raw) {
             if let Some(address) = catalog_state
-                .catalog_address
+                .published_catalog_address
+                .or(catalog_state.catalog_address)
                 .map(|address| address.trim().to_string())
                 .filter(|address| !address.is_empty())
             {
@@ -177,7 +178,7 @@ fn read_catalog_snapshot(state: &AppState) -> Option<Catalog> {
     fs::read_to_string(&state.catalog_state_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<CatalogState>(&raw).ok())
-        .and_then(|catalog_state| catalog_state.catalog)
+        .and_then(|catalog_state| catalog_state.published_catalog.or(catalog_state.catalog))
 }
 
 async fn load_video_manifest(state: &AppState, video_id: &str) -> Result<VideoManifest, String> {

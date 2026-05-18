@@ -10,11 +10,16 @@ use tokio::time::sleep;
 use tracing::{error, info, instrument};
 
 use super::{
-    db_document::{build_public_catalog_from_db, build_ready_manifest_from_db},
-    state_file::{empty_catalog, read_catalog_address, read_catalog_snapshot, write_catalog_state},
+    db_document::{
+        build_all_catalog_from_db, build_public_catalog_from_db, build_ready_manifest_from_db,
+    },
+    state_file::{
+        empty_catalog, read_all_catalog_address, read_catalog_address, read_catalog_snapshot,
+        write_catalog_state,
+    },
 };
 use crate::{
-    db::{db_error, parse_video_uuid, set_current_catalog_address},
+    db::{db_error, parse_video_uuid, set_current_catalog_addresses},
     errors::ApiError,
     state::AppState,
     storage::store_json_public,
@@ -102,8 +107,9 @@ pub(crate) async fn ensure_video_manifest_address(
 
     let manifest = build_ready_manifest_from_db(state, video_id).await?;
     let manifest_address = store_json_public(state, &manifest).await?;
-    sqlx::query("UPDATE videos SET manifest_address=$1, updated_at=NOW() WHERE id=$2")
+    sqlx::query("UPDATE videos SET manifest_address=$1, updated_at=$2 WHERE id=$3")
         .bind(&manifest_address)
+        .bind(chrono::Utc::now())
         .bind(parse_video_uuid(video_id)?)
         .execute(&state.pool)
         .await
@@ -117,19 +123,24 @@ pub(crate) async fn refresh_local_catalog_from_db(
     reason: &str,
 ) -> Result<u64, ApiError> {
     let catalog = build_public_catalog_from_db(state).await?;
+    let all_catalog = build_all_catalog_from_db(state).await?;
     let video_count = catalog.videos.len();
+    let all_video_count = all_catalog.videos.len();
     let _guard = state.catalog_lock.lock().await;
     let epoch = state.catalog_publish_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let catalog_address = read_catalog_address(&state.config);
+    let all_catalog_address = read_all_catalog_address(&state.config);
     write_catalog_state(
         &state.config,
         catalog_address.as_deref(),
+        all_catalog_address.as_deref(),
         Some(&catalog),
+        Some(&all_catalog),
         true,
     )?;
     info!(
-        "Queued local catalog update epoch={} reason={} videos={}",
-        epoch, reason, video_count
+        "Queued local catalog update epoch={} reason={} published_videos={} all_videos={}",
+        epoch, reason, video_count, all_video_count
     );
     Ok(epoch)
 }
@@ -159,9 +170,12 @@ pub(crate) async fn publish_current_catalog_to_network(
     }
 
     let catalog = build_public_catalog_from_db(state).await?;
+    let all_catalog = build_all_catalog_from_db(state).await?;
     let video_count = catalog.videos.len();
+    let all_video_count = all_catalog.videos.len();
     let start = Instant::now();
     let catalog_address = store_json_public(state, &catalog).await?;
+    let all_catalog_address = store_json_public(state, &all_catalog).await?;
 
     let _state_guard = state.catalog_lock.lock().await;
     if state.catalog_publish_epoch.load(Ordering::SeqCst) != epoch {
@@ -172,14 +186,23 @@ pub(crate) async fn publish_current_catalog_to_network(
         return Ok(());
     }
 
-    write_catalog_state(&state.config, Some(&catalog_address), Some(&catalog), false)?;
-    set_current_catalog_address(state, &catalog_address).await?;
+    write_catalog_state(
+        &state.config,
+        Some(&catalog_address),
+        Some(&all_catalog_address),
+        Some(&catalog),
+        Some(&all_catalog),
+        false,
+    )?;
+    set_current_catalog_addresses(state, &catalog_address, &all_catalog_address).await?;
     info!(
-        "Published catalog epoch={} reason={} videos={} address={} in {:.2}s",
+        "Published catalogs epoch={} reason={} published_videos={} all_videos={} published_address={} all_address={} in {:.2}s",
         epoch,
         reason,
         video_count,
+        all_video_count,
         catalog_address,
+        all_catalog_address,
         start.elapsed().as_secs_f64()
     );
     Ok(())

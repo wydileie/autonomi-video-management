@@ -1,5 +1,6 @@
 use std::{fs, time::Duration as StdDuration};
 
+use chrono::Utc;
 use sqlx::Row;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -7,18 +8,20 @@ use uuid::Uuid;
 use crate::state::AppState;
 
 pub(crate) async fn cleanup_expired_approvals(state: &AppState) -> anyhow::Result<()> {
+    let now = Utc::now();
     let rows = sqlx::query(
         r#"
         UPDATE videos
         SET status='expired',
             error_message='Final quote approval window expired; local files were deleted.',
-            updated_at=NOW()
+            updated_at=$1
         WHERE status='awaiting_approval'
           AND approval_expires_at IS NOT NULL
-          AND approval_expires_at <= NOW()
+          AND approval_expires_at <= $1
         RETURNING id, job_dir
         "#,
     )
+    .bind(now)
     .fetch_all(&state.pool)
     .await?;
 
