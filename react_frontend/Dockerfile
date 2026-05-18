@@ -20,7 +20,7 @@ ENV REACT_APP_STREAM_URL=$REACT_APP_STREAM_URL
 RUN npm run build
 
 # ── Stage 2: Serve via nginx ───────────────────────────────────────────────────
-FROM nginx:1.29-alpine
+FROM nginx:1.31-alpine
 
 COPY --from=build /app/build /usr/share/nginx/html
 
