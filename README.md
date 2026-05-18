@@ -549,7 +549,7 @@ autonomi-video-management/
 │       ├── App.jsx             # Root shell and tab composition
 │       ├── api/                # Axios API client wrappers
 │       ├── components/         # Upload, library, login, quote, and player components
-│       ├── hooks/              # Browser auth/session hooks
+│       ├── hooks/              # Browser auth/session, library, catalog, and playback hooks
 │       ├── styles/             # Split component-oriented CSS
 │       └── utils/              # Formatting, status, and resolution helpers
 ├── nginx/
@@ -565,6 +565,7 @@ autonomi-video-management/
 ├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
 ├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
 ├── docker-compose.prod.yml     # Production/default-network antd overlay
+├── docker-compose.observability.yml # Combined Prometheus/Grafana/Loki operations overlay
 ├── .env.local.example
 ├── .env.production.example
 └── .env.example
