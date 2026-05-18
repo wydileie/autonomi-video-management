@@ -9,7 +9,9 @@ recovery focuses on the app-data directory:
 - `.env.production`: recreate from `.env.production.example` and restore real secrets from a secret manager.
 
 The backup sidecar and `scripts/backup-production.sh` capture SQLite and catalog
-state. See `docs/BACKUP_SIDECAR.md` for scheduled backups.
+state. See [Backup sidecar](BACKUP_SIDECAR.md) for scheduled backups and
+[Architecture](ARCHITECTURE.md) for how SQLite, Autonomi, and the local catalog
+state file divide recovery responsibilities.
 
 ## Restore To A New Host
 

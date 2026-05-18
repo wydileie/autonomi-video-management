@@ -198,6 +198,7 @@ Compose remains the supported deployment runtime. The repo also documents the
 service boundary used by the native launcher so local packages can reuse the
 same Rust admin, Rust stream, `antd`, endpoint, and app-data contracts without
 changing current containers. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
 [`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
 [`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
 
@@ -383,6 +384,7 @@ production and operations overlays live in separate docs:
 - [Image publishing](docs/IMAGE_PUBLISHING.md) covers GHCR image builds and tags.
 - [Backup sidecar](docs/BACKUP_SIDECAR.md) covers scheduled SQLite/catalog backups.
 - [Observability](docs/OBSERVABILITY.md) covers Prometheus, Grafana, and Alertmanager.
+- [Docs index](docs/README.md) links the full operations and architecture docs.
 
 ---
 
@@ -528,7 +530,7 @@ autonomi-video-management/
 │   ├── Dockerfile              # Self-contained local ant-devnet + antd testnet
 │   └── start-local-devnet.sh
 ├── common/
-│   └── src/lib.rs              # Shared Rust helpers used by multiple services
+│   └── src/                    # Shared Rust helpers split by metrics, HTTP, runtime, and circuit-breaker concerns
 ├── rust_admin/
 │   ├── Dockerfile
 │   ├── Cargo.toml
@@ -554,6 +556,8 @@ autonomi-video-management/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
 ├── standalone_launcher/        # Linux/macOS local web launcher
 ├── docs/
+│   ├── README.md               # Documentation index
+│   ├── ARCHITECTURE.md         # Durable workflow and service boundary notes
 │   ├── DEPLOYMENT.md           # Production deployment guide
 │   ├── RUNTIME_MODES.md        # Compose and standalone runtime boundaries
 │   └── runtime-contract.example.json # Example native host endpoint/path contract
