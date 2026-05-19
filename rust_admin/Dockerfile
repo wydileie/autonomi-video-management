@@ -32,7 +32,7 @@ RUN touch common/src/lib.rs rust_admin/src/main.rs && cargo build --release -p r
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
     ffmpeg \
     libssl3 \
