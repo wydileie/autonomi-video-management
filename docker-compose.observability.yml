@@ -1,0 +1,121 @@
+services:
+  prometheus:
+    image: "${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}"
+    container_name: autvid_prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - rust_admin
+      - rust_stream
+    ports:
+      - "${PROMETHEUS_HTTP_BIND:-127.0.0.1}:${PROMETHEUS_HTTP_PORT:-9090}:9090"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  node_exporter:
+    image: "${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}"
+    container_name: autvid_node_exporter
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.textfile.directory=/textfile"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/containers/storage/.+)($$|/)"
+    networks:
+      - appnet
+    volumes:
+      - /:/host:ro,rslave
+      - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/textfile:ro
+    pid: host
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  alertmanager:
+    image: "${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.27.0}"
+    container_name: autvid_alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    ports:
+      - "${ALERTMANAGER_HTTP_BIND:-127.0.0.1}:${ALERTMANAGER_HTTP_PORT:-9093}:9093"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  grafana:
+    image: "${GRAFANA_IMAGE:-grafana/grafana:11.3.0}"
+    container_name: autvid_grafana
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_AUTH_ANONYMOUS_ENABLED:-false}"
+    ports:
+      - "${GRAFANA_HTTP_BIND:-127.0.0.1}:${GRAFANA_HTTP_PORT:-3000}:3000"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards/autvid:ro
+      - ./monitoring/loki/grafana-datasource.yml:/etc/grafana/provisioning/datasources/loki.yml:ro
+      - grafana_data:/var/lib/grafana
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  loki:
+    image: "${LOKI_IMAGE:-grafana/loki:2.9.8}"
+    container_name: autvid_loki
+    command:
+      - "-config.file=/etc/loki/config.yml"
+    ports:
+      - "${LOKI_HTTP_BIND:-127.0.0.1}:${LOKI_HTTP_PORT:-3100}:3100"
+    networks:
+      - appnet
+    volumes:
+      - ./monitoring/loki:/etc/loki:ro
+      - loki_data:/loki
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  promtail:
+    image: "${PROMTAIL_IMAGE:-grafana/promtail:2.9.8}"
+    container_name: autvid_promtail
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+    depends_on:
+      - loki
+    ports:
+      - "${PROMTAIL_HTTP_BIND:-127.0.0.1}:${PROMTAIL_HTTP_PORT:-9080}:9080"
+    networks:
+      - appnet
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring/promtail:/etc/promtail:ro
+      - promtail_positions:/run/promtail
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+  loki_data:
+  promtail_positions:

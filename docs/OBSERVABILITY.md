@@ -1,9 +1,9 @@
 # Observability
 
 The Compose stack can run optional Prometheus, Grafana, Alertmanager, Loki, and
-Promtail overlays. The metrics overlay scrapes the Rust services and `antd`
-gateway. The logging overlay tails Docker container logs into Loki for browsing
-from Grafana.
+Promtail services with `docker-compose.observability.yml`. Prometheus scrapes
+the Rust services and `antd` gateway. Promtail tails Docker container logs into
+Loki for browsing from Grafana.
 
 ## Metrics Endpoints
 
@@ -60,7 +60,17 @@ Stream-specific counters:
 
 ## Running Locally
 
-Start the local devnet stack with monitoring:
+Start the local devnet stack with metrics and log collection:
+
+```bash
+docker compose --env-file .env.local \
+  -f docker-compose.yml \
+  -f docker-compose.local.yml \
+  -f docker-compose.observability.yml \
+  up --build
+```
+
+For metrics only, use the split monitoring overlay:
 
 ```bash
 docker compose --env-file .env.local \
@@ -70,16 +80,11 @@ docker compose --env-file .env.local \
   up --build
 ```
 
-Start local monitoring plus log collection:
-
-```bash
-docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.logging.yml \
-  up --build
-```
+Do not combine `docker-compose.observability.yml` with
+`docker-compose.monitoring.yml` or `docker-compose.logging.yml` in the same
+command; those overlays intentionally define some of the same service and
+container names. `make compose-config` checks that shared image defaults stay
+aligned between the split and combined overlays.
 
 Open from the Docker host:
 
@@ -90,7 +95,7 @@ Open from the Docker host:
 | Alertmanager | `http://localhost:9093` | none |
 | Loki | `http://localhost:3100` | none |
 
-The monitoring and logging overlays bind their HTTP ports to `127.0.0.1` by
+The observability services bind their HTTP ports to `127.0.0.1` by
 default. Override the bind address only when another authenticated edge proxy,
 VPN, or private network protects these tools:
 
@@ -106,24 +111,24 @@ GRAFANA_ADMIN_PASSWORD=<change-me>
 LOKI_HTTP_BIND=127.0.0.1
 LOKI_HTTP_PORT=3101
 PROMTAIL_HTTP_BIND=127.0.0.1
-PROMTAIL_HTTP_PORT=9081
+PROMTAIL_HTTP_PORT=9080
 ```
 
 ## Running in Production
 
-Add the monitoring overlay to the production Compose command:
+Add the observability overlay to the production Compose command:
 
 ```bash
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
+  -f docker-compose.observability.yml \
   up --build -d
 ```
 
-Add the logging overlay when you want centralized container logs in Loki and a
-provisioned `Loki` datasource in Grafana. It can run by itself for logs-only
-inspection, or after the monitoring overlay for metrics and logs together:
+The older split overlays remain available when you want metrics-only or
+logs-only inspection. Use these instead of the combined observability overlay,
+not alongside it:
 
 ```bash
 docker compose --env-file .env.production \
@@ -146,7 +151,7 @@ privileged.
 ## Grafana Dashboards
 
 Grafana is provisioned with a Prometheus datasource named `Prometheus`. When
-`docker-compose.logging.yml` is included, it also gets a `Loki` datasource.
+`docker-compose.observability.yml` is included, it also gets a `Loki` datasource.
 These dashboards are loaded in the `Autonomi Video Management` folder:
 
 | Dashboard | Coverage |
@@ -197,14 +202,13 @@ Render the merged Compose config before starting:
 docker compose --env-file .env.local \
   -f docker-compose.yml \
   -f docker-compose.local.yml \
-  -f docker-compose.monitoring.yml \
+  -f docker-compose.observability.yml \
   config
 
 docker compose --env-file .env.production \
   -f docker-compose.yml \
   -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.logging.yml \
+  -f docker-compose.observability.yml \
   config
 ```
 

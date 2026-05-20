@@ -7,7 +7,7 @@ LOCAL_ENV ?= .env.local
 PROD_ENV ?= .env.production
 LOCAL_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.local.yml
 LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f docker-compose.monitoring.yml
-LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f docker-compose.logging.yml
+LOCAL_FULL_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f docker-compose.observability.yml
 PROD_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.prod.yml
 CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend
 MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki promtail
@@ -88,11 +88,17 @@ fmt-rust:
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
 	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
+	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_MONITORING_COMPOSE_FILES) config >/tmp/autvid-compose-local-monitoring.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_FULL_COMPOSE_FILES) config >/tmp/autvid-compose-local-full.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
-	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.monitoring.yml -f docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.observability.yml config >/tmp/autvid-compose-prod-observability.yml
 	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.backup.yml config >/tmp/autvid-compose-prod-backup.yml
+	grep -q "autvid_node_exporter" /tmp/autvid-compose-local-monitoring.yml
+	grep -q "autvid_node_exporter" /tmp/autvid-compose-local-full.yml
+	grep -q "autvid_promtail" /tmp/autvid-compose-local-full.yml
+	grep -q "autvid_promtail" /tmp/autvid-compose-prod-observability.yml
+	bash scripts/check-observability-overlay-parity.sh
 
 up-local:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) up --build -d
