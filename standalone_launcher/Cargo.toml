@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1"
-axum = "0.8"
+anyhow.workspace = true
+axum.workspace = true
 libc = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
-tower-http = { version = "0.6", features = ["fs"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+tower-http = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
