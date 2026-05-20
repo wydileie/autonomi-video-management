@@ -519,6 +519,89 @@ test("resumes native HLS after a scrub near the beginning once a resolution chan
   expect(play).toHaveBeenCalled();
 });
 
+test("retries native HLS playback when a post-seek stall leaves playback paused", async () => {
+  Hls.isSupported.mockReturnValue(false);
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
+    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
+  ));
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
+    this.currentTime = 0;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-native-stall-retry",
+    original_filename: "",
+    status: "published",
+    title: "Native stall retry stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-native-stall-retry": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Native stall retry stream"));
+  await click(findButton("Native stall retry stream"));
+
+  const video = container.querySelector("video");
+  let currentTime = 15;
+  let paused = false;
+  Object.defineProperties(video, {
+    currentTime: {
+      configurable: true,
+      get: () => currentTime,
+      set: (value) => {
+        currentTime = value;
+      },
+    },
+    duration: { configurable: true, value: 20 },
+    ended: { configurable: true, value: false },
+    paused: {
+      configurable: true,
+      get: () => paused,
+    },
+    play: {
+      configurable: true,
+      value: vi.fn(() => {
+        paused = false;
+        return Promise.resolve();
+      }),
+    },
+    readyState: { configurable: true, value: 1 },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+  await act(async () => {
+    video.dispatchEvent(new Event("loadedmetadata"));
+    video.dispatchEvent(new Event("playing"));
+  });
+  const play = video.play as ReturnType<typeof vi.fn>;
+  play.mockClear();
+
+  vi.useFakeTimers();
+  await act(async () => {
+    currentTime = 6;
+    video.dispatchEvent(new Event("waiting"));
+    currentTime = 2;
+    paused = true;
+    vi.advanceTimersByTime(750);
+  });
+
+  expect(video.currentTime).toBe(6);
+  expect(play).toHaveBeenCalled();
+});
+
 test("closes the playback resolution menu when the pointer leaves it", async () => {
   const publicVideo = {
     created_at: "2026-04-27T12:00:00Z",
