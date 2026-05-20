@@ -1,3 +1,14 @@
+//! Local catalog bookmark and recovery state.
+//!
+//! The admin service intentionally writes catalog state to this JSON file even
+//! though SQLite stores the canonical admin metadata. The file is a lightweight
+//! bootstrap and recovery aid shared with the streaming service: it records the
+//! latest network-hosted catalog addresses plus decoded catalog snapshots, so a
+//! restarted stack can resume catalog reads before or without a database query.
+//! SQLite remains the source for mutable admin state and durable jobs, while
+//! Autonomi remains the durable playback source for ready manifests, segments,
+//! and published catalog documents.
+
 use std::{
     fs,
     path::{Path as FsPath, PathBuf},
