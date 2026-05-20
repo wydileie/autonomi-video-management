@@ -4,26 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1"
+anyhow.workspace = true
 ant-core = "=0.2.3"
 ant-node = "=0.11.2"
 autvid_common = { path = "../common" }
-axum = "0.8"
-base64 = "0.22"
-bytes = "1"
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
 evmlib = "=0.8.1"
 hex = "0.4"
 futures-util = "0.3"
 rmp-serde = "1"
 self_encryption = "=0.35.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.11"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
-tower-http = { version = "0.6", features = ["cors", "request-id", "timeout", "trace", "util"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "signal"] }
+tower-http = { workspace = true, features = ["cors", "request-id", "timeout", "trace", "util"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 xor_name = "=5.0.0"
 zeroize = "1"

@@ -32,7 +32,7 @@ RUN touch common/src/lib.rs antd_service/src/main.rs && cargo build --release -p
 # ── Stage 2: Minimal runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
