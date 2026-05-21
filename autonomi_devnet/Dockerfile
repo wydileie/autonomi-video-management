@@ -34,11 +34,13 @@ COPY common/Cargo.toml common/Cargo.toml
 COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
 COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
 COPY antd_service/Cargo.toml antd_service/Cargo.toml
-RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src && \
+COPY standalone_launcher/Cargo.toml standalone_launcher/Cargo.toml
+RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src standalone_launcher/src && \
     echo "" > common/src/lib.rs && \
     echo "fn main(){}" > rust_admin/src/main.rs && \
     echo "fn main(){}" > rust_stream/src/main.rs && \
     echo "fn main(){}" > antd_service/src/main.rs && \
+    echo "fn main(){}" > standalone_launcher/src/main.rs && \
     cargo build --release -p antd
 
 COPY common/src common/src
