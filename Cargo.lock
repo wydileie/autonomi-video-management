@@ -828,9 +828,9 @@ dependencies = [
 
 [[package]]
 name = "ant-core"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4c5a1c85815c08e482a99c4903d7c3e26ed44ac6c7849739deaaeaf369e27b4"
+checksum = "3bbf7d5a9bad0fe74bb3995311ed7d65221b51d001eee6e038a634690db2c447"
 dependencies = [
  "ant-protocol",
  "async-stream",
@@ -881,9 +881,9 @@ dependencies = [
 
 [[package]]
 name = "ant-node"
-version = "0.11.2"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2c7ef05a407a4e9b233a8716b5bfabeceec2ce419a0d22a6daf32069cffdce8"
+checksum = "a2cc06c786666f4ce514cfe68b3add6c62176f1411a40ebbbe2adae259121222"
 dependencies = [
  "aes-gcm-siv",
  "ant-protocol",
@@ -932,9 +932,9 @@ dependencies = [
 
 [[package]]
 name = "ant-protocol"
-version = "2.0.3"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edaf05019466da9ff9055dbbc1428db3414440a8f0a1ac929febcf4fb0608a6d"
+checksum = "a4d0ba3f671c08a1d52291b601ec35a7353f4f4e10f221b5f0ee372d154636dd"
 dependencies = [
  "blake3",
  "bytes",
@@ -3375,7 +3375,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -5546,9 +5546,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-core"
-version = "0.24.2"
+version = "0.24.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03e194874b524ad2a50d0976eb4ebcb81aea326dfb475373de9a2942a90cb2cc"
+checksum = "0c1267928da1bcc91748c314f95f7952bc01c0359a4ac70a0b111b0386898934"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5661,9 +5661,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-transport"
-version = "0.34.1"
+version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31ebc09fb51e2c325e61ff09892f1256c60ef4f3beb881fd2980befe3e53e9bc"
+checksum = "852400712537856ab6fec5293be4290daf0130df0dbcb249a6e8280f9257665f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7524,19 +7524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement 0.60.2",
- "windows-interface 0.59.3",
- "windows-link",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
-]
-
-[[package]]
 name = "windows-implement"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7559,17 +7546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-implement"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "windows-interface"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7585,17 +7561,6 @@ name = "windows-interface"
 version = "0.58.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "053c4c462dc91d3b1504c6fe5a726dd15e216ba718e84a0e46a88fbe5ded3515"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "windows-interface"
-version = "0.59.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
