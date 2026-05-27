@@ -1325,7 +1325,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "http",
- "rand 0.8.6",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "subtle",
  "tokio",
@@ -5293,7 +5293,7 @@ dependencies = [
  "chrono",
  "fs2",
  "jsonwebtoken",
- "rand 0.8.6",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

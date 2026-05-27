@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 http = "1"
-rand = "0.8"
+rand = "0.10"
 reqwest.workspace = true
 subtle = "2"
 tokio = { workspace = true, features = ["macros", "signal"] }

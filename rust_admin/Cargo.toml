@@ -14,7 +14,7 @@ base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 fs2 = "0.4"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
-rand = "0.8"
+rand = "0.10"
 reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
