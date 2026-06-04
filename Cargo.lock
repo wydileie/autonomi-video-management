@@ -828,13 +828,14 @@ dependencies = [
 
 [[package]]
 name = "ant-core"
-version = "0.2.4"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bbf7d5a9bad0fe74bb3995311ed7d65221b51d001eee6e038a634690db2c447"
+checksum = "e19e8474d8aa40a546369bc7a2dd30bbafad06b75764ae8a374c8caee839ef4f"
 dependencies = [
  "ant-protocol",
  "async-stream",
  "axum",
+ "blake3",
  "bytes",
  "flate2",
  "fs2",
@@ -850,7 +851,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmp-serde",
  "self-replace",
- "self_encryption",
+ "self_encryption 0.36.0",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -912,7 +913,7 @@ dependencies = [
  "saorsa-core",
  "saorsa-pqc 0.5.1",
  "self-replace",
- "self_encryption",
+ "self_encryption 0.35.0",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -964,7 +965,7 @@ dependencies = [
  "futures-util",
  "hex",
  "rmp-serde",
- "self_encryption",
+ "self_encryption 0.35.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3375,7 +3376,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -5833,6 +5834,28 @@ name = "self_encryption"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c11020d59e8e663ba591026c2b45a08caa74a3a654ac12b2532d5a7c5b97e510"
+dependencies = [
+ "bincode",
+ "blake3",
+ "brotli",
+ "bytes",
+ "chacha20poly1305",
+ "hex",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "xor_name",
+]
+
+[[package]]
+name = "self_encryption"
+version = "0.36.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47ab904569f88dcbde4f0feadb693c184577dc81e8243f96bb725e72a779c637"
 dependencies = [
  "bincode",
  "blake3",
