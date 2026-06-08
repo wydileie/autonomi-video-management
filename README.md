@@ -88,7 +88,54 @@ Monitoring and logging overlay ports bind to localhost by default.
 
 ## Quick start (development)
 
-The project ships with a devcontainer that handles the full local setup automatically, including a local Autonomi testnet with a pre-funded test wallet.
+The project ships with two development paths:
+
+- A headless Docker Compose test bench for running the app and smoke tests without VS Code.
+- A VS Code devcontainer for editor-integrated development when you want it.
+
+### Headless test bench
+
+This is the preferred path for agent-driven work from Codex. It starts the
+runtime stack directly with Docker Compose and does not require VS Code to be
+open.
+
+```bash
+cp .env.local.example .env.local
+make up-local
+make smoke-local
+make down-local
+```
+
+Useful variants:
+
+```bash
+make up-local-full
+make smoke-local-restart
+make smoke-local-large-original
+make logs
+```
+
+If you specifically want the same devcontainer image that VS Code uses, but
+without starting VS Code, use the headless devcontainer test bench:
+
+```bash
+make devbench-up
+make devbench-exec ARGS='make test-rust'
+make devbench-shell
+make devbench-down
+```
+
+`devbench-up` builds the same `.devcontainer/Dockerfile`, mounts the repository
+at `/workspace`, forwards the core container ports to alternate host ports by
+default (`18082` for `antd` REST), passes through useful host tokens such as
+`GITHUB_TOKEN` and `BRAVE_API_KEY`, and runs the same
+`.devcontainer/post_start.sh` startup hook.
+
+### VS Code devcontainer
+
+The devcontainer remains available for VS Code workflows and handles the full
+local setup automatically, including a local Autonomi testnet with a pre-funded
+test wallet.
 
 ### Prerequisites
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Docker Compose)
