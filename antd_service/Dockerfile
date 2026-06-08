@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     git \
     libssl-dev \
+    liblzma-dev \
+    perl \
     pkg-config \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
@@ -34,6 +36,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     ca-certificates \
+    liblzma5 \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
