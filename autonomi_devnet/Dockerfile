@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     git \
     libssl-dev \
     liblzma-dev \
+    perl \
     pkg-config \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
@@ -58,6 +59,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     jq \
+    liblzma5 \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
