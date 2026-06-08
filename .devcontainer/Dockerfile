@@ -13,7 +13,7 @@ ARG AUTONOMI_ANT_NODE_REF=v0.12.0
 
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
-&& apt-get update && apt-get install -y \
+&& apt-get update && apt-get install -y --no-install-recommends \
 curl \
 wget \
 git \
@@ -31,7 +31,6 @@ python3-dev \
 libssl-dev \
 liblzma-dev \
 protobuf-compiler \
-docker.io \
 ripgrep \
 dnsutils \
 net-tools \
@@ -44,7 +43,21 @@ htop \
 tree \
 tcpdump \
 ffmpeg \
-&& rm -rf /var/lib/apt/lists/*
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+# Install the Docker CLI only. The container talks to OrbStack through the
+# mounted host socket, so it does not need a Docker daemon/containerd stack.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+&& curl -fsSL https://download.docker.com/linux/debian/gpg \
+  > /etc/apt/keyrings/docker.asc \
+&& chmod a+r /etc/apt/keyrings/docker.asc \
+&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+  > /etc/apt/sources.list.d/docker.list \
+&& apt-get update \
+&& apt-get install -y --no-install-recommends docker-ce-cli \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # Install GitHub CLI from the official apt repository so PR/review workflows
 # are available after every devcontainer rebuild.
@@ -55,24 +68,26 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
   > /etc/apt/sources.list.d/github-cli.list \
 && apt-get update \
-&& apt-get install -y gh \
-&& rm -rf /var/lib/apt/lists/*
+&& apt-get install -y --no-install-recommends gh \
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # Install Node.js 24 and the Python package runner used by MCP helpers.
 RUN mkdir -p /etc/apt/keyrings \
 && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
 && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
 && apt-get update \
-&& apt-get install -y nodejs \
+&& apt-get install -y --no-install-recommends nodejs \
 && pip install --no-cache-dir uv \
 && ln -s /usr/bin/fdfind /usr/local/bin/fd \
 && ln -s /usr/bin/batcat /usr/local/bin/bat \
-&& rm -rf /var/lib/apt/lists/*
+&& apt-get clean \
+&& rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # Install Rust and Rust development tools
 RUN mkdir -p "${CARGO_HOME}" "${RUSTUP_HOME}" \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
-&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
 && rustup component add rustfmt clippy \
 && cargo install cargo-edit cargo-outdated \
 && PW_ARCH="$(dpkg --print-architecture)" \
@@ -91,7 +106,7 @@ esac \
 && rm -f /tmp/powershell.tar.gz \
 && pwsh --version \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
-&& rm -rf /var/lib/apt/lists/*
+&& rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
 # Build and install antd (Autonomi daemon), the Autonomi MCP server, and the
 # dev CLI support libraries from ant-sdk in a single layer to share the cargo cache.
@@ -105,7 +120,8 @@ RUN git clone https://github.com/WithAutonomi/ant-sdk.git && \
     pip install --no-cache-dir ".[rest]" && \
     cd ../antd-mcp && \
     pip install --no-cache-dir . && \
-    cd ../.. && rm -rf ant-sdk
+    cd ../.. && \
+    rm -rf ant-sdk "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
 # Build and install ant (Autonomi CLI)
 RUN git clone https://github.com/WithAutonomi/ant-client.git && \
@@ -113,7 +129,8 @@ RUN git clone https://github.com/WithAutonomi/ant-client.git && \
     git checkout "$AUTONOMI_ANT_CLIENT_REF" && \
     cargo build --release --bin ant && \
     cp target/release/ant /usr/local/bin/ && \
-    cd .. && rm -rf ant-client
+    cd .. && \
+    rm -rf ant-client "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
 # Build ant-devnet from ant-node — required for the local devnet used in development.
 # ant dev start normally does this via `cargo run`; we pre-build it here so startup
@@ -123,7 +140,8 @@ RUN git clone https://github.com/WithAutonomi/ant-node.git && \
     git checkout "$AUTONOMI_ANT_NODE_REF" && \
     cargo build --release --bin ant-devnet && \
     cp target/release/ant-devnet /usr/local/bin/ && \
-    cd .. && rm -rf ant-node
+    cd .. && \
+    rm -rf ant-node "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
 # Install Foundry (anvil) — required by ant-devnet to run the local EVM chain.
 # Downloads pre-built binaries directly from GitHub releases (more reliable in Docker
@@ -138,8 +156,9 @@ RUN ARCH=$(dpkg --print-architecture) && \
     { [ -n "$FOUNDRY_TAG" ] || { echo "ERROR: could not determine Foundry release tag" >&2; exit 1; }; } && \
     curl -fsSLo /tmp/foundry.tar.gz \
       "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_TAG}/foundry_${FOUNDRY_TAG}_linux_${FOUNDRY_ARCH}.tar.gz" && \
-    tar -xzf /tmp/foundry.tar.gz -C /usr/local/bin anvil forge cast chisel && \
-    rm /tmp/foundry.tar.gz && \
+    tar -xzf /tmp/foundry.tar.gz -C /tmp anvil && \
+    install -m 0755 /tmp/anvil /usr/local/bin/anvil && \
+    rm -f /tmp/foundry.tar.gz /tmp/anvil && \
     anvil --version
 
 # Create docker group and add vscode so the Docker socket (mounted from OrbStack
@@ -181,8 +200,9 @@ RUN mkdir -p /usr/libexec/docker/cli-plugins && \
     chmod +x /usr/libexec/docker/cli-plugins/docker-compose && \
     rm -f /tmp/docker-compose-release.json
 
-# Keep the shared Rust toolchain/cache usable from the non-root dev user.
-RUN chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}"
+# Keep the shared Rust toolchain/cache discoverable from login shells.
+RUN printf '%s\n' 'export PATH="/opt/venv/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/mssql-tools18/bin:/usr/local/cargo/bin:$PATH"' \
+  > /etc/profile.d/00-devcontainer-path.sh
 
 # Set working directory
 WORKDIR /workspace

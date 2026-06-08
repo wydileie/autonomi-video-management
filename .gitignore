@@ -176,6 +176,10 @@ cython_debug/
 # macOS Finder metadata
 .DS_Store
 
+# Local agent steering files
+AGENTS.md
+CLAUDE.md
+
 # PyPI configuration file
 .pypirc
 

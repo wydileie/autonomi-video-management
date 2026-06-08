@@ -82,7 +82,7 @@
           ]
         },
         "kubernetes": {
-          "command": "/home/vscode/.local/bin/uvx",
+          "command": "/usr/local/bin/uvx",
           "args": [
             "--native-tls",
             "mcp-server-kubernetes"
@@ -92,14 +92,67 @@
           "command": "npx",
           "args": [
             "-y",
-            "@modelcontextprotocol/server-brave-search"
+            "@brave/brave-search-mcp-server"
           ],
           "env": {
             "BRAVE_API_KEY": "${env:BRAVE_API_KEY}"
           }
         },
         "antd-autonomi": {
-          "command": "antd-mcp"
+          "command": "antd-mcp",
+          "env": {
+            "ANTD_BASE_URL": "http://127.0.0.1:8082",
+            "ALL_PROXY": "",
+            "all_proxy": "",
+            "HTTP_PROXY": "",
+            "http_proxy": "",
+            "HTTPS_PROXY": "",
+            "https_proxy": "",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1"
+          }
+        }
+      }
+    },
+    "codex": {
+      "mcpServers": {
+        "github": {
+          "url": "https://api.githubcopilot.com/mcp/",
+          "bearer_token_env_var": "GITHUB_TOKEN"
+        },
+        "git-repo-research": {
+          "enabled": false
+        },
+        "context7": {
+          "url": "https://mcp.context7.com/mcp"
+        },
+        "memory": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-memory"
+          ]
+        },
+        "postgres": {
+          "command": "/bin/bash",
+          "args": [
+            "-lc",
+            "exec npx -y @modelcontextprotocol/server-postgres \"${DATABASE_URL:-postgresql://postgres:RootPassword@127.0.0.1:5432/postgres}\""
+          ]
+        },
+        "antd-autonomi": {
+          "command": "antd-mcp",
+          "env": {
+            "ANTD_BASE_URL": "http://127.0.0.1:8082",
+            "ALL_PROXY": "",
+            "all_proxy": "",
+            "HTTP_PROXY": "",
+            "http_proxy": "",
+            "HTTPS_PROXY": "",
+            "https_proxy": "",
+            "NO_PROXY": "localhost,127.0.0.1",
+            "no_proxy": "localhost,127.0.0.1"
+          }
         }
       }
     },
@@ -141,17 +194,15 @@
             "args": ["--native-tls", "mcp-server-git", "--repository", "${containerWorkspaceFolder}"]
           },
           "github": {
-            "type": "stdio",
-            "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-github"],
-            "env": {
-              "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
-            }
+            "url": "https://api.githubcopilot.com/mcp/"
           },
           "postgres": {
             "type": "stdio",
-            "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-postgres", "${env:DATABASE_URL}"]
+            "command": "/bin/bash",
+            "args": [
+              "-lc",
+              "exec npx -y @modelcontextprotocol/server-postgres \"${DATABASE_URL:-postgresql://postgres:RootPassword@127.0.0.1:5432/postgres}\""
+            ]
           },
           "docker": {
             "type": "stdio",
@@ -160,8 +211,8 @@
           },
           "memory": {
             "type": "stdio",
-            "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-memory"]
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-memory"]
           },
           "sequential-thinking": {
             "type": "stdio",
@@ -170,20 +221,34 @@
           },
           "kubernetes": {
             "type": "stdio",
-            "command": "/home/vscode/.local/bin/uvx",
+            "command": "/usr/local/bin/uvx",
             "args": ["--native-tls", "mcp-server-kubernetes"]
           },
           "brave-search": {
             "type": "stdio",
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+            "args": ["-y", "@brave/brave-search-mcp-server"],
             "env": {
               "BRAVE_API_KEY": "${env:BRAVE_API_KEY}"
             }
           },
+          "context7": {
+            "url": "https://mcp.context7.com/mcp"
+          },
           "antd-autonomi": {
             "type": "stdio",
-            "command": "antd-mcp"
+            "command": "antd-mcp",
+            "env": {
+              "ANTD_BASE_URL": "http://127.0.0.1:8082",
+              "ALL_PROXY": "",
+              "all_proxy": "",
+              "HTTP_PROXY": "",
+              "http_proxy": "",
+              "HTTPS_PROXY": "",
+              "https_proxy": "",
+              "NO_PROXY": "localhost,127.0.0.1",
+              "no_proxy": "localhost,127.0.0.1"
+            }
           }
         }
       }
@@ -196,13 +261,18 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     "source=${localEnv:HOME}/.devcontainer_bash_history,target=/home/vscode/.bash_history,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.codex_vscode,target=/home/vscode/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind,consistency=cached"
   ],
+  "containerEnv": {
+    "BRAVE_API_KEY": "${localEnv:BRAVE_API_KEY}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+  },
   "remoteEnv": {
     "HISTFILE": "/home/vscode/.bash_history",
     "PROMPT_COMMAND": "history -a",
     "BRAVE_API_KEY": "${localEnv:BRAVE_API_KEY}",
+    "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
     "ANTD_NETWORK": "local",
     "AUTONOMI_WALLET_KEY": "${localEnv:AUTONOMI_WALLET_KEY}"
   },

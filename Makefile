@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring backup-production restore-production lint-react test-react coverage-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -35,6 +35,10 @@ help:
 	@echo "  make logs            Follow local core service logs"
 	@echo "  make logs-prod       Follow production core service logs"
 	@echo "  make logs-monitoring Follow local monitoring service logs"
+	@echo "  make devbench-up     Run the VS Code devcontainer image headlessly"
+	@echo "  make devbench-shell  Open a shell in the headless devcontainer test bench"
+	@echo "  make devbench-exec ARGS='make test-rust' Run a command in the headless devcontainer"
+	@echo "  make devbench-down   Stop the headless devcontainer test bench"
 	@echo "  make backup-production Create a timestamped production SQLite/catalog backup"
 	@echo "  make restore-production ARGS='--backup-dir backups/autvid-... --yes' Restore a production backup"
 	@echo "  make install-react   Install React frontend dependencies"
@@ -117,6 +121,28 @@ logs-prod:
 
 logs-monitoring:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_FULL_COMPOSE_FILES) logs -f $(MONITORING_LOG_SERVICES)
+
+devbench-build:
+	scripts/devcontainer-testbench.sh build
+
+devbench-up:
+	scripts/devcontainer-testbench.sh up
+
+devbench-down:
+	scripts/devcontainer-testbench.sh down
+
+devbench-restart:
+	scripts/devcontainer-testbench.sh restart
+
+devbench-status:
+	scripts/devcontainer-testbench.sh status
+
+devbench-shell:
+	scripts/devcontainer-testbench.sh shell
+
+devbench-exec:
+	@test -n "$(ARGS)" || { echo "Usage: make devbench-exec ARGS='make test-rust'"; exit 2; }
+	scripts/devcontainer-testbench.sh exec $(ARGS)
 
 backup-production:
 	scripts/backup-production.sh
