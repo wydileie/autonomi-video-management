@@ -114,12 +114,36 @@ export default function VideoPlayer({
     let restorePending = resumeAt > 0;
     let hlsManifestParsed = false;
     let resumedAfterRestore = false;
+    let suppressNextHlsSeekSync = false;
     let nativeSeekRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
     let nativeSeekResumeAt = 0;
     let nativeSeekShouldResume = false;
     const readCurrentTime = () => (
       Number.isFinite(video.currentTime) ? video.currentTime : 0
     );
+    const seekVideoTo = (targetTime: number) => {
+      if (targetTime <= 0) return;
+
+      const duration = video.duration;
+      if (
+        Number.isFinite(duration) &&
+        duration <= targetTime + RESUME_DURATION_TOLERANCE_SECONDS
+      ) {
+        return;
+      }
+
+      if (Math.abs(readCurrentTime() - targetTime) <= RESUME_DURATION_TOLERANCE_SECONDS) {
+        return;
+      }
+
+      try {
+        suppressNextHlsSeekSync = true;
+        video.currentTime = targetTime;
+      } catch {
+        suppressNextHlsSeekSync = false;
+        // MediaSource can briefly reject seeks while hls.js is rebuilding buffers.
+      }
+    };
     const clearNativeSeekRecoveryTimer = () => {
       if (nativeSeekRecoveryTimer) {
         clearTimeout(nativeSeekRecoveryTimer);
@@ -156,6 +180,10 @@ export default function VideoPlayer({
     };
     const syncPendingSeek = () => {
       if (!restorePending) return;
+      if (suppressNextHlsSeekSync) {
+        suppressNextHlsSeekSync = false;
+        return;
+      }
       pendingResumeAt = readCurrentTime();
       playbackStateRef.current = { currentTime: pendingResumeAt, shouldResume };
 
@@ -285,10 +313,31 @@ export default function VideoPlayer({
         video.addEventListener("canplay", finishRestore);
         video.addEventListener("playing", finishRestore);
         video.addEventListener("seeking", syncPendingSeek);
+        const hlsLoadPosition = () => {
+          const currentTime = readCurrentTime();
+          if (
+            restorePending &&
+            pendingResumeAt > RESUME_DURATION_TOLERANCE_SECONDS &&
+            currentTime <= RESUME_DURATION_TOLERANCE_SECONDS
+          ) {
+            return pendingResumeAt;
+          }
+          return currentTime > 0 ? currentTime : 0;
+        };
+        const recoverHlsPlayback = () => {
+          if (!active || video.ended || video.paused || !wantsPlayback()) return;
+          const loadPosition = hlsLoadPosition();
+          hls.startLoad(loadPosition);
+          seekVideoTo(loadPosition);
+        };
+        video.addEventListener("stalled", recoverHlsPlayback);
+        video.addEventListener("waiting", recoverHlsPlayback);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           hlsManifestParsed = true;
           if (restorePending) {
-            hls.startLoad(pendingResumeAt > 0 ? pendingResumeAt : 0);
+            const loadPosition = hlsLoadPosition();
+            hls.startLoad(loadPosition);
+            seekVideoTo(loadPosition);
           }
           resumePlayback();
         });
@@ -299,7 +348,9 @@ export default function VideoPlayer({
               && networkRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
             ) {
               networkRecoveryAttempts += 1;
-              hls.startLoad();
+              const loadPosition = hlsLoadPosition();
+              hls.startLoad(loadPosition);
+              seekVideoTo(loadPosition);
               return;
             }
 
@@ -308,6 +359,7 @@ export default function VideoPlayer({
               && mediaRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
             ) {
               mediaRecoveryAttempts += 1;
+              seekVideoTo(hlsLoadPosition());
               hls.recoverMediaError();
               return;
             }
@@ -319,6 +371,8 @@ export default function VideoPlayer({
           video.removeEventListener("canplay", finishRestore);
           video.removeEventListener("playing", finishRestore);
           video.removeEventListener("seeking", syncPendingSeek);
+          video.removeEventListener("stalled", recoverHlsPlayback);
+          video.removeEventListener("waiting", recoverHlsPlayback);
           hls.destroy();
           hlsRef.current = null;
         };
