@@ -85,6 +85,7 @@ impl AntdRestClient {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
+                .no_proxy()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(duration_from_secs_f64(timeout_seconds))
                 .build()?,

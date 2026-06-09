@@ -172,7 +172,7 @@ services:
     expose:
       - "8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      test: ["CMD-SHELL", "env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY wget -q -O /dev/null http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -204,7 +204,7 @@ services:
     networks:
       - appnet
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      test: ["CMD-SHELL", "env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY wget -q -O /dev/null http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 12
