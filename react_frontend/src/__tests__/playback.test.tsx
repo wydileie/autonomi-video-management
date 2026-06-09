@@ -218,8 +218,91 @@ test("passes the current playback position to hls.js when changing resolution", 
     hlsInstances[1].handlers[Hls.Events.MANIFEST_PARSED]();
   });
 
-  expect(video.currentTime).toBe(0);
+  expect(video.currentTime).toBe(42);
+  expect(hlsInstances[1].startLoad).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    video.dispatchEvent(new Event("seeking"));
+    video.dispatchEvent(new Event("seeked"));
+  });
+
+  expect(hlsInstances[1].startLoad).toHaveBeenCalledTimes(1);
   expect(video.play).toHaveBeenCalled();
+});
+
+test("recovers hls.js network errors at the saved time after changing resolution", async () => {
+  Hls.isSupported.mockReturnValue(true);
+  const hlsInstances = [];
+  Hls.mockImplementation(function () {
+    const hlsInstance = {
+      attachMedia: vi.fn((media) => {
+        hlsInstance.media = media;
+      }),
+      destroy: vi.fn(() => {
+        if (hlsInstance.media) hlsInstance.media.currentTime = 0;
+      }),
+      handlers: {},
+      loadSource: vi.fn(),
+      media: null,
+      on: vi.fn((eventName, handler) => {
+        hlsInstance.handlers[eventName] = handler;
+      }),
+      recoverMediaError: vi.fn(),
+      startLoad: vi.fn(),
+    };
+    hlsInstances.push(hlsInstance);
+    return hlsInstance;
+  });
+  const publicVideo = {
+    created_at: "2026-04-27T12:00:00Z",
+    description: "Public description only",
+    id: "pub-resume-network",
+    original_filename: "",
+    status: "published",
+    title: "Network recovery stream",
+  };
+  setupGetRoutes({
+    publicVideos: [publicVideo],
+    details: {
+      "/api/videos/pub-resume-network": {
+        ...publicVideo,
+        manifest_address: null,
+        variants: [
+          { id: "variant-720", resolution: "720p", segment_count: 20 },
+          { id: "variant-480", resolution: "480p", segment_count: 20 },
+        ],
+      },
+    },
+  });
+
+  await renderApp();
+  await waitFor(() => expect(text()).toContain("Network recovery stream"));
+  await click(findButton("Network recovery stream"));
+
+  const video = container.querySelector("video");
+  Object.defineProperties(video, {
+    currentTime: { configurable: true, writable: true, value: 18 },
+    duration: { configurable: true, value: 40 },
+    ended: { configurable: true, value: false },
+    paused: { configurable: true, value: false },
+    play: { configurable: true, value: vi.fn(() => Promise.resolve()) },
+  });
+
+  await click(container.querySelector(".quality-toggle"));
+  await click(findButton("480p"));
+
+  expect(video.currentTime).toBe(0);
+
+  await act(async () => {
+    hlsInstances[1].handlers[Hls.Events.ERROR](Hls.Events.ERROR, {
+      fatal: true,
+      type: Hls.ErrorTypes.NETWORK_ERROR,
+    });
+  });
+
+  expect(hlsInstances[1].startLoad).toHaveBeenCalledWith(18);
+  expect(video.currentTime).toBe(18);
+  expect(text()).not.toContain("Playback failed because the video segments could not be loaded.");
 });
 
 test("honors a manual scrub to the beginning while hls.js reloads after a resolution change", async () => {

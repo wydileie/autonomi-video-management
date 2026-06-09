@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs, io,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
@@ -237,64 +238,18 @@ async fn run_ffmpeg(
     let seg_dir = assert_under(seg_dir, &state.config.upload_temp_dir)?;
     let segment_pattern =
         assert_under(&seg_dir.join("seg_%05d.ts"), &state.config.upload_temp_dir)?;
-    let segment_time = format!("{}", F64Format(state.config.hls_segment_duration));
     let mut command = Command::new("ffmpeg");
-    command
-        .arg("-hide_banner")
-        .arg("-nostats")
-        .arg("-loglevel")
-        .arg("warning")
-        .arg("-y")
-        .arg("-filter_threads")
-        .arg(state.config.ffmpeg_filter_threads.to_string())
-        .arg("-i")
-        .arg(&src)
-        .arg("-map")
-        .arg("0:v:0")
-        .arg("-map")
-        .arg("0:a?")
-        .arg("-sn")
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-threads")
-        .arg(state.config.ffmpeg_threads.to_string())
-        .arg("-preset")
-        .arg("veryfast")
-        .arg("-profile:v")
-        .arg("high")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-vf")
-        .arg(format!(
-            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
-        ))
-        .arg("-b:v")
-        .arg(format!("{video_kbps}k"))
-        .arg("-maxrate")
-        .arg(format!("{}k", video_kbps * 3 / 2))
-        .arg("-bufsize")
-        .arg(format!("{}k", video_kbps * 2))
-        .arg("-force_key_frames")
-        .arg(format!("expr:gte(t,n_forced*{segment_time})"))
-        .arg("-sc_threshold")
-        .arg("0")
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-b:a")
-        .arg(format!("{audio_kbps}k"))
-        .arg("-ar")
-        .arg("44100")
-        .arg("-f")
-        .arg("segment")
-        .arg("-segment_time")
-        .arg(segment_time)
-        .arg("-segment_time_delta")
-        .arg("0.05")
-        .arg("-segment_format")
-        .arg("mpegts")
-        .arg("-reset_timestamps")
-        .arg("1")
-        .arg(segment_pattern);
+    command.args(ffmpeg_transcode_args(FfmpegTranscodeOptions {
+        src: &src,
+        segment_pattern: &segment_pattern,
+        filter_threads: state.config.ffmpeg_filter_threads,
+        ffmpeg_threads: state.config.ffmpeg_threads,
+        hls_segment_duration: state.config.hls_segment_duration,
+        width,
+        height,
+        video_kbps,
+        audio_kbps,
+    }));
     let output =
         run_command_output(command, Some(state.config.ffmpeg_rendition_timeout_seconds)).await?;
     if output.status_code != Some(0) {
@@ -314,6 +269,89 @@ async fn run_ffmpeg(
         ));
     }
     Ok(())
+}
+
+struct FfmpegTranscodeOptions<'a> {
+    src: &'a FsPath,
+    segment_pattern: &'a FsPath,
+    filter_threads: usize,
+    ffmpeg_threads: usize,
+    hls_segment_duration: f64,
+    width: i32,
+    height: i32,
+    video_kbps: i32,
+    audio_kbps: i32,
+}
+
+fn ffmpeg_transcode_args(options: FfmpegTranscodeOptions<'_>) -> Vec<OsString> {
+    let segment_time = format!("{}", F64Format(options.hls_segment_duration));
+    [
+        "-hide_banner",
+        "-nostats",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-filter_threads",
+        &options.filter_threads.to_string(),
+        "-i",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain([options.src.as_os_str().to_owned()])
+    .chain(
+        [
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-sn",
+            "-c:v",
+            "libx264",
+            "-threads",
+            &options.ffmpeg_threads.to_string(),
+            "-preset",
+            "veryfast",
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+            "-vf",
+            &format!(
+                "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
+                options.width, options.height, options.width, options.height
+            ),
+            "-b:v",
+            &format!("{}k", options.video_kbps),
+            "-maxrate",
+            &format!("{}k", options.video_kbps * 3 / 2),
+            "-bufsize",
+            &format!("{}k", options.video_kbps * 2),
+            "-force_key_frames",
+            &format!("expr:gte(t,n_forced*{segment_time})"),
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            &format!("{}k", options.audio_kbps),
+            "-ar",
+            "44100",
+            "-f",
+            "segment",
+            "-segment_time",
+            &segment_time,
+            "-segment_time_delta",
+            "0.05",
+            "-segment_format",
+            "mpegts",
+            "-reset_timestamps",
+            "0",
+        ]
+        .into_iter()
+        .map(OsString::from),
+    )
+    .chain([options.segment_pattern.as_os_str().to_owned()])
+    .collect()
 }
 
 struct F64Format(f64);
@@ -765,14 +803,16 @@ pub(crate) fn enforce_upload_media_limits(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use axum::http::StatusCode;
     use serde_json::json;
     use uuid::Uuid;
 
     use super::{
-        assert_under, collect_segment_files, estimate_transcoded_bytes, parse_probe_duration,
-        stream_rotation_degrees, target_dimensions_for_source, target_video_bitrate_kbps,
+        assert_under, collect_segment_files, estimate_transcoded_bytes, ffmpeg_transcode_args,
+        parse_probe_duration, stream_rotation_degrees, target_dimensions_for_source,
+        target_video_bitrate_kbps, FfmpegTranscodeOptions,
     };
 
     #[test]
@@ -858,6 +898,33 @@ mod tests {
 
         assert_eq!(names, vec!["seg_00002.ts", "seg_00010.ts", "seg_bad.ts"]);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ffmpeg_segments_keep_continuous_timestamps_for_hls_seeks() {
+        let args = ffmpeg_transcode_args(FfmpegTranscodeOptions {
+            src: Path::new("/tmp/source.mp4"),
+            segment_pattern: Path::new("/tmp/seg_%05d.ts"),
+            filter_threads: 1,
+            ffmpeg_threads: 2,
+            hls_segment_duration: 1.0,
+            width: 640,
+            height: 360,
+            video_kbps: 500,
+            audio_kbps: 96,
+        })
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+        let reset_timestamp_index = args
+            .iter()
+            .position(|arg| arg == "-reset_timestamps")
+            .expect("reset timestamp flag should be explicit");
+
+        assert_eq!(
+            args.get(reset_timestamp_index + 1).map(String::as_str),
+            Some("0")
+        );
     }
 
     #[test]
