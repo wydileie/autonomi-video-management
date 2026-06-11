@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Autonomi Video Management",
+  "version": "0.1.0",
+  "identifier": "com.autonomi.video-management",
+  "build": {
+    "beforeDevCommand": "cd ../react_frontend && npm run start -- --host 127.0.0.1",
+    "beforeBuildCommand": "cd ../react_frontend && npm run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../../react_frontend/build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Autonomi Video Management",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "appimage", "deb", "rpm"],
+    "category": "Video",
+    "shortDescription": "Local Autonomi video management app",
+    "longDescription": "Upload, transcode, publish, and play HLS video backed by the Autonomi network.",
+    "externalBin": [
+      "binaries/antd",
+      "binaries/rust_admin",
+      "binaries/rust_stream",
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "resources": {
+      "../../react_frontend/build/": "frontend/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "hardenedRuntime": true,
+      "entitlements": null,
+      "exceptionDomain": "127.0.0.1"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {}
+}

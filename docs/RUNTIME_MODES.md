@@ -5,6 +5,8 @@ This repository now supports two launch paths over the same service roles:
 - Docker Compose for local and production deployment.
 - `autvid_launcher`, a Linux/macOS local web launcher that starts native child
   processes and opens the browser UI.
+- The Tauri desktop app, which uses the same launcher/runtime contract inside a
+  native installable shell.
 
 Both paths use the same Rust admin service, Rust streaming service, `antd`
 gateway, SQLite database, catalog state file, `/api`, and `/stream` contracts.
@@ -47,6 +49,10 @@ Launcher responsibilities:
 4. Serve the built frontend and proxy `/api` and `/stream`.
 5. Serve runtime frontend config.
 6. Poll health checks, open the browser, and stop child processes on shutdown.
+
+The Tauri desktop app reuses this launcher core but requires first-run setup and
+passes file-backed admin and wallet secrets to the services. See
+[`DESKTOP_APP.md`](DESKTOP_APP.md).
 
 Useful overrides:
 

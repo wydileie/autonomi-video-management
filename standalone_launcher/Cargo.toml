@@ -5,10 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow.workspace = true
-axum.workspace = true
-libc = "0.2"
-reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
-tokio = { workspace = true, features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
-tower-http = { workspace = true, features = ["fs"] }
+launcher_core = { path = "../launcher_core" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

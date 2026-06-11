@@ -67,7 +67,7 @@ pub(crate) async fn probe_upload_media(
     src: &FsPath,
 ) -> Result<UploadMediaMetadata, ApiError> {
     let src = assert_under(src, &state.config.upload_temp_dir)?;
-    let mut command = Command::new("ffprobe");
+    let mut command = Command::new(&state.config.ffprobe_bin);
     command
         .arg("-v")
         .arg("error")
@@ -154,7 +154,7 @@ pub(crate) async fn probe_duration(
     src: &FsPath,
 ) -> Result<Option<f64>, ApiError> {
     let src = assert_under(src, &state.config.upload_temp_dir)?;
-    let mut command = Command::new("ffprobe");
+    let mut command = Command::new(&state.config.ffprobe_bin);
     command
         .arg("-v")
         .arg("quiet")
@@ -180,7 +180,7 @@ pub(crate) async fn probe_video_dimensions(
     src: &FsPath,
 ) -> Result<Option<(i32, i32)>, ApiError> {
     let src = assert_under(src, &state.config.upload_temp_dir)?;
-    let mut command = Command::new("ffprobe");
+    let mut command = Command::new(&state.config.ffprobe_bin);
     command
         .arg("-v")
         .arg("quiet")
@@ -238,7 +238,7 @@ async fn run_ffmpeg(
     let seg_dir = assert_under(seg_dir, &state.config.upload_temp_dir)?;
     let segment_pattern =
         assert_under(&seg_dir.join("seg_%05d.ts"), &state.config.upload_temp_dir)?;
-    let mut command = Command::new("ffmpeg");
+    let mut command = Command::new(&state.config.ffmpeg_bin);
     command.args(ffmpeg_transcode_args(FfmpegTranscodeOptions {
         src: &src,
         segment_pattern: &segment_pattern,

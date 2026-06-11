@@ -304,3 +304,34 @@ input:focus-visible {
   height: 8px;
   width: 8px;
 }
+
+.desktop-setup-shell {
+  display: grid;
+  min-height: 100vh;
+  padding: 32px;
+  place-items: center;
+}
+
+.desktop-setup-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 28px;
+  width: min(560px, 100%);
+}
+
+.desktop-setup-panel h1 {
+  color: var(--charcoal-strong);
+  font-size: 42px;
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1.03;
+  margin: 8px 0 18px;
+}
+
+.desktop-setup-path {
+  color: var(--muted);
+  margin: 0 0 18px;
+  overflow-wrap: anywhere;
+}

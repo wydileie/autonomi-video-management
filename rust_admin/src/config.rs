@@ -63,6 +63,8 @@ pub(crate) struct Config {
     pub(crate) upload_max_concurrent_saves: usize,
     pub(crate) upload_read_idle_timeout_seconds: f64,
     pub(crate) upload_ffprobe_timeout_seconds: f64,
+    pub(crate) ffmpeg_bin: String,
+    pub(crate) ffprobe_bin: String,
     pub(crate) hls_segment_duration: f64,
     pub(crate) ffmpeg_threads: usize,
     pub(crate) ffmpeg_filter_threads: usize,
@@ -180,6 +182,8 @@ impl Config {
             anyhow::bail!("ANTD_METADATA_PAYMENT_MODE must be one of auto, merkle, single");
         }
 
+        let ffmpeg_bin = env::var("FFMPEG_BIN").unwrap_or_else(|_| "ffmpeg".into());
+        let ffprobe_bin = env::var("FFPROBE_BIN").unwrap_or_else(|_| "ffprobe".into());
         let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 1.0)?;
         if hls_segment_duration <= 0.0 {
             anyhow::bail!("HLS_SEGMENT_DURATION must be greater than zero");
@@ -343,6 +347,8 @@ impl Config {
             upload_max_concurrent_saves,
             upload_read_idle_timeout_seconds,
             upload_ffprobe_timeout_seconds,
+            ffmpeg_bin,
+            ffprobe_bin,
             hls_segment_duration,
             ffmpeg_threads,
             ffmpeg_filter_threads,
@@ -485,16 +491,17 @@ fn parse_cookie_same_site_env(
 }
 
 fn is_production_environment() -> bool {
-    ["APP_ENV", "ENVIRONMENT"].iter().any(|name| {
-        matches!(
-            env::var(name)
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str(),
-            "prod" | "production"
-        )
-    })
+    parse_bool_env("AUTVID_STRICT_AUTH", false)
+        || ["APP_ENV", "ENVIRONMENT"].iter().any(|name| {
+            matches!(
+                env::var(name)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "prod" | "production"
+            )
+        })
 }
 
 fn is_unsafe_admin_auth_value(value: &str) -> bool {

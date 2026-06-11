@@ -2,11 +2,13 @@
 members = [
     "common",
     "antd_service",
+    "launcher_core",
     "rust_admin",
     "rust_stream",
     "standalone_launcher",
 ]
 resolver = "2"
+exclude = ["desktop_app/src-tauri"]
 
 [workspace.dependencies]
 anyhow = "1"
