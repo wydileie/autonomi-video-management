@@ -1,5 +1,5 @@
 # ── Stage 1: Build the Autonomi 2.0 compatibility gateway ────────────────────
-FROM rust:1.95-slim-bookworm AS builder
+FROM rust:1.96-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     build-essential \
