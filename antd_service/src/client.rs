@@ -73,10 +73,18 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
     };
 
     if !private_key.starts_with("0x") {
-        private_key = format!("0x{private_key}");
+        let mut unprefixed_private_key = std::mem::take(&mut private_key);
+        private_key = format!("0x{unprefixed_private_key}");
+        unprefixed_private_key.zeroize();
     }
 
-    let wallet = evmlib::wallet::Wallet::new_from_private_key(evm_network, &private_key)?;
+    let wallet = match evmlib::wallet::Wallet::new_from_private_key(evm_network, &private_key) {
+        Ok(wallet) => wallet,
+        Err(err) => {
+            private_key.zeroize();
+            return Err(err.into());
+        }
+    };
     private_key.zeroize();
 
     Ok(client.with_wallet(wallet))
@@ -84,14 +92,26 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
 
 fn wallet_key() -> Option<String> {
     non_empty_env("AUTONOMI_WALLET_KEY_FILE")
-        .and_then(|path| match fs::read_to_string(&path) {
-            Ok(value) => Some(value),
-            Err(err) => {
-                warn!("Could not read AUTONOMI_WALLET_KEY_FILE at {path}: {err}");
-                None
-            }
-        })
+        .and_then(|path| read_wallet_key_file(&path))
         .or_else(|| non_empty_env("AUTONOMI_WALLET_KEY"))
+}
+
+fn read_wallet_key_file(path: &str) -> Option<String> {
+    match fs::read_to_string(path) {
+        Ok(mut value) => {
+            let key = value.trim().to_string();
+            value.zeroize();
+            if key.is_empty() {
+                None
+            } else {
+                Some(key)
+            }
+        }
+        Err(err) => {
+            warn!("Could not read AUTONOMI_WALLET_KEY_FILE at {path}: {err}");
+            None
+        }
+    }
 }
 
 fn evm_network() -> evmlib::Network {
@@ -206,6 +226,27 @@ async fn start_node_with_warmup(node: Arc<P2PNode>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
+
+    use super::read_wallet_key_file;
+
+    #[test]
+    fn wallet_key_file_trims_secret_file_newline() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "  0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  "
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_wallet_key_file(file.path().to_str().unwrap()).as_deref(),
+            Some("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
     use super::*;
 
     #[test]

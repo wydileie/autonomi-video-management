@@ -16,7 +16,23 @@ type TauriCore = {
 };
 
 export function isDesktopRuntime(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    return false;
+  }
+
+  const { hostname, port, protocol } = window.location;
+  const isLaunchedLocalApp = isLaunchedLocalAppLocation({ hostname, port, protocol });
+
+  return !isLaunchedLocalApp;
+}
+
+export function isLaunchedLocalAppLocation(location: Pick<Location, "hostname" | "port" | "protocol">): boolean {
+  const { hostname, port, protocol } = location;
+  const isLocalHttp = protocol === "http:" || protocol === "https:";
+  const isLoopbackHost = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+
+  // Tauri dev loads Vite on 5173 and still needs setup IPC; the launched app UI does not.
+  return isLocalHttp && isLoopbackHost && port !== "5173";
 }
 
 async function tauriCore(): Promise<TauriCore> {
