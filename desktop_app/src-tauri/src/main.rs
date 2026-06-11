@@ -130,7 +130,26 @@ fn resolve_binary_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> 
 
 #[tauri::command]
 async fn desktop_open_in_browser(url: String) -> Result<(), String> {
+    validate_launcher_url(&url)?;
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| err.to_string())
+}
+
+fn validate_launcher_url(value: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(value).map_err(|_| "launcher URL is invalid".to_string())?;
+    let is_loopback_host = matches!(
+        parsed.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+    );
+    if parsed.scheme() == "http"
+        && is_loopback_host
+        && parsed.port().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+    {
+        Ok(())
+    } else {
+        Err("launcher URL must be a loopback HTTP URL".to_string())
+    }
 }
 
 fn main() {
@@ -174,4 +193,24 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Autonomi Video Management");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_launcher_url;
+
+    #[test]
+    fn validates_loopback_launcher_urls() {
+        assert!(validate_launcher_url("http://127.0.0.1:8080").is_ok());
+        assert!(validate_launcher_url("http://localhost:49152").is_ok());
+        assert!(validate_launcher_url("http://[::1]:8080").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_launcher_urls() {
+        assert!(validate_launcher_url("https://127.0.0.1:8080").is_err());
+        assert!(validate_launcher_url("http://example.com:8080").is_err());
+        assert!(validate_launcher_url("http://127.0.0.1").is_err());
+        assert!(validate_launcher_url("http://user@127.0.0.1:8080").is_err());
+    }
 }

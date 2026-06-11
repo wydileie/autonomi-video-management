@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-start-stack"
+description = "Enables the desktop_start_stack command without any pre-configured scope."
+commands.allow = ["desktop_start_stack"]
+
+[[permission]]
+identifier = "deny-desktop-start-stack"
+description = "Denies the desktop_start_stack command without any pre-configured scope."
+commands.deny = ["desktop_start_stack"]
