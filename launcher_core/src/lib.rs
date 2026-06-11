@@ -1,6 +1,6 @@
 use std::{
     env,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     net::TcpListener as StdTcpListener,
     path::{Path, PathBuf},
@@ -17,6 +17,7 @@ use axum::{
     routing::{any, get},
     Router,
 };
+use fs2::FileExt;
 use rand::{rngs::OsRng, RngCore};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,7 @@ struct DesktopConfig {
 #[derive(Debug)]
 pub struct RunningStack {
     pub url: String,
+    _lock_file: File,
     children: Vec<ManagedChild>,
     server: JoinHandle<anyhow::Result<()>>,
 }
@@ -209,6 +211,7 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
     tokio::fs::create_dir_all(&logs_dir).await?;
     tokio::fs::create_dir_all(&run_dir).await?;
     set_private_dir_permissions(&run_dir)?;
+    let lock_file = acquire_instance_lock(&run_dir)?;
     cleanup_stale_children(&run_dir)?;
 
     let admin_port = env_port_or_available("RUST_ADMIN_PORT", 8000)?;
@@ -304,6 +307,7 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
     });
     Ok(RunningStack {
         url: launcher_url,
+        _lock_file: lock_file,
         children,
         server,
     })
@@ -589,6 +593,30 @@ fn append_log(logs_dir: &Path, file_name: &str) -> anyhow::Result<std::fs::File>
         .open(logs_dir.join(file_name))?)
 }
 
+fn acquire_instance_lock(run_dir: &Path) -> anyhow::Result<File> {
+    let lock_path = run_dir.join("launcher.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("could not open lock file {}", lock_path.to_string_lossy()))?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(lock_file),
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Err(anyhow!(
+            "another Autonomi Video Management instance is already using {}",
+            run_dir.parent().unwrap_or(run_dir).to_string_lossy()
+        )),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "could not lock launcher instance file {}",
+                lock_path.to_string_lossy()
+            )
+        }),
+    }
+}
+
 async fn wait_for_health(url: &str, name: &str) -> anyhow::Result<()> {
     let client = Client::new();
     for _ in 0..120 {
@@ -763,13 +791,21 @@ fn terminate_child(child: &mut Child) -> std::io::Result<()> {
     child.start_kill()
 }
 
+#[cfg(not(unix))]
+fn terminate_pid(_pid: u32) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "stale pid cleanup is not implemented on this platform",
+    ))
+}
+
 #[cfg(unix)]
 fn stale_child_running(pid: u32, expected_name: &str) -> bool {
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if result != 0 {
         return false;
     }
-    process_name_matches(pid, expected_name).unwrap_or(true)
+    process_name_matches(pid, expected_name).unwrap_or(false)
 }
 
 #[cfg(not(unix))]

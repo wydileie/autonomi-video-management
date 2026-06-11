@@ -69,7 +69,7 @@ check_media_tool_bundle() {
 
   case "$target_triple" in
     *linux*)
-      if command -v ldd >/dev/null 2>&1 && ldd "$src" 2>&1 | grep -q "not a dynamic executable"; then
+      if command -v ldd >/dev/null 2>&1 && ldd "$src" 2>&1 | grep -Eq "not a dynamic executable|statically linked"; then
         return
       fi
       cat >&2 <<EOF
