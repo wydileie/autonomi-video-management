@@ -20,7 +20,6 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             curl \
-            ffmpeg \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
@@ -47,6 +46,21 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci
         working-directory: desktop_app
+
+      - name: Install media tools
+        env:
+          MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_LINUX_URL }}
+        run: |
+          test -n "$MEDIA_TOOLS_URL" || {
+            echo "Set DESKTOP_MEDIA_TOOLS_LINUX_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/media-tools"
+          curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
+          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          test -x "$RUNNER_TEMP/media-tools/ffmpeg"
+          test -x "$RUNNER_TEMP/media-tools/ffprobe"
+          echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
 
       - name: Stage sidecars
         run: make stage-tauri-sidecars
@@ -97,7 +111,19 @@ jobs:
         working-directory: desktop_app
 
       - name: Install media tools
-        run: brew install ffmpeg
+        env:
+          MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_MACOS_URL }}
+        run: |
+          test -n "$MEDIA_TOOLS_URL" || {
+            echo "Set DESKTOP_MEDIA_TOOLS_MACOS_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/media-tools"
+          curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
+          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          test -x "$RUNNER_TEMP/media-tools/ffmpeg"
+          test -x "$RUNNER_TEMP/media-tools/ffprobe"
+          echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
 
       - name: Import signing certificate
         if: env.APPLE_CERTIFICATE != ''

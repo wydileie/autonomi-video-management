@@ -17,6 +17,10 @@ On first run, the Tauri shell requires admin credentials and an Autonomi wallet
 key or key-file path. The launcher writes file-backed secrets into the app data
 directory with private file permissions and starts services with
 `AUTVID_STRICT_AUTH=true`, `APP_ENV=production`, and file-backed admin secrets.
+If the wallet key is pasted into first-run setup, it is stored in the app data
+directory under `secrets/autonomi-wallet-key` with private file permissions. If
+you select an existing wallet key file instead, the app stores only that file
+path.
 
 Local devnet mode remains a developer workflow through Compose or the
 standalone launcher; normal desktop builds use the configured Autonomi network.
@@ -32,14 +36,44 @@ make build-tauri
 ```
 
 `make stage-tauri-sidecars` builds the Rust sidecars and copies `ffmpeg` and
-`ffprobe` from `FFMPEG_BIN` / `FFPROBE_BIN` or from `PATH` into
-`desktop_app/src-tauri/binaries` using Tauri's target-triple sidecar naming.
+`ffprobe` into `desktop_app/src-tauri/binaries` using Tauri's target-triple
+sidecar naming. Release builds must provide self-contained FFmpeg tools with
+either:
+
+```bash
+FFMPEG_BIN=/path/to/ffmpeg FFPROBE_BIN=/path/to/ffprobe make stage-tauri-sidecars
+```
+
+or:
+
+```bash
+FFMPEG_DIST_DIR=/path/to/media-tools make stage-tauri-sidecars
+```
+
+where `FFMPEG_DIST_DIR` contains executable `ffmpeg` and `ffprobe` files.
+
+For local developer builds only, you can opt into copying tools from `PATH`:
+
+```bash
+AUTVID_ALLOW_SYSTEM_FFMPEG=1 AUTVID_ALLOW_DYNAMIC_FFMPEG=1 make stage-tauri-sidecars
+```
+
+Do not use Homebrew, MacPorts, or apt-provided dynamic FFmpeg binaries for
+public desktop artifacts unless the release bundle also includes and signs their
+non-system shared libraries.
 
 ## Release Notes
 
 The `Desktop Release` GitHub Actions workflow builds Linux AppImage/deb/rpm
-artifacts and macOS app/dmg artifacts. macOS public beta releases require
-Developer ID signing and notarization secrets:
+artifacts and macOS app/dmg artifacts. The workflow expects platform-specific
+repository variables that point to `tar.gz` archives containing self-contained
+`ffmpeg` and `ffprobe` binaries at the archive root:
+
+- `DESKTOP_MEDIA_TOOLS_LINUX_URL`
+- `DESKTOP_MEDIA_TOOLS_MACOS_URL`
+
+macOS public beta releases require Developer ID signing and notarization
+secrets:
 
 - `APPLE_CERTIFICATE`
 - `APPLE_CERTIFICATE_PASSWORD`

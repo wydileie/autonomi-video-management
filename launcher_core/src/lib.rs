@@ -33,6 +33,7 @@ const CONFIG_FILE: &str = "desktop-config.json";
 const PASSWORD_FILE: &str = "admin-password";
 const AUTH_SECRET_FILE: &str = "admin-auth-secret";
 const WALLET_KEY_FILE: &str = "autonomi-wallet-key";
+const MANAGED_CHILD_NAMES: &[&str] = &["antd", "local-devnet", "rust_admin", "rust_stream"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkMode {
@@ -91,8 +92,15 @@ struct DesktopConfig {
 #[derive(Debug)]
 pub struct RunningStack {
     pub url: String,
-    children: Vec<Child>,
+    children: Vec<ManagedChild>,
     server: JoinHandle<anyhow::Result<()>>,
+}
+
+#[derive(Debug)]
+struct ManagedChild {
+    name: String,
+    child: Child,
+    pid_file: PathBuf,
 }
 
 #[derive(Clone)]
@@ -195,9 +203,13 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
     let processing_dir = data_dir.join("processing");
     let catalog_dir = data_dir.join("catalog");
     let logs_dir = data_dir.join("logs");
+    let run_dir = data_dir.join("run");
     tokio::fs::create_dir_all(&processing_dir).await?;
     tokio::fs::create_dir_all(&catalog_dir).await?;
     tokio::fs::create_dir_all(&logs_dir).await?;
+    tokio::fs::create_dir_all(&run_dir).await?;
+    set_private_dir_permissions(&run_dir)?;
+    cleanup_stale_children(&run_dir)?;
 
     let admin_port = env_port_or_available("RUST_ADMIN_PORT", 8000)?;
     let stream_port = env_port_or_available("RUST_STREAM_PORT", 8081)?;
@@ -228,6 +240,7 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
         options.mode,
         &data_dir,
         &logs_dir,
+        &run_dir,
         antd_port,
         options.binary_dir.as_deref(),
         desktop_config.as_ref(),
@@ -239,6 +252,7 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
         &processing_dir,
         &catalog_dir,
         &logs_dir,
+        &run_dir,
         admin_port,
         &antd_url,
         &launcher_url,
@@ -251,6 +265,7 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
         &antd_url,
         &catalog_dir,
         &logs_dir,
+        &run_dir,
         &launcher_url,
         options.binary_dir.as_deref(),
     )));
@@ -409,10 +424,11 @@ fn start_antd(
     mode: NetworkMode,
     data_dir: &Path,
     logs_dir: &Path,
+    run_dir: &Path,
     antd_port: u16,
     binary_dir: Option<&Path>,
     desktop_config: Option<&DesktopConfig>,
-) -> anyhow::Result<Child> {
+) -> anyhow::Result<ManagedChild> {
     match mode {
         NetworkMode::Configured => {
             let mut command = child_command("AUTVID_ANTD_BIN", "antd", binary_dir);
@@ -424,7 +440,7 @@ fn start_antd(
             {
                 command.env("AUTONOMI_WALLET_KEY_FILE", wallet_key_file);
             }
-            spawn("antd", command, logs_dir)
+            spawn("antd", command, logs_dir, run_dir)
         }
         NetworkMode::LocalDevnet => {
             let script = env::var("AUTVID_DEVNET_CMD")
@@ -438,7 +454,7 @@ fn start_antd(
                 .env("ANTD_REST_ADDR", format!("127.0.0.1:{antd_port}"))
                 .env("ANT_DEVNET_DATA_DIR", data_dir.join("devnet").join("nodes"))
                 .env("LOG_DIR", data_dir.join("devnet").join("logs"));
-            spawn("local-devnet", command, logs_dir)
+            spawn("local-devnet", command, logs_dir, run_dir)
         }
     }
 }
@@ -449,13 +465,14 @@ fn start_rust_admin(
     processing_dir: &Path,
     catalog_dir: &Path,
     logs_dir: &Path,
+    run_dir: &Path,
     admin_port: u16,
     antd_url: &str,
     launcher_url: &str,
     binary_dir: Option<&Path>,
     desktop_config: Option<&DesktopConfig>,
     tool_paths: &ToolPaths,
-) -> anyhow::Result<Child> {
+) -> anyhow::Result<ManagedChild> {
     let mut command = child_command("AUTVID_ADMIN_BIN", "rust_admin", binary_dir);
     command
         .env("AUTVID_DATA_DIR", data_dir)
@@ -490,7 +507,7 @@ fn start_rust_admin(
     if let Some(ffprobe) = &tool_paths.ffprobe {
         command.env("FFPROBE_BIN", ffprobe);
     }
-    spawn("rust_admin", command, logs_dir)
+    spawn("rust_admin", command, logs_dir, run_dir)
 }
 
 fn start_rust_stream(
@@ -498,16 +515,17 @@ fn start_rust_stream(
     antd_url: &str,
     catalog_dir: &Path,
     logs_dir: &Path,
+    run_dir: &Path,
     launcher_url: &str,
     binary_dir: Option<&Path>,
-) -> anyhow::Result<Child> {
+) -> anyhow::Result<ManagedChild> {
     let mut command = child_command("AUTVID_STREAM_BIN", "rust_stream", binary_dir);
     command
         .env("ANTD_URL", antd_url)
         .env("CATALOG_STATE_PATH", catalog_dir.join("catalog.json"))
         .env("RUST_STREAM_PORT", stream_port.to_string())
         .env("CORS_ALLOWED_ORIGINS", launcher_url);
-    spawn("rust_stream", command, logs_dir)
+    spawn("rust_stream", command, logs_dir, run_dir)
 }
 
 fn child_command(env_name: &str, fallback: &str, binary_dir: Option<&Path>) -> Command {
@@ -530,7 +548,12 @@ fn child_command(env_name: &str, fallback: &str, binary_dir: Option<&Path>) -> C
     Command::new(fallback)
 }
 
-fn spawn(name: &str, mut command: Command, logs_dir: &Path) -> anyhow::Result<Child> {
+fn spawn(
+    name: &str,
+    mut command: Command,
+    logs_dir: &Path,
+    run_dir: &Path,
+) -> anyhow::Result<ManagedChild> {
     info!("Starting {}", name);
     let stdout = append_log(logs_dir, &format!("{name}.log"))?;
     let stderr = append_log(logs_dir, &format!("{name}.err.log"))?;
@@ -538,8 +561,24 @@ fn spawn(name: &str, mut command: Command, logs_dir: &Path) -> anyhow::Result<Ch
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
+        .kill_on_drop(true);
+    let mut child = command
         .spawn()
-        .with_context(|| format!("could not start {name}"))
+        .with_context(|| format!("could not start {name}"))?;
+    let Some(pid) = child.id() else {
+        let _ = child.start_kill();
+        return Err(anyhow!("{name} did not report a process id"));
+    };
+    let pid_file = run_dir.join(format!("{name}.pid"));
+    if let Err(err) = write_private_file(&pid_file, pid.to_string().as_bytes()) {
+        let _ = child.start_kill();
+        return Err(err).with_context(|| format!("could not write {name} pid file"));
+    }
+    Ok(ManagedChild {
+        name: name.to_string(),
+        child,
+        pid_file,
+    })
 }
 
 fn append_log(logs_dir: &Path, file_name: &str) -> anyhow::Result<std::fs::File> {
@@ -605,26 +644,26 @@ fn open_browser(url: &str) {
     }
 }
 
-async fn stop_children(children: &mut [Child]) {
+async fn stop_children(children: &mut [ManagedChild]) {
     let shutdown_grace = env_duration("ADMIN_SHUTDOWN_GRACE_SECONDS", Duration::from_secs(15));
-    for child in children.iter_mut() {
-        if let Err(err) = terminate_child(child) {
-            warn!("Could not signal child shutdown: {}", err);
+    for managed in children.iter_mut() {
+        if let Err(err) = terminate_child(&mut managed.child) {
+            warn!("Could not signal {} shutdown: {}", managed.name, err);
         }
     }
 
     let deadline = Instant::now() + shutdown_grace;
     let mut running = vec![true; children.len()];
     while running.iter().any(|is_running| *is_running) && Instant::now() < deadline {
-        for (index, child) in children.iter_mut().enumerate() {
+        for (index, managed) in children.iter_mut().enumerate() {
             if !running[index] {
                 continue;
             }
-            match child.try_wait() {
+            match managed.child.try_wait() {
                 Ok(Some(_status)) => running[index] = false,
                 Ok(None) => {}
                 Err(err) => {
-                    warn!("Could not check child shutdown status: {}", err);
+                    warn!("Could not check {} shutdown status: {}", managed.name, err);
                     running[index] = false;
                 }
             }
@@ -634,19 +673,71 @@ async fn stop_children(children: &mut [Child]) {
         }
     }
 
-    for child in children.iter_mut() {
-        match child.try_wait() {
+    for managed in children.iter_mut() {
+        match managed.child.try_wait() {
             Ok(Some(_status)) => {}
             Ok(None) => {
-                warn!("Child did not stop within {:?}; killing it", shutdown_grace);
-                if let Err(err) = child.start_kill() {
-                    warn!("Could not kill child process: {}", err);
+                warn!(
+                    "{} did not stop within {:?}; killing it",
+                    managed.name, shutdown_grace
+                );
+                if let Err(err) = managed.child.start_kill() {
+                    warn!("Could not kill {} process: {}", managed.name, err);
                 }
             }
-            Err(err) => warn!("Could not check child status before kill: {}", err),
+            Err(err) => warn!(
+                "Could not check {} status before kill: {}",
+                managed.name, err
+            ),
         }
-        let _ = child.wait().await;
+        let _ = managed.child.wait().await;
+        if let Err(err) = fs::remove_file(&managed.pid_file) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    "Could not remove {} pid file {}: {}",
+                    managed.name,
+                    managed.pid_file.to_string_lossy(),
+                    err
+                );
+            }
+        }
     }
+}
+
+fn cleanup_stale_children(run_dir: &Path) -> anyhow::Result<()> {
+    for name in MANAGED_CHILD_NAMES {
+        let pid_file = run_dir.join(format!("{name}.pid"));
+        let raw = match fs::read_to_string(&pid_file) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warn!(
+                    "Could not read stale {} pid file {}: {}",
+                    name,
+                    pid_file.to_string_lossy(),
+                    err
+                );
+                continue;
+            }
+        };
+        let Ok(pid) = raw.trim().parse::<u32>() else {
+            warn!(
+                "Removing invalid stale {} pid file {}",
+                name,
+                pid_file.to_string_lossy()
+            );
+            let _ = fs::remove_file(&pid_file);
+            continue;
+        };
+        if stale_child_running(pid, name) {
+            warn!("Stopping stale {} sidecar with pid {}", name, pid);
+            if let Err(err) = terminate_pid(pid) {
+                warn!("Could not stop stale {} sidecar {}: {}", name, pid, err);
+            }
+        }
+        let _ = fs::remove_file(&pid_file);
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -654,6 +745,11 @@ fn terminate_child(child: &mut Child) -> std::io::Result<()> {
     let Some(pid) = child.id() else {
         return Ok(());
     };
+    terminate_pid(pid)
+}
+
+#[cfg(unix)]
+fn terminate_pid(pid: u32) -> std::io::Result<()> {
     let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     if result == 0 {
         Ok(())
@@ -665,6 +761,52 @@ fn terminate_child(child: &mut Child) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn terminate_child(child: &mut Child) -> std::io::Result<()> {
     child.start_kill()
+}
+
+#[cfg(unix)]
+fn stale_child_running(pid: u32, expected_name: &str) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if result != 0 {
+        return false;
+    }
+    process_name_matches(pid, expected_name).unwrap_or(true)
+}
+
+#[cfg(not(unix))]
+fn stale_child_running(_pid: u32, _expected_name: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn process_name_matches(pid: u32, expected_name: &str) -> Option<bool> {
+    let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(process_name_is_expected(comm.trim(), expected_name))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_name_matches(pid: u32, expected_name: &str) -> Option<bool> {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return Some(false);
+    }
+    let command = String::from_utf8_lossy(&output.stdout);
+    Some(
+        Path::new(command.trim())
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| process_name_is_expected(name, expected_name)),
+    )
+}
+
+#[cfg(unix)]
+fn process_name_is_expected(candidate: &str, expected_name: &str) -> bool {
+    candidate == expected_name
+        || candidate
+            .strip_prefix(expected_name)
+            .is_some_and(|suffix| suffix.starts_with('-'))
 }
 
 fn resolve_frontend_dir(explicit: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -904,5 +1046,16 @@ mod tests {
         env::set_var("AUTVID_TEST_PORT", "45678");
         assert_eq!(env_port_or_available("AUTVID_TEST_PORT", 1).unwrap(), 45678);
         env::remove_var("AUTVID_TEST_PORT");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_name_matches_target_triple_sidecar() {
+        assert!(process_name_is_expected("rust_admin", "rust_admin"));
+        assert!(process_name_is_expected(
+            "rust_admin-aarch64-apple-darwin",
+            "rust_admin"
+        ));
+        assert!(!process_name_is_expected("rust_admin_backup", "rust_admin"));
     }
 }
