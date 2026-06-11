@@ -167,6 +167,8 @@ mod db_tests {
             upload_max_concurrent_saves: 1,
             upload_read_idle_timeout_seconds: 30.0,
             upload_ffprobe_timeout_seconds: 30.0,
+            ffmpeg_bin: "ffmpeg".into(),
+            ffprobe_bin: "ffprobe".into(),
             hls_segment_duration: 1.0,
             ffmpeg_threads: 1,
             ffmpeg_filter_threads: 1,

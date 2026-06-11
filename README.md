@@ -248,6 +248,11 @@ changing current containers. See
 [`docs/RUNTIME_MODES.md`](docs/RUNTIME_MODES.md) and the machine-readable
 [`docs/runtime-contract.example.json`](docs/runtime-contract.example.json).
 
+An installable Linux/macOS desktop app is being introduced with Tauri. It keeps
+the same local service roles, bundles sidecar binaries plus FFmpeg/FFprobe, and
+requires first-run credential setup before starting services. See
+[`docs/DESKTOP_APP.md`](docs/DESKTOP_APP.md).
+
 ### Local Testnet
 
 ```bash

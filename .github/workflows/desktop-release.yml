@@ -1,0 +1,161 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  tauri-linux:
+    name: Linux desktop bundles
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            protobuf-compiler
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: react_frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: react_frontend
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop_app
+
+      - name: Install media tools
+        env:
+          MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_LINUX_URL }}
+        run: |
+          test -n "$MEDIA_TOOLS_URL" || {
+            echo "Set DESKTOP_MEDIA_TOOLS_LINUX_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/media-tools"
+          curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
+          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          test -x "$RUNNER_TEMP/media-tools/ffmpeg"
+          test -x "$RUNNER_TEMP/media-tools/ffprobe"
+          echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
+
+      - name: Stage sidecars
+        run: make stage-tauri-sidecars
+
+      - name: Build Tauri bundles
+        run: npm run tauri -- build --bundles appimage,deb,rpm
+        working-directory: desktop_app
+
+      - name: Upload Linux bundles
+        uses: actions/upload-artifact@v6
+        with:
+          name: autvid-linux-desktop
+          path: desktop_app/src-tauri/target/release/bundle/**
+
+  tauri-macos:
+    name: macOS desktop bundles
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2.9.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: react_frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: react_frontend
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop_app
+
+      - name: Install media tools
+        env:
+          MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_MACOS_URL }}
+        run: |
+          test -n "$MEDIA_TOOLS_URL" || {
+            echo "Set DESKTOP_MEDIA_TOOLS_MACOS_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/media-tools"
+          curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
+          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          test -x "$RUNNER_TEMP/media-tools/ffmpeg"
+          test -x "$RUNNER_TEMP/media-tools/ffprobe"
+          echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
+
+      - name: Validate signing configuration
+        run: |
+          test -n "$APPLE_CERTIFICATE"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+
+      - name: Import signing certificate
+        env:
+          KEYCHAIN_PASSWORD: ${{ runner.temp }}/autvid-keychain-password
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+
+      - name: Stage sidecars
+        run: make stage-tauri-sidecars
+
+      - name: Build Tauri bundles
+        run: npm run tauri -- build --bundles app,dmg
+        working-directory: desktop_app
+
+      - name: Upload macOS bundles
+        uses: actions/upload-artifact@v6
+        with:
+          name: autvid-macos-desktop
+          path: desktop_app/src-tauri/target/release/bundle/**

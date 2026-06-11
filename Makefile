@@ -1,4 +1,4 @@
-.PHONY: help install-react test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -42,8 +42,11 @@ help:
 	@echo "  make backup-production Create a timestamped production SQLite/catalog backup"
 	@echo "  make restore-production ARGS='--backup-dir backups/autvid-... --yes' Restore a production backup"
 	@echo "  make install-react   Install React frontend dependencies"
+	@echo "  make install-desktop Install Tauri desktop build dependencies"
 	@echo "  make lint-react      Run React ESLint checks"
 	@echo "  make build-react     Build the React frontend"
+	@echo "  make stage-tauri-sidecars Build and stage desktop sidecar binaries"
+	@echo "  make build-tauri     Build the Tauri desktop app bundles"
 	@echo "  make test-react      Run React tests in CI mode"
 	@echo "  make smoke-local     Run an end-to-end local devnet smoke test"
 	@echo "  make smoke-local-restart Run smoke test with rust_admin restart recovery"
@@ -154,8 +157,17 @@ restore-production:
 install-react:
 	cd react_frontend && $(NPM) ci
 
+install-desktop:
+	cd desktop_app && $(NPM) ci
+
 build-react:
 	cd react_frontend && $(NPM) run build
+
+stage-tauri-sidecars:
+	scripts/stage-tauri-sidecars.sh
+
+build-tauri: install-react install-desktop stage-tauri-sidecars
+	cd desktop_app && $(NPM) run tauri -- build
 
 lint-react:
 	cd react_frontend && $(NPM) run lint

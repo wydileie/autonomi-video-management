@@ -187,6 +187,12 @@ CLAUDE.md
 node_modules/
 **/node_modules/
 
+# Generated desktop sidecars
+desktop_app/src-tauri/binaries/*
+!desktop_app/src-tauri/binaries/.gitkeep
+desktop_app/src-tauri/gen/
+desktop_app/src-tauri/target-linux/
+
 autonomi-video-management.code-workspace
 .env
 .env.local

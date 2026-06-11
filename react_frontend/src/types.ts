@@ -9,6 +9,11 @@ export interface LoginCredentials {
   password: string;
 }
 
+export interface SetupStatus {
+  configured: boolean;
+  data_dir: string;
+}
+
 export interface CurrentUser {
   username: string;
 }

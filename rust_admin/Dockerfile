@@ -15,19 +15,22 @@ COPY common/Cargo.toml common/Cargo.toml
 COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
 COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
 COPY antd_service/Cargo.toml antd_service/Cargo.toml
+COPY launcher_core/Cargo.toml launcher_core/Cargo.toml
 COPY standalone_launcher/Cargo.toml standalone_launcher/Cargo.toml
-RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src standalone_launcher/src && \
+RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src launcher_core/src standalone_launcher/src && \
     echo "" > common/src/lib.rs && \
     echo "fn main(){}" > rust_admin/src/main.rs && \
     echo "fn main(){}" > rust_stream/src/main.rs && \
     echo "fn main(){}" > antd_service/src/main.rs && \
+    echo "" > launcher_core/src/lib.rs && \
     echo "fn main(){}" > standalone_launcher/src/main.rs && \
     cargo build --release -p rust_admin
 
 COPY common/src common/src
+COPY launcher_core/src launcher_core/src
 COPY rust_admin/migrations rust_admin/migrations
 COPY rust_admin/src rust_admin/src
-RUN touch common/src/lib.rs rust_admin/src/main.rs && cargo build --release -p rust_admin
+RUN touch common/src/lib.rs launcher_core/src/lib.rs rust_admin/src/main.rs && cargo build --release -p rust_admin
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
