@@ -490,6 +490,10 @@ fn start_rust_admin(
         .env("RUST_ADMIN_PORT", admin_port.to_string())
         .env("CORS_ALLOWED_ORIGINS", launcher_url)
         .env("APP_ENV", "production")
+        // The desktop launcher serves the production-built app over loopback HTTP.
+        // Keep strict auth enabled, but do not mark cookies Secure unless the
+        // browser is actually talking to the admin service over HTTPS.
+        .env("ADMIN_AUTH_COOKIE_SECURE", "false")
         .env("AUTVID_STRICT_AUTH", "true")
         .env(
             "ADMIN_DB_MIN_CONNECTIONS",
