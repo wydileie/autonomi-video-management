@@ -961,6 +961,7 @@ async fn proxy_stream(
 }
 
 fn stream_proxy_path(path: &str) -> String {
+    // rust_stream mounts playback routes under /stream; preserve the prefix Axum strips here.
     format!("/stream/{path}")
 }
 
