@@ -957,7 +957,11 @@ async fn proxy_stream(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response<Body> {
-    proxy_to(state, headers, request, format!("/{}", path), false).await
+    proxy_to(state, headers, request, stream_proxy_path(&path), false).await
+}
+
+fn stream_proxy_path(path: &str) -> String {
+    format!("/stream/{path}")
 }
 
 async fn proxy_to(
@@ -1115,6 +1119,14 @@ mod tests {
                 .map(|value| value.to_string_lossy().into_owned());
             assert_eq!(value.as_deref(), Some(*expected_value));
         }
+    }
+
+    #[test]
+    fn stream_proxy_preserves_stream_prefix_for_sidecar_routes() {
+        assert_eq!(
+            stream_proxy_path("manifest/address/720p/playlist.m3u8"),
+            "/stream/manifest/address/720p/playlist.m3u8"
+        );
     }
 
     #[cfg(unix)]
