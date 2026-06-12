@@ -24,9 +24,9 @@ use crate::{
     errors::ApiError,
     media::{
         enforce_upload_media_limits, probe_upload_media, resolution_preset,
-        supported_resolutions_error,
+        supported_resolutions_error, validate_encode_settings,
     },
-    models::{AcceptedUpload, UploadMediaMetadata},
+    models::{AcceptedUpload, EncodeSettings, UploadMediaMetadata, VideoCodec},
     state::AppState,
 };
 
@@ -106,6 +106,9 @@ pub(crate) async fn accept_upload(
     let mut show_manifest_address = false;
     let mut upload_original = false;
     let mut publish_when_ready = false;
+    let mut video_codec = VideoCodec::default();
+    let mut audio_bitrate_kbps: Option<i32> = None;
+    let mut video_bitrate_overrides = std::collections::HashMap::new();
     let mut original_filename: Option<String> = None;
     let mut source_path: Option<PathBuf> = None;
     let mut upload_metadata: Option<UploadMediaMetadata> = None;
@@ -205,6 +208,17 @@ pub(crate) async fn accept_upload(
                 "show_manifest_address" => show_manifest_address = parse_form_bool(&text),
                 "upload_original" => upload_original = parse_form_bool(&text),
                 "publish_when_ready" => publish_when_ready = parse_form_bool(&text),
+                "video_codec" => {
+                    video_codec = VideoCodec::parse(&text).ok_or_else(|| {
+                        ApiError::new(StatusCode::BAD_REQUEST, "video_codec must be h264 or hevc")
+                    })?;
+                }
+                "audio_bitrate_kbps" => {
+                    audio_bitrate_kbps = Some(parse_kbps_field(&text, "audio_bitrate_kbps")?);
+                }
+                "video_bitrate_overrides" => {
+                    video_bitrate_overrides = parse_video_bitrate_overrides(&text)?;
+                }
                 _ => {}
             }
         }
@@ -224,6 +238,12 @@ pub(crate) async fn accept_upload(
             supported_resolutions_error(),
         ));
     }
+    let encode_settings = EncodeSettings {
+        video_codec,
+        video_bitrate_overrides,
+        audio_bitrate_kbps,
+    };
+    validate_encode_settings(&encode_settings, &selected)?;
     if let Some(metadata) = upload_metadata {
         enforce_upload_media_limits(
             state,
@@ -238,10 +258,11 @@ pub(crate) async fn accept_upload(
         INSERT INTO videos (
             id, title, original_filename, description, status, job_dir,
             job_source_path, requested_resolutions,
+            encode_settings,
             show_original_filename, show_manifest_address,
             upload_original, publish_when_ready, user_id
         )
-        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8, $9, $10, $11, $12, $13)
         "#,
     )
     .bind(video_uuid)
@@ -255,6 +276,7 @@ pub(crate) async fn accept_upload(
     .bind(job_dir.to_string_lossy().as_ref())
     .bind(source_path.to_string_lossy().as_ref())
     .bind(json!(selected))
+    .bind(json!(encode_settings))
     .bind(false)
     .bind(show_manifest_address)
     .bind(upload_original)
@@ -267,6 +289,30 @@ pub(crate) async fn accept_upload(
     let video = get_db_video(state, &video_id, false).await?;
     guard.disarm();
     Ok(AcceptedUpload { video_id, video })
+}
+
+fn parse_kbps_field(text: &str, field_name: &str) -> Result<i32, ApiError> {
+    text.trim().parse::<i32>().map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be an integer kbps value"),
+        )
+    })
+}
+
+fn parse_video_bitrate_overrides(
+    text: &str,
+) -> Result<std::collections::HashMap<String, i32>, ApiError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    serde_json::from_str::<std::collections::HashMap<String, i32>>(trimmed).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "video_bitrate_overrides must be a JSON object of resolution to kbps",
+        )
+    })
 }
 
 fn content_length(headers: &HeaderMap) -> Option<u64> {

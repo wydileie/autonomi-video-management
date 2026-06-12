@@ -66,7 +66,8 @@ pub(crate) async fn db_video_to_out(
     let video_id: Uuid = row.try_get("id").map_err(db_error)?;
     let variant_rows = sqlx::query(
         r#"
-        SELECT id, resolution, width, height, total_duration, segment_count
+        SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
+               video_codec, segment_container, total_duration, segment_count
         FROM video_variants WHERE video_id=$1 ORDER BY height DESC
         "#,
     )
@@ -102,6 +103,14 @@ pub(crate) async fn db_video_to_out(
         variants.push(VariantOut {
             id: variant_id.to_string(),
             resolution: variant.try_get("resolution").unwrap_or_default(),
+            video_codec: variant
+                .try_get::<String, _>("video_codec")
+                .unwrap_or_else(|_| "h264".to_string()),
+            segment_container: variant
+                .try_get::<String, _>("segment_container")
+                .unwrap_or_else(|_| "mpegts".to_string()),
+            video_bitrate: variant.try_get("video_bitrate").unwrap_or_default(),
+            audio_bitrate: variant.try_get("audio_bitrate").unwrap_or_default(),
             width: variant.try_get("width").unwrap_or_default(),
             height: variant.try_get("height").unwrap_or_default(),
             total_duration: variant.try_get("total_duration").ok().flatten(),
@@ -190,6 +199,12 @@ pub(crate) fn catalog_entry_to_video_out(entry: &Value, catalog_address: Option<
                     string_field(variant, "resolution")
                 ),
                 resolution: string_field(variant, "resolution"),
+                video_codec: opt_string_field(variant, "video_codec")
+                    .unwrap_or_else(|| "h264".to_string()),
+                segment_container: opt_string_field(variant, "segment_container")
+                    .unwrap_or_else(|| "mpegts".to_string()),
+                video_bitrate: int_field(variant, "video_bitrate"),
+                audio_bitrate: int_field(variant, "audio_bitrate"),
                 width: int_field(variant, "width"),
                 height: int_field(variant, "height"),
                 total_duration: variant.get("total_duration").and_then(Value::as_f64),
@@ -281,6 +296,12 @@ pub(crate) fn manifest_to_video_out(
             .map(|variant| VariantOut {
                 id: format!("{video_id}:{}", string_field(variant, "resolution")),
                 resolution: string_field(variant, "resolution"),
+                video_codec: opt_string_field(variant, "video_codec")
+                    .unwrap_or_else(|| "h264".to_string()),
+                segment_container: opt_string_field(variant, "segment_container")
+                    .unwrap_or_else(|| "mpegts".to_string()),
+                video_bitrate: int_field(variant, "video_bitrate"),
+                audio_bitrate: int_field(variant, "audio_bitrate"),
                 width: int_field(variant, "width"),
                 height: int_field(variant, "height"),
                 total_duration: variant.get("total_duration").and_then(Value::as_f64),
@@ -380,7 +401,7 @@ pub(super) async fn build_ready_manifest_from_db(
     let variants = sqlx::query(
         r#"
         SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
-               segment_duration, total_duration
+               video_codec, segment_container, segment_duration, total_duration
         FROM video_variants
         WHERE video_id=$1
         ORDER BY height DESC
@@ -441,6 +462,12 @@ pub(super) async fn build_ready_manifest_from_db(
             resolution: variant
                 .try_get::<String, _>("resolution")
                 .unwrap_or_default(),
+            video_codec: variant
+                .try_get::<String, _>("video_codec")
+                .unwrap_or_else(|_| "h264".to_string()),
+            segment_container: variant
+                .try_get::<String, _>("segment_container")
+                .unwrap_or_else(|_| "mpegts".to_string()),
             width: variant.try_get::<i32, _>("width").unwrap_or_default(),
             height: variant.try_get::<i32, _>("height").unwrap_or_default(),
             video_bitrate: variant

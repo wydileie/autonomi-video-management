@@ -17,7 +17,7 @@ use crate::{
     catalog::publish_current_catalog_to_network,
     db::{db_error, set_status},
     errors::ApiError,
-    models::{JobKind, LeasedJob},
+    models::{EncodeSettings, JobKind, LeasedJob},
     pipeline::{process_video_inner, upload_approved_video_inner},
     state::AppState,
     JOB_STATUS_FAILED, JOB_STATUS_QUEUED, JOB_STATUS_RUNNING, JOB_STATUS_SUCCEEDED, STATUS_ERROR,
@@ -207,7 +207,7 @@ async fn run_process_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Re
     let video_id = video_uuid.to_string();
     let row = sqlx::query(
         r#"
-        SELECT status, job_dir, job_source_path, requested_resolutions
+        SELECT status, job_dir, job_source_path, requested_resolutions, encode_settings
         FROM videos
         WHERE id=$1
         "#,
@@ -256,8 +256,24 @@ async fn run_process_video_job(state: &AppState, video_uuid: Option<Uuid>) -> Re
             "Processing job has no supported requested resolutions",
         ));
     }
+    let encode_settings = decode_encode_settings(row.try_get("encode_settings").map_err(db_error)?);
 
-    process_video_inner(state, &video_id, &source_path, &resolutions, &job_dir, true).await
+    process_video_inner(
+        state,
+        &video_id,
+        &source_path,
+        &resolutions,
+        &job_dir,
+        true,
+        &encode_settings,
+    )
+    .await
+}
+
+fn decode_encode_settings(value: Option<serde_json::Value>) -> EncodeSettings {
+    value
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
 }
 
 #[instrument(skip(state), fields(video_id = ?video_uuid))]
