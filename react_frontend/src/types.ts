@@ -24,6 +24,7 @@ export interface ResolutionOption {
   width: number;
   height: number;
   bitrate: string;
+  defaultVideoBitrateKbps: number;
   note: string;
 }
 
@@ -48,7 +49,11 @@ export interface VideoSummary {
 export interface VideoVariant {
   id: string;
   resolution: string;
+  audio_bitrate?: number;
+  segment_container?: string;
   segment_count?: number;
+  video_bitrate?: number;
+  video_codec?: string;
 }
 
 export interface QuoteOriginalFile {
@@ -119,11 +124,18 @@ export interface AdminCatalogs {
 
 export interface UploadQuoteRequest {
   duration_seconds: number;
+  encode_settings?: EncodeSettings;
   resolutions: string[];
   source_height: number | null;
   source_width: number | null;
   source_size_bytes?: number;
   upload_original?: boolean;
+}
+
+export interface EncodeSettings {
+  audio_bitrate_kbps?: number;
+  video_bitrate_overrides: Record<string, number>;
+  video_codec: "h264" | "hevc";
 }
 
 export interface VisibilityUpdate {

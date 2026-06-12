@@ -45,6 +45,19 @@ test("shows an upload quote after local video metadata is available", async () =
     if (url === "/videos/upload/quote") {
       expect(body).toEqual({
         duration_seconds: 64,
+        encode_settings: {
+          audio_bitrate_kbps: 320,
+          video_bitrate_overrides: {
+            "1080p": 12000,
+            "720p": 7500,
+            "540p": 4500,
+            "480p": 3000,
+            "360p": 1500,
+            "240p": 800,
+            "144p": 350,
+          },
+          video_codec: "h264",
+        },
         resolutions: ["1080p", "720p", "540p", "480p", "360p", "240p", "144p"],
         source_height: 1080,
         source_width: 1920,
@@ -173,6 +186,16 @@ test("sends original-source and auto-publish options with an upload", async () =
   expect(uploadedForm.get("upload_original")).toBe("true");
   expect(uploadedForm.get("publish_when_ready")).toBe("true");
   expect(uploadedForm.get("show_manifest_address")).toBe("false");
+  expect(uploadedForm.get("video_codec")).toBe("h264");
+  expect(uploadedForm.get("audio_bitrate_kbps")).toBe("320");
+  expect(JSON.parse(uploadedForm.get("video_bitrate_overrides"))).toEqual({
+    "720p": 7500,
+    "540p": 4500,
+    "480p": 3000,
+    "360p": 1500,
+    "240p": 800,
+    "144p": 350,
+  });
   expect(uploadedForm.get("file")).toBe(file);
 });
 

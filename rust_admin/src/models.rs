@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,6 +52,42 @@ pub(crate) struct UploadQuoteRequest {
     #[serde(default)]
     pub(crate) upload_original: bool,
     pub(crate) source_size_bytes: Option<i64>,
+    #[serde(default)]
+    pub(crate) encode_settings: EncodeSettings,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum VideoCodec {
+    #[default]
+    H264,
+    Hevc,
+}
+
+impl VideoCodec {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::H264 => "h264",
+            Self::Hevc => "hevc",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "h264" | "h.264" | "avc" => Some(Self::H264),
+            "hevc" | "h265" | "h.265" => Some(Self::Hevc),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub(crate) struct EncodeSettings {
+    #[serde(default)]
+    pub(crate) video_codec: VideoCodec,
+    #[serde(default)]
+    pub(crate) video_bitrate_overrides: HashMap<String, i32>,
+    pub(crate) audio_bitrate_kbps: Option<i32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -65,6 +101,10 @@ pub(crate) struct SegmentOut {
 pub(crate) struct VariantOut {
     pub(crate) id: String,
     pub(crate) resolution: String,
+    pub(crate) video_codec: String,
+    pub(crate) segment_container: String,
+    pub(crate) video_bitrate: i32,
+    pub(crate) audio_bitrate: i32,
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) total_duration: Option<f64>,
@@ -163,6 +203,10 @@ pub(crate) struct ManifestOriginalFile {
 pub(crate) struct ManifestVariant {
     pub(crate) id: String,
     pub(crate) resolution: String,
+    #[serde(default = "default_video_codec")]
+    pub(crate) video_codec: String,
+    #[serde(default = "default_segment_container")]
+    pub(crate) segment_container: String,
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) video_bitrate: i32,
@@ -277,6 +321,8 @@ pub(crate) struct TranscodedRendition {
     pub(crate) height: i32,
     pub(crate) video_kbps: i32,
     pub(crate) audio_kbps: i32,
+    pub(crate) video_codec: VideoCodec,
+    pub(crate) segment_container: String,
     pub(crate) segments: Vec<TranscodedSegment>,
 }
 
@@ -294,6 +340,14 @@ pub(crate) struct QuoteValue {
     pub(crate) estimated_gas_cost_wei: u128,
     pub(crate) chunk_count: i64,
     pub(crate) payment_mode: String,
+}
+
+fn default_video_codec() -> String {
+    "h264".to_string()
+}
+
+fn default_segment_container() -> String {
+    "mpegts".to_string()
 }
 
 #[cfg(test)]
@@ -406,6 +460,8 @@ mod tests {
             variants: vec![ManifestVariant {
                 id: "variant-1".to_string(),
                 resolution: "720p".to_string(),
+                video_codec: "h264".to_string(),
+                segment_container: "mpegts".to_string(),
                 width: 1280,
                 height: 720,
                 video_bitrate: 2_500_000,
@@ -441,6 +497,8 @@ mod tests {
                 "variants": [{
                     "id": "variant-1",
                     "resolution": "720p",
+                    "video_codec": "h264",
+                    "segment_container": "mpegts",
                     "width": 1280,
                     "height": 720,
                     "video_bitrate": 2500000,

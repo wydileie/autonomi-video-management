@@ -46,9 +46,14 @@
   }
 
   .source-panel,
+  .encoding-row,
   .form-grid,
   .login-grid {
     grid-template-columns: 1fr;
+  }
+
+  .bitrate-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .login-brand-panel {
@@ -121,6 +126,10 @@
   }
 
   .resolution-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bitrate-grid {
     grid-template-columns: 1fr;
   }
 

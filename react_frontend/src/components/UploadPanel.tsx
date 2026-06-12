@@ -9,7 +9,13 @@ import {
 
 import { isRequestCanceled, requestErrorMessage, requestUploadQuote, uploadVideo } from "../api/client";
 import { RESOLUTION_OPTIONS } from "../constants";
-import type { SourceVideoMeta, UploadQuote, UploadQuoteRequest, VideoSummary } from "../types";
+import type {
+  EncodeSettings,
+  SourceVideoMeta,
+  UploadQuote,
+  UploadQuoteRequest,
+  VideoSummary,
+} from "../types";
 import { formatAttoTokens, formatBytes, formatWei } from "../utils/format";
 import {
   classifyResolution,
@@ -30,6 +36,43 @@ interface UploadPanelProps {
   onUploaded: (video: VideoSummary) => void;
 }
 
+type VideoCodec = EncodeSettings["video_codec"];
+
+const DEFAULT_AUDIO_BITRATE_KBPS = 320;
+
+function defaultVideoBitrate(optionKbps: number, codec: VideoCodec): number {
+  if (codec === "hevc") return Math.max(64, Math.round((optionKbps * 0.7) / 50) * 50);
+  return optionKbps;
+}
+
+function defaultVideoBitrates(codec: VideoCodec): Record<string, number> {
+  return Object.fromEntries(
+    RESOLUTION_OPTIONS.map((option) => [
+      option.value,
+      defaultVideoBitrate(option.defaultVideoBitrateKbps, codec),
+    ]),
+  );
+}
+
+function buildEncodeSettings(
+  resolutions: string[],
+  videoCodec: VideoCodec,
+  videoBitrates: Record<string, number>,
+  audioBitrateKbps: number,
+): EncodeSettings {
+  const video_bitrate_overrides = Object.fromEntries(
+    resolutions.map((resolution) => [
+      resolution,
+      Math.max(64, Math.round(videoBitrates[resolution] || 0)),
+    ]),
+  );
+  return {
+    video_codec: videoCodec,
+    audio_bitrate_kbps: Math.max(32, Math.round(audioBitrateKbps || DEFAULT_AUDIO_BITRATE_KBPS)),
+    video_bitrate_overrides,
+  };
+}
+
 export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -39,6 +82,11 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   const [uploadOriginal, setUploadOriginal] = useState(false);
   const [publishWhenReady, setPublishWhenReady] = useState(false);
   const [selected, setSelected] = useState<string[]>(["720p"]);
+  const [videoCodec, setVideoCodec] = useState<VideoCodec>("h264");
+  const [audioBitrateKbps, setAudioBitrateKbps] = useState(DEFAULT_AUDIO_BITRATE_KBPS);
+  const [videoBitrates, setVideoBitrates] = useState<Record<string, number>>(
+    () => defaultVideoBitrates("h264"),
+  );
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
@@ -96,8 +144,15 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
       const resolutions = orderedSelection(selected);
       setQuote({ loading: true, error: "", data: null });
       try {
+        const encodeSettings = buildEncodeSettings(
+          resolutions,
+          videoCodec,
+          videoBitrates,
+          audioBitrateKbps,
+        );
         const quoteRequest: UploadQuoteRequest = {
           duration_seconds: duration,
+          encode_settings: encodeSettings,
           resolutions,
           source_width: meta.width,
           source_height: meta.height,
@@ -122,7 +177,17 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [file, meta?.duration, meta?.width, meta?.height, selected, uploadOriginal]);
+  }, [
+    audioBitrateKbps,
+    file,
+    meta?.duration,
+    meta?.width,
+    meta?.height,
+    selected,
+    uploadOriginal,
+    videoBitrates,
+    videoCodec,
+  ]);
 
   const onDrop = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -162,6 +227,12 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
     const resolutionsToUpload = orderedSelection(selected);
 
     const fd = new FormData();
+    const encodeSettings = buildEncodeSettings(
+      resolutionsToUpload,
+      videoCodec,
+      videoBitrates,
+      audioBitrateKbps,
+    );
     fd.append("file", file);
     fd.append("title", title.trim());
     fd.append("description", desc.trim());
@@ -170,6 +241,9 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
     fd.append("show_manifest_address", showManifestAddress ? "true" : "false");
     fd.append("upload_original", uploadOriginal ? "true" : "false");
     fd.append("publish_when_ready", publishWhenReady ? "true" : "false");
+    fd.append("video_codec", encodeSettings.video_codec);
+    fd.append("audio_bitrate_kbps", String(encodeSettings.audio_bitrate_kbps));
+    fd.append("video_bitrate_overrides", JSON.stringify(encodeSettings.video_bitrate_overrides));
 
     try {
       const data = await uploadVideo(fd, (progressEvent) => {
@@ -184,6 +258,9 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
       setUploadOriginal(false);
       setPublishWhenReady(false);
       setSelected(["720p"]);
+      setVideoCodec("h264");
+      setAudioBitrateKbps(DEFAULT_AUDIO_BITRATE_KBPS);
+      setVideoBitrates(defaultVideoBitrates("h264"));
       setMeta(null);
       setQuote({ loading: false, error: "", data: null });
       setProgress(0);
@@ -307,6 +384,81 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
             />
             <span>Publish automatically when ready</span>
           </label>
+        </div>
+
+        <div className="encoding-panel">
+          <div className="encoding-row">
+            <label>
+              <span>Video codec</span>
+              <select
+                value={videoCodec}
+                onChange={(event) => {
+                  const nextCodec = event.target.value as VideoCodec;
+                  const previousCodec = videoCodec;
+                  setVideoCodec(nextCodec);
+                  setVideoBitrates((current) => {
+                    const previousDefaults = defaultVideoBitrates(previousCodec);
+                    const nextDefaults = defaultVideoBitrates(nextCodec);
+                    return Object.fromEntries(
+                      RESOLUTION_OPTIONS.map((option) => {
+                        const currentValue = current[option.value];
+                        const nextValue = currentValue === previousDefaults[option.value]
+                          ? nextDefaults[option.value]
+                          : currentValue ?? nextDefaults[option.value];
+                        return [option.value, nextValue];
+                      }),
+                    );
+                  });
+                  setQuote({ loading: false, error: "", data: null });
+                }}
+                disabled={uploading}
+              >
+                <option value="h264">H.264</option>
+                <option value="hevc">HEVC / H.265</option>
+              </select>
+            </label>
+            <label>
+              <span>Audio bitrate</span>
+              <input
+                type="number"
+                min={32}
+                max={1024}
+                step={32}
+                value={audioBitrateKbps}
+                onChange={(event) => {
+                  setAudioBitrateKbps(Number(event.target.value));
+                  setQuote({ loading: false, error: "", data: null });
+                }}
+                disabled={uploading}
+              />
+            </label>
+          </div>
+          <div className="bitrate-grid">
+            {orderedSelection(selected).map((resolution) => {
+              const option = resolutionByValue(resolution);
+              return (
+                <label key={resolution}>
+                  <span>{option?.label || resolution}</span>
+                  <input
+                    type="number"
+                    min={64}
+                    max={200000}
+                    step={1}
+                    value={videoBitrates[resolution] || 0}
+                    onChange={(event) => {
+                      const nextValue = Number(event.target.value);
+                      setVideoBitrates((current) => ({
+                        ...current,
+                        [resolution]: nextValue,
+                      }));
+                      setQuote({ loading: false, error: "", data: null });
+                    }}
+                    disabled={uploading}
+                  />
+                </label>
+              );
+            })}
+          </div>
         </div>
 
         <div className="resolution-toolbar">

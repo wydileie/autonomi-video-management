@@ -199,6 +199,65 @@
   width: 16px;
 }
 
+.encoding-panel {
+  background: rgba(237, 241, 243, 0.72);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-top: 18px;
+  padding: 16px;
+}
+
+.encoding-row {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.35fr);
+}
+
+.encoding-row label,
+.bitrate-grid label {
+  display: block;
+}
+
+.encoding-row span,
+.bitrate-grid span {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  margin-bottom: 7px;
+  text-transform: uppercase;
+}
+
+.encoding-row input,
+.encoding-row select,
+.bitrate-grid input {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--charcoal-strong);
+  min-height: 44px;
+  outline: none;
+  padding: 10px 12px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  width: 100%;
+}
+
+.encoding-row input:focus,
+.encoding-row select:focus,
+.bitrate-grid input:focus {
+  background: var(--surface);
+  border-color: rgba(232, 111, 25, 0.72);
+  box-shadow: 0 0 0 4px rgba(232, 111, 25, 0.12);
+}
+
+.bitrate-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
 .resolution-toolbar {
   align-items: center;
   display: flex;

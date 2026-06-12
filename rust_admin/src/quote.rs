@@ -3,8 +3,9 @@ use axum::http::StatusCode;
 use crate::{
     errors::ApiError,
     media::{
-        enforce_upload_media_limits, estimate_transcoded_bytes, resolution_preset,
-        supported_resolutions_error, target_dimensions_for_source, target_video_bitrate_kbps,
+        default_video_bitrate_for_codec, enforce_upload_media_limits, estimate_transcoded_bytes,
+        resolution_preset, supported_resolutions_error, target_dimensions_for_source,
+        target_video_bitrate_kbps, validate_encode_settings,
     },
     models::{
         QuoteValue, UploadQuoteOriginalOut, UploadQuoteOut, UploadQuoteRequest,
@@ -177,6 +178,7 @@ pub(crate) async fn build_upload_quote(
             supported_resolutions_error(),
         ));
     }
+    validate_encode_settings(&request.encode_settings, &request.resolutions)?;
 
     let mut quote_cache = std::collections::HashMap::new();
     let mut variants = Vec::new();
@@ -190,8 +192,20 @@ pub(crate) async fn build_upload_quote(
     for (resolution, (preset_width, preset_height, video_kbps, audio_kbps)) in selected {
         let (width, height) =
             target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+        let base_video_kbps = request
+            .encode_settings
+            .video_bitrate_overrides
+            .get(&resolution)
+            .copied()
+            .unwrap_or_else(|| {
+                default_video_bitrate_for_codec(video_kbps, request.encode_settings.video_codec)
+            });
         let video_kbps =
-            target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
+            target_video_bitrate_kbps(base_video_kbps, preset_width, preset_height, width, height);
+        let audio_kbps = request
+            .encode_settings
+            .audio_bitrate_kbps
+            .unwrap_or(audio_kbps);
         let full_segments =
             (request.duration_seconds / state.config.hls_segment_duration).floor() as i64;
         let mut remainder =

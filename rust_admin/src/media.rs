@@ -14,10 +14,18 @@ use tracing::{info, instrument};
 use crate::{
     config::duration_from_secs_f64,
     errors::ApiError,
-    models::{CommandOutput, TranscodedRendition, TranscodedSegment, UploadMediaMetadata},
+    models::{
+        CommandOutput, EncodeSettings, TranscodedRendition, TranscodedSegment, UploadMediaMetadata,
+        VideoCodec,
+    },
     state::AppState,
     MIN_ANTD_SELF_ENCRYPTION_BYTES, SUPPORTED_RESOLUTIONS,
 };
+
+const MIN_VIDEO_BITRATE_KBPS: i32 = 64;
+const MAX_VIDEO_BITRATE_KBPS: i32 = 200_000;
+const MIN_AUDIO_BITRATE_KBPS: i32 = 32;
+const MAX_AUDIO_BITRATE_KBPS: i32 = 1_024;
 
 pub(crate) async fn run_command_output(
     mut command: Command,
@@ -229,10 +237,7 @@ async fn run_ffmpeg(
     state: &AppState,
     src: &FsPath,
     seg_dir: &FsPath,
-    width: i32,
-    height: i32,
-    video_kbps: i32,
-    audio_kbps: i32,
+    target: &RenditionTarget,
 ) -> Result<(), ApiError> {
     let src = assert_under(src, &state.config.upload_temp_dir)?;
     let seg_dir = assert_under(seg_dir, &state.config.upload_temp_dir)?;
@@ -245,10 +250,11 @@ async fn run_ffmpeg(
         filter_threads: state.config.ffmpeg_filter_threads,
         ffmpeg_threads: state.config.ffmpeg_threads,
         hls_segment_duration: state.config.hls_segment_duration,
-        width,
-        height,
-        video_kbps,
-        audio_kbps,
+        video_codec: target.video_codec,
+        width: target.width,
+        height: target.height,
+        video_kbps: target.video_kbps,
+        audio_kbps: target.audio_kbps,
     }));
     let output =
         run_command_output(command, Some(state.config.ffmpeg_rendition_timeout_seconds)).await?;
@@ -277,6 +283,23 @@ struct FfmpegTranscodeOptions<'a> {
     filter_threads: usize,
     ffmpeg_threads: usize,
     hls_segment_duration: f64,
+    video_codec: VideoCodec,
+    width: i32,
+    height: i32,
+    video_kbps: i32,
+    audio_kbps: i32,
+}
+
+#[derive(Clone)]
+struct TranscodeRenditionInput {
+    order: usize,
+    resolution: String,
+    source_dimensions: Option<(i32, i32)>,
+    encode_settings: EncodeSettings,
+}
+
+struct RenditionTarget {
+    video_codec: VideoCodec,
     width: i32,
     height: i32,
     video_kbps: i32,
@@ -285,6 +308,41 @@ struct FfmpegTranscodeOptions<'a> {
 
 fn ffmpeg_transcode_args(options: FfmpegTranscodeOptions<'_>) -> Vec<OsString> {
     let segment_time = format!("{}", F64Format(options.hls_segment_duration));
+    let codec_args: Vec<OsString> = match options.video_codec {
+        VideoCodec::H264 => [
+            "-c:v",
+            "libx264",
+            "-threads",
+            &options.ffmpeg_threads.to_string(),
+            "-preset",
+            "veryfast",
+            "-profile:v",
+            "high",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect(),
+        VideoCodec::Hevc => [
+            "-c:v",
+            "libx265",
+            "-threads",
+            &options.ffmpeg_threads.to_string(),
+            "-preset",
+            "medium",
+            "-tag:v",
+            "hvc1",
+            "-pix_fmt",
+            "yuv420p",
+            "-x265-params",
+            "log-level=error",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect(),
+    };
+
     [
         "-hide_banner",
         "-nostats",
@@ -299,22 +357,13 @@ fn ffmpeg_transcode_args(options: FfmpegTranscodeOptions<'_>) -> Vec<OsString> {
     .map(OsString::from)
     .chain([options.src.as_os_str().to_owned()])
     .chain(
+        ["-map", "0:v:0", "-map", "0:a?", "-sn"]
+            .into_iter()
+            .map(OsString::from),
+    )
+    .chain(codec_args)
+    .chain(
         [
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-sn",
-            "-c:v",
-            "libx264",
-            "-threads",
-            &options.ffmpeg_threads.to_string(),
-            "-preset",
-            "veryfast",
-            "-profile:v",
-            "high",
-            "-pix_fmt",
-            "yuv420p",
             "-vf",
             &format!(
                 "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2",
@@ -486,6 +535,7 @@ pub(crate) async fn transcode_renditions(
     resolutions: &[String],
     job_dir: &FsPath,
     source_dimensions: Option<(i32, i32)>,
+    encode_settings: &EncodeSettings,
 ) -> Result<Vec<TranscodedRendition>, ApiError> {
     let semaphore = Arc::new(Semaphore::new(state.config.ffmpeg_max_parallel_renditions));
     let mut jobs = JoinSet::new();
@@ -501,6 +551,7 @@ pub(crate) async fn transcode_renditions(
         let source_path = source_path.to_path_buf();
         let job_dir = job_dir.to_path_buf();
         let resolution = resolution.clone();
+        let encode_settings = encode_settings.clone();
         scheduled += 1;
         jobs.spawn(async move {
             let _permit = semaphore.acquire_owned().await.map_err(|err| {
@@ -509,16 +560,13 @@ pub(crate) async fn transcode_renditions(
                     format!("Could not acquire FFmpeg rendition slot: {err}"),
                 )
             })?;
-            transcode_one_rendition(
-                &state,
-                &video_id,
-                &source_path,
-                &job_dir,
+            let input = TranscodeRenditionInput {
                 order,
                 resolution,
                 source_dimensions,
-            )
-            .await
+                encode_settings,
+            };
+            transcode_one_rendition(&state, &video_id, &source_path, &job_dir, input).await
         });
     }
 
@@ -555,19 +603,20 @@ pub(crate) async fn transcode_renditions(
     Ok(renditions)
 }
 
-#[instrument(
-    skip(state, source_path, job_dir),
-    fields(video_id = %video_id, resolution = %resolution, order = order)
-)]
+#[instrument(skip(state, source_path, job_dir, input), fields(video_id = %video_id))]
 async fn transcode_one_rendition(
     state: &AppState,
     video_id: &str,
     source_path: &FsPath,
     job_dir: &FsPath,
-    order: usize,
-    resolution: String,
-    source_dimensions: Option<(i32, i32)>,
+    input: TranscodeRenditionInput,
 ) -> Result<TranscodedRendition, ApiError> {
+    let TranscodeRenditionInput {
+        order,
+        resolution,
+        source_dimensions,
+        encode_settings,
+    } = input;
     let Some((preset_width, preset_height, video_kbps, audio_kbps)) =
         resolution_preset(&resolution)
     else {
@@ -578,8 +627,23 @@ async fn transcode_one_rendition(
     };
     let (width, height) =
         target_dimensions_for_source(preset_width, preset_height, source_dimensions);
+    let base_video_kbps = encode_settings
+        .video_bitrate_overrides
+        .get(&resolution)
+        .copied()
+        .unwrap_or_else(|| {
+            default_video_bitrate_for_codec(video_kbps, encode_settings.video_codec)
+        });
     let video_kbps =
-        target_video_bitrate_kbps(video_kbps, preset_width, preset_height, width, height);
+        target_video_bitrate_kbps(base_video_kbps, preset_width, preset_height, width, height);
+    let audio_kbps = encode_settings.audio_bitrate_kbps.unwrap_or(audio_kbps);
+    let target = RenditionTarget {
+        video_codec: encode_settings.video_codec,
+        width,
+        height,
+        video_kbps,
+        audio_kbps,
+    };
     let seg_dir = job_dir.join(&resolution);
     fs::create_dir_all(&seg_dir).map_err(|err| {
         ApiError::new(
@@ -589,16 +653,7 @@ async fn transcode_one_rendition(
     })?;
     info!("Transcoding {} -> {}", video_id, resolution);
     let ffmpeg_started = Instant::now();
-    let ffmpeg_result = run_ffmpeg(
-        state,
-        source_path,
-        &seg_dir,
-        width,
-        height,
-        video_kbps,
-        audio_kbps,
-    )
-    .await;
+    let ffmpeg_result = run_ffmpeg(state, source_path, &seg_dir, &target).await;
     state
         .metrics
         .record_ffmpeg_duration(&resolution, ffmpeg_started.elapsed());
@@ -648,10 +703,12 @@ async fn transcode_one_rendition(
     Ok(TranscodedRendition {
         order,
         resolution,
-        width,
-        height,
-        video_kbps,
-        audio_kbps,
+        width: target.width,
+        height: target.height,
+        video_kbps: target.video_kbps,
+        audio_kbps: target.audio_kbps,
+        video_codec: target.video_codec,
+        segment_container: "mpegts".to_string(),
         segments,
     })
 }
@@ -679,18 +736,76 @@ fn segment_index_from_path(path: &FsPath) -> Option<i32> {
 }
 pub(crate) fn resolution_preset(resolution: &str) -> Option<(i32, i32, i32, i32)> {
     match resolution {
-        "8k" => Some((7680, 4320, 45000, 320)),
-        "4k" => Some((3840, 2160, 16000, 256)),
-        "1440p" => Some((2560, 1440, 8000, 192)),
-        "1080p" => Some((1920, 1080, 5000, 192)),
-        "720p" => Some((1280, 720, 2500, 128)),
-        "540p" => Some((960, 540, 1600, 128)),
-        "480p" => Some((854, 480, 1000, 128)),
-        "360p" => Some((640, 360, 500, 96)),
-        "240p" => Some((426, 240, 300, 64)),
-        "144p" => Some((256, 144, 150, 48)),
+        "8k" => Some((7680, 4320, 80_000, 320)),
+        "4k" => Some((3840, 2160, 45_000, 320)),
+        "1440p" => Some((2560, 1440, 24_000, 320)),
+        "1080p" => Some((1920, 1080, 12_000, 256)),
+        "720p" => Some((1280, 720, 7_500, 192)),
+        "540p" => Some((960, 540, 4_500, 160)),
+        "480p" => Some((854, 480, 3_000, 160)),
+        "360p" => Some((640, 360, 1_500, 128)),
+        "240p" => Some((426, 240, 800, 96)),
+        "144p" => Some((256, 144, 350, 64)),
         _ => None,
     }
+}
+
+pub(crate) fn validate_encode_settings(
+    settings: &EncodeSettings,
+    selected_resolutions: &[String],
+) -> Result<(), ApiError> {
+    if let Some(audio_kbps) = settings.audio_bitrate_kbps {
+        if !(MIN_AUDIO_BITRATE_KBPS..=MAX_AUDIO_BITRATE_KBPS).contains(&audio_kbps) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "audio_bitrate_kbps must be between {MIN_AUDIO_BITRATE_KBPS} and {MAX_AUDIO_BITRATE_KBPS}"
+                ),
+            ));
+        }
+    }
+
+    for (resolution, video_kbps) in &settings.video_bitrate_overrides {
+        if !selected_resolutions.iter().any(|value| value == resolution) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("video bitrate override references unselected resolution '{resolution}'"),
+            ));
+        }
+        if resolution_preset(resolution).is_none() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "video bitrate override references unsupported resolution '{resolution}'. {}",
+                    supported_resolutions_error()
+                ),
+            ));
+        }
+        let max_video_bitrate_kbps = max_video_bitrate_override_kbps(resolution);
+        if !(MIN_VIDEO_BITRATE_KBPS..=max_video_bitrate_kbps).contains(video_kbps) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "video bitrate for {resolution} must be between {MIN_VIDEO_BITRATE_KBPS} and {max_video_bitrate_kbps} kbps"
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn default_video_bitrate_for_codec(base_video_kbps: i32, codec: VideoCodec) -> i32 {
+    match codec {
+        VideoCodec::H264 => base_video_kbps,
+        VideoCodec::Hevc => (base_video_kbps * 7 / 10).max(MIN_VIDEO_BITRATE_KBPS),
+    }
+}
+
+fn max_video_bitrate_override_kbps(resolution: &str) -> i32 {
+    resolution_preset(resolution)
+        .map(|(_, _, video_kbps, _)| (video_kbps * 4).min(MAX_VIDEO_BITRATE_KBPS))
+        .unwrap_or(MAX_VIDEO_BITRATE_KBPS)
 }
 
 pub(crate) fn supported_resolutions_error() -> String {
@@ -812,8 +927,9 @@ mod tests {
     use super::{
         assert_under, collect_segment_files, estimate_transcoded_bytes, ffmpeg_transcode_args,
         parse_probe_duration, stream_rotation_degrees, target_dimensions_for_source,
-        target_video_bitrate_kbps, FfmpegTranscodeOptions,
+        target_video_bitrate_kbps, validate_encode_settings, FfmpegTranscodeOptions,
     };
+    use crate::models::{EncodeSettings, VideoCodec};
 
     #[test]
     fn target_dimensions_follow_source_orientation() {
@@ -881,6 +997,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_encode_settings_rejects_unselected_and_excessive_bitrates() {
+        let selected = vec!["720p".to_string()];
+        let mut settings = EncodeSettings::default();
+        settings
+            .video_bitrate_overrides
+            .insert("1080p".to_string(), 12_000);
+        let err = validate_encode_settings(&settings, &selected).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.detail.contains("unselected resolution"));
+
+        let mut settings = EncodeSettings::default();
+        settings
+            .video_bitrate_overrides
+            .insert("144p".to_string(), 200_000);
+        let err = validate_encode_settings(&settings, &["144p".to_string()]).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.detail.contains("between 64 and 1400"));
+    }
+
+    #[test]
     fn collect_segment_files_orders_numbered_segments_only() {
         let dir = std::env::temp_dir().join(format!("autvid_segments_{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -908,6 +1044,7 @@ mod tests {
             filter_threads: 1,
             ffmpeg_threads: 2,
             hls_segment_duration: 1.0,
+            video_codec: VideoCodec::H264,
             width: 640,
             height: 360,
             video_kbps: 500,
@@ -925,6 +1062,28 @@ mod tests {
             args.get(reset_timestamp_index + 1).map(String::as_str),
             Some("0")
         );
+    }
+
+    #[test]
+    fn ffmpeg_hevc_args_use_x265_and_hvc1_tag() {
+        let args = ffmpeg_transcode_args(FfmpegTranscodeOptions {
+            src: Path::new("/tmp/source.mp4"),
+            segment_pattern: Path::new("/tmp/seg_%05d.ts"),
+            filter_threads: 1,
+            ffmpeg_threads: 2,
+            hls_segment_duration: 1.0,
+            video_codec: VideoCodec::Hevc,
+            width: 640,
+            height: 360,
+            video_kbps: 500,
+            audio_kbps: 96,
+        })
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "libx265"]));
+        assert!(args.windows(2).any(|pair| pair == ["-tag:v", "hvc1"]));
     }
 
     #[test]

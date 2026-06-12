@@ -24,7 +24,8 @@ use crate::{
     jobs::schedule_catalog_publish,
     media::{assert_under, probe_duration, probe_video_dimensions, transcode_renditions},
     models::{
-        ManifestOriginalFile, ManifestSegment, ManifestVariant, QuoteValue, VideoManifestDocument,
+        EncodeSettings, ManifestOriginalFile, ManifestSegment, ManifestVariant, QuoteValue,
+        VideoManifestDocument,
     },
     quote::{parse_cost_u128, quote_data_size},
     state::AppState,
@@ -43,6 +44,7 @@ pub(crate) async fn process_video_inner(
     resolutions: &[String],
     job_dir: &FsPath,
     reset_existing: bool,
+    encode_settings: &EncodeSettings,
 ) -> Result<(), ApiError> {
     let video_uuid = parse_video_uuid(video_id)?;
     if reset_existing {
@@ -79,6 +81,7 @@ pub(crate) async fn process_video_inner(
         resolutions,
         job_dir,
         source_dimensions,
+        encode_settings,
     )
     .await?;
 
@@ -88,8 +91,8 @@ pub(crate) async fn process_video_inner(
             r#"
             INSERT INTO video_variants
                 (id, video_id, resolution, width, height, video_bitrate, audio_bitrate,
-                 segment_duration, total_duration, segment_count)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 video_codec, segment_container, segment_duration, total_duration, segment_count)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             RETURNING id
         "#,
         )
@@ -100,6 +103,8 @@ pub(crate) async fn process_video_inner(
         .bind(rendition.height)
         .bind(rendition.video_kbps * 1000)
         .bind(rendition.audio_kbps * 1000)
+        .bind(rendition.video_codec.as_str())
+        .bind(&rendition.segment_container)
         .bind(state.config.hls_segment_duration)
         .bind(total_duration)
         .bind(rendition.segments.len() as i32)
@@ -528,7 +533,7 @@ pub(crate) async fn upload_approved_video_inner(
     let variants = sqlx::query(
         r#"
         SELECT id, resolution, width, height, video_bitrate, audio_bitrate,
-               segment_duration, total_duration
+               video_codec, segment_container, segment_duration, total_duration
         FROM video_variants
         WHERE video_id=$1
         ORDER BY height DESC
@@ -785,6 +790,12 @@ pub(crate) async fn upload_approved_video_inner(
             resolution: variant
                 .try_get::<String, _>("resolution")
                 .unwrap_or_default(),
+            video_codec: variant
+                .try_get::<String, _>("video_codec")
+                .unwrap_or_else(|_| "h264".to_string()),
+            segment_container: variant
+                .try_get::<String, _>("segment_container")
+                .unwrap_or_else(|_| "mpegts".to_string()),
             width: variant.try_get::<i32, _>("width").unwrap_or_default(),
             height: variant.try_get::<i32, _>("height").unwrap_or_default(),
             video_bitrate: variant
