@@ -408,7 +408,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `UPLOAD_MAX_CONCURRENT_SAVES` | No | Max concurrent source uploads being streamed/probed to disk. Default: `2` |
 | `UPLOAD_FFPROBE_TIMEOUT_SECONDS` | No | Server-side upload validation `ffprobe` timeout. Default: `30` |
 | `UPLOAD_READ_IDLE_TIMEOUT_SECONDS` | No | Idle timeout while reading multipart upload bodies after the save semaphore is acquired. Default: `30` |
-| `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `1` |
+| `HLS_SEGMENT_DURATION` | No | Target seconds per forced-keyframe HLS segment. Default: `6`; local devnet default: `0.75` |
 | `FFMPEG_THREADS` | No | Maximum FFmpeg/x264 encoder threads. Default: `2` to reduce memory use for high-resolution portrait transcodes |
 | `FFMPEG_FILTER_THREADS` | No | Maximum FFmpeg filter graph threads. Default: `1` |
 | `FFMPEG_MAX_PARALLEL_RENDITIONS` | No | Max renditions to transcode at once inside one processing job. Base/prod default: `1`; local examples set `2` |
@@ -556,9 +556,9 @@ capped at the source size to avoid accidental upscaling.
 Video bitrates are scaled from the 16:9 baseline by the actual output pixel
 count for non-16:9 sources.
 
-HLS segment duration is configurable with `HLS_SEGMENT_DURATION`; the local
-example uses `0.75` seconds to keep 4K Autonomi objects small and reliable on
-devnets.
+HLS segment duration is configurable with `HLS_SEGMENT_DURATION`. The default
+is `6` seconds for desktop and production/default-network runs, while the local
+devnet overlay keeps `0.75` seconds to avoid oversized test objects.
 
 ---
 
@@ -630,7 +630,7 @@ This project uses the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) (v2.0) 
 - **`antd-mcp`** — MCP server exposing Autonomi tools to Claude (runs automatically in the devcontainer).
 - **Payment modes** — uploads use `ANTD_PAYMENT_MODE=auto` by default, which lets `antd` pick merkle batch payments for larger uploads and single payments otherwise.
 - **Wallet approval** — `rust_admin` calls wallet approval on startup when `ANTD_APPROVE_ON_STARTUP=true`, so storage writes fail fast if the configured wallet cannot pay.
-- **Upload verification** — `rust_admin` reads uploaded segment data and optional original source data back before publishing a video as ready. This is slower, but prevents bad addresses from reaching the playback manifest/catalog. The default 1-second HLS chunk cadence keeps each local-devnet object small enough to avoid multi-MB storage stalls.
+- **Upload verification** — `rust_admin` reads uploaded segment data and optional original source data back before publishing a video as ready. This is slower, but prevents bad addresses from reaching the playback manifest/catalog. The local-devnet 0.75-second HLS chunk cadence keeps each test object small enough to avoid multi-MB storage stalls.
 
 Key operations used in this project:
 

@@ -184,7 +184,7 @@ impl Config {
 
         let ffmpeg_bin = env::var("FFMPEG_BIN").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe_bin = env::var("FFPROBE_BIN").unwrap_or_else(|_| "ffprobe".into());
-        let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 1.0)?;
+        let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 6.0)?;
         if hls_segment_duration <= 0.0 {
             anyhow::bail!("HLS_SEGMENT_DURATION must be greater than zero");
         }
