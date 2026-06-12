@@ -16,7 +16,10 @@ The desktop app keeps the existing service boundaries:
 On first run, the Tauri shell requires admin credentials and an Autonomi wallet
 key or key-file path. The launcher writes file-backed secrets into the app data
 directory with private file permissions and starts services with
-`AUTVID_STRICT_AUTH=true`, `APP_ENV=production`, and file-backed admin secrets.
+`AUTVID_STRICT_AUTH=true`, `APP_ENV=production`, `ADMIN_AUTH_COOKIE_SECURE=false`,
+and file-backed admin secrets. Desktop uses non-Secure auth cookies because the
+installed app talks to the local launcher over loopback HTTP; hosted HTTPS
+deployments should keep Secure cookies enabled.
 If the wallet key is pasted into first-run setup, it is stored in the app data
 directory under `secrets/autonomi-wallet-key` with private file permissions. If
 you select an existing wallet key file instead, the app stores only that file

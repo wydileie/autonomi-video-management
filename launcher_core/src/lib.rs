@@ -488,9 +488,12 @@ fn start_rust_admin(
         .env("TEMP", processing_dir)
         .env("ANTD_URL", antd_url)
         .env("RUST_ADMIN_PORT", admin_port.to_string())
-        .env("CORS_ALLOWED_ORIGINS", launcher_url)
-        .env("APP_ENV", "production")
-        .env("AUTVID_STRICT_AUTH", "true")
+        .env("CORS_ALLOWED_ORIGINS", launcher_url);
+    // The desktop launcher serves the production-built app over loopback HTTP.
+    // Keep strict auth enabled, but do not mark cookies Secure unless the
+    // browser is actually talking to the admin service over HTTPS.
+    apply_desktop_admin_auth_env(&mut command);
+    command
         .env(
             "ADMIN_DB_MIN_CONNECTIONS",
             env::var("ADMIN_DB_MIN_CONNECTIONS").unwrap_or_else(|_| "1".into()),
@@ -512,6 +515,20 @@ fn start_rust_admin(
         command.env("FFPROBE_BIN", ffprobe);
     }
     spawn("rust_admin", command, logs_dir, run_dir)
+}
+
+fn desktop_admin_auth_env() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("APP_ENV", "production"),
+        ("ADMIN_AUTH_COOKIE_SECURE", "false"),
+        ("AUTVID_STRICT_AUTH", "true"),
+    ]
+}
+
+fn apply_desktop_admin_auth_env(command: &mut Command) {
+    for (key, value) in desktop_admin_auth_env() {
+        command.env(key, value);
+    }
 }
 
 fn start_rust_stream(
@@ -1082,6 +1099,22 @@ mod tests {
         env::set_var("AUTVID_TEST_PORT", "45678");
         assert_eq!(env_port_or_available("AUTVID_TEST_PORT", 1).unwrap(), 45678);
         env::remove_var("AUTVID_TEST_PORT");
+    }
+
+    #[test]
+    fn desktop_admin_auth_env_is_applied_to_admin_command() {
+        let mut command = Command::new("rust_admin");
+        apply_desktop_admin_auth_env(&mut command);
+
+        for (expected_key, expected_value) in desktop_admin_auth_env() {
+            let value = command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new(expected_key))
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned());
+            assert_eq!(value.as_deref(), Some(*expected_value));
+        }
     }
 
     #[cfg(unix)]
