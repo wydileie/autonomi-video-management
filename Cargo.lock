@@ -813,9 +813,9 @@ dependencies = [
 
 [[package]]
 name = "ant-core"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28a73da60002c4da9d379264a955a8fca2e090d3d9ced3a5ffacbb6c3e87a205"
+checksum = "f36a0c4c5bf384aa92f635e3cd979b23a330cbcfbe22971be80a5c2894893741"
 dependencies = [
  "ant-protocol",
  "async-stream",
@@ -867,9 +867,9 @@ dependencies = [
 
 [[package]]
 name = "ant-node"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be733b3b7f5b255fae1a315e24127e385c845677cd7aba1f1cde19e791f04976"
+checksum = "b7e57398bdba4060e26a0114f1af4fc3ec8f401a1676b4899aa047d1924d075d"
 dependencies = [
  "ant-protocol",
  "blake3",
@@ -917,9 +917,9 @@ dependencies = [
 
 [[package]]
 name = "ant-protocol"
-version = "2.1.2"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e950d12c9f6d08d0ea560573729d93f15e105d53b669defa682f5e6f92da4b1"
+checksum = "f61260c89bbc0039e0643f3e2ec79b1c17aee9d81b58d7edbc52314689489f39"
 dependencies = [
  "blake3",
  "bytes",
@@ -3357,7 +3357,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -5563,9 +5563,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-core"
-version = "0.24.5"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c0f8952fc5a4d37eb0bca7de0740830f40347f9da663effde3ddd6b68bcd2fb"
+checksum = "fa8cc1b7f59f97d018760ff150bbb4f217197c41622b83f7085c9cf0424b736e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5678,9 +5678,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-transport"
-version = "0.34.2"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "852400712537856ab6fec5293be4290daf0130df0dbcb249a6e8280f9257665f"
+checksum = "621d0a207914a8fd6453f25e4bcc369914cbfaf59a2857e898c079b95f52f5bb"
 dependencies = [
  "anyhow",
  "async-trait",
