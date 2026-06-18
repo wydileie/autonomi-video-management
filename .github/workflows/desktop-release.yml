@@ -70,7 +70,7 @@ jobs:
         working-directory: desktop_app
 
       - name: Upload Linux bundles
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: autvid-linux-desktop
           path: desktop_app/src-tauri/target/release/bundle/**
@@ -155,7 +155,7 @@ jobs:
         working-directory: desktop_app
 
       - name: Upload macOS bundles
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: autvid-macos-desktop
           path: desktop_app/src-tauri/target/release/bundle/**
