@@ -867,9 +867,9 @@ dependencies = [
 
 [[package]]
 name = "ant-node"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7e57398bdba4060e26a0114f1af4fc3ec8f401a1676b4899aa047d1924d075d"
+checksum = "02e6e8f726bdc4fa307c6b4732b4b80233d231fa8cbedd6048fde6a8996a7a29"
 dependencies = [
  "ant-protocol",
  "blake3",
@@ -3357,7 +3357,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
