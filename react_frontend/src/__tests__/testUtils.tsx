@@ -3,7 +3,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { expect, vi } from "vitest";
 import App from "../App";
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
 type TestHlsMock = ReturnType<typeof vi.fn> & {
   ErrorTypes: { MEDIA_ERROR: string; NETWORK_ERROR: string };
@@ -66,10 +67,11 @@ export { mockAxios as axios, mockHls as Hls };
 export let container: HTMLDivElement;
 let root: Root | null = null;
 
-export const flushPromises = () => act(async () => {
-  await Promise.resolve();
-  await Promise.resolve();
-});
+export const flushPromises = () =>
+  act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 
 export function text(): string {
   return container.textContent;
@@ -77,8 +79,9 @@ export function text(): string {
 
 export function findButton(label: string | RegExp): HTMLButtonElement {
   const matcher = label instanceof RegExp ? label : new RegExp(label, "i");
-  const button = Array.from(container.querySelectorAll("button"))
-    .find((candidate) => matcher.test(candidate.textContent ?? ""));
+  const button = Array.from(container.querySelectorAll("button")).find((candidate) =>
+    matcher.test(candidate.textContent ?? ""),
+  );
   if (!button) throw new Error(`Unable to find button matching ${matcher}`);
   return button;
 }
@@ -112,10 +115,12 @@ export async function click(element: Element) {
 
 export async function mouseLeave(element: Element) {
   await act(async () => {
-    element.dispatchEvent(new MouseEvent("mouseout", {
-      bubbles: true,
-      relatedTarget: document.body,
-    }));
+    element.dispatchEvent(
+      new MouseEvent("mouseout", {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    );
   });
   await flushPromises();
 }

@@ -1,8 +1,6 @@
 .player-shell {
   align-items: center;
-  background:
-    linear-gradient(135deg, rgba(232, 111, 25, 0.12), transparent 42%),
-    #05070a;
+  background: linear-gradient(135deg, rgba(232, 111, 25, 0.12), transparent 42%), #05070a;
   border: 1px solid rgba(34, 40, 49, 0.32);
   border-radius: var(--radius);
   display: flex;
@@ -47,7 +45,9 @@
   position: absolute;
   right: 18px;
   transform: translateY(6px);
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
   z-index: 2;
 }
 

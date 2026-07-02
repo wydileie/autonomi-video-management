@@ -44,24 +44,26 @@ export function resolveRuntimeConfig({
   browserConfig = runtimeBrowserConfig(),
   env = import.meta.env as RuntimeEnv,
 }: ResolveRuntimeConfigOptions = {}) {
-  const apiBaseUrl = firstString(
-    browserConfig.apiBaseUrl,
-    browserConfig.apiUrl,
-    browserConfig.REACT_APP_API_URL,
-    browserConfig.VITE_API_URL,
-    env.REACT_APP_API_URL,
-    env.VITE_API_URL,
-    DEFAULT_API_BASE_URL,
-  ) ?? DEFAULT_API_BASE_URL;
-  const streamBaseUrl = firstString(
-    browserConfig.streamBaseUrl,
-    browserConfig.streamUrl,
-    browserConfig.REACT_APP_STREAM_URL,
-    browserConfig.VITE_STREAM_URL,
-    env.REACT_APP_STREAM_URL,
-    env.VITE_STREAM_URL,
-    DEFAULT_STREAM_BASE_URL,
-  ) ?? DEFAULT_STREAM_BASE_URL;
+  const apiBaseUrl =
+    firstString(
+      browserConfig.apiBaseUrl,
+      browserConfig.apiUrl,
+      browserConfig.REACT_APP_API_URL,
+      browserConfig.VITE_API_URL,
+      env.REACT_APP_API_URL,
+      env.VITE_API_URL,
+      DEFAULT_API_BASE_URL,
+    ) ?? DEFAULT_API_BASE_URL;
+  const streamBaseUrl =
+    firstString(
+      browserConfig.streamBaseUrl,
+      browserConfig.streamUrl,
+      browserConfig.REACT_APP_STREAM_URL,
+      browserConfig.VITE_STREAM_URL,
+      env.REACT_APP_STREAM_URL,
+      env.VITE_STREAM_URL,
+      DEFAULT_STREAM_BASE_URL,
+    ) ?? DEFAULT_STREAM_BASE_URL;
 
   return {
     apiBaseUrl: normalizeBaseUrl(apiBaseUrl),

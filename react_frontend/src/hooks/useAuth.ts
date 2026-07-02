@@ -25,18 +25,22 @@ export default function useAuth(onInvalid?: () => void) {
     setAuth(merged);
   }, []);
 
-  useEffect(() => subscribeAuthRefresh((nextAuth) => {
-    if (nextAuth) {
-      authRef.current = nextAuth;
-      setAuth(nextAuth);
-      return;
-    }
+  useEffect(
+    () =>
+      subscribeAuthRefresh((nextAuth) => {
+        if (nextAuth) {
+          authRef.current = nextAuth;
+          setAuth(nextAuth);
+          return;
+        }
 
-    const hadAuth = !!authRef.current;
-    authRef.current = null;
-    setAuth(null);
-    if (hadAuth) onInvalidRef.current?.();
-  }), []);
+        const hadAuth = !!authRef.current;
+        authRef.current = null;
+        setAuth(null);
+        if (hadAuth) onInvalidRef.current?.();
+      }),
+    [],
+  );
 
   useEffect(() => {
     let active = true;
@@ -65,9 +69,12 @@ export default function useAuth(onInvalid?: () => void) {
     };
   }, [applyAuth]);
 
-  const login = useCallback(async (nextAuth: AuthState) => {
-    await applyAuth(nextAuth);
-  }, [applyAuth]);
+  const login = useCallback(
+    async (nextAuth: AuthState) => {
+      await applyAuth(nextAuth);
+    },
+    [applyAuth],
+  );
 
   const logout = useCallback(() => {
     authRef.current = null;

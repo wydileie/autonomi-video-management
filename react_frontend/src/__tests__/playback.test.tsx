@@ -84,8 +84,9 @@ test("shows a playback error when HLS segment loading fails", async () => {
   await waitFor(() => expect(text()).toContain("Broken stream"));
   await click(findButton("Broken stream"));
 
-  const errorHandler = hlsInstance.on.mock.calls
-    .find(([eventName]) => eventName === Hls.Events.ERROR)[1];
+  const errorHandler = hlsInstance.on.mock.calls.find(
+    ([eventName]) => eventName === Hls.Events.ERROR,
+  )[1];
   await act(async () => {
     errorHandler(Hls.Events.ERROR, { fatal: true });
   });
@@ -129,14 +130,17 @@ test("configures hls.js retries and recovers fatal network and media errors", as
   await waitFor(() => expect(text()).toContain("Retry stream"));
   await click(findButton("Retry stream"));
 
-  expect(Hls).toHaveBeenCalledWith(expect.objectContaining({
-    fragLoadingMaxRetry: 4,
-    levelLoadingMaxRetry: 4,
-    manifestLoadingMaxRetry: 4,
-  }));
+  expect(Hls).toHaveBeenCalledWith(
+    expect.objectContaining({
+      fragLoadingMaxRetry: 4,
+      levelLoadingMaxRetry: 4,
+      manifestLoadingMaxRetry: 4,
+    }),
+  );
 
-  const errorHandler = hlsInstance.on.mock.calls
-    .find(([eventName]) => eventName === Hls.Events.ERROR)[1];
+  const errorHandler = hlsInstance.on.mock.calls.find(
+    ([eventName]) => eventName === Hls.Events.ERROR,
+  )[1];
   await act(async () => {
     errorHandler(Hls.Events.ERROR, { fatal: true, type: Hls.ErrorTypes.NETWORK_ERROR });
   });
@@ -377,9 +381,9 @@ test("honors a manual scrub to the beginning while hls.js reloads after a resolu
 
 test("waits for native HLS duration before seeking after a resolution change", async () => {
   Hls.isSupported.mockReturnValue(false);
-  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
-    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
-  ));
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) =>
+    type === "application/vnd.apple.mpegurl" ? "maybe" : "",
+  );
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
     this.currentTime = 0;
   });
@@ -452,9 +456,9 @@ test("waits for native HLS duration before seeking after a resolution change", a
 
 test("honors a manual scrub to the beginning while native HLS reloads after a resolution change", async () => {
   Hls.isSupported.mockReturnValue(false);
-  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
-    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
-  ));
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) =>
+    type === "application/vnd.apple.mpegurl" ? "maybe" : "",
+  );
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
     this.currentTime = 0;
   });
@@ -515,9 +519,9 @@ test("honors a manual scrub to the beginning while native HLS reloads after a re
 
 test("resumes native HLS after a scrub near the beginning once a resolution change has settled", async () => {
   Hls.isSupported.mockReturnValue(false);
-  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) => (
-    type === "application/vnd.apple.mpegurl" ? "maybe" : ""
-  ));
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockImplementation((type) =>
+    type === "application/vnd.apple.mpegurl" ? "maybe" : "",
+  );
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function load() {
     this.currentTime = 0;
   });

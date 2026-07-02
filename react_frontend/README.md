@@ -12,9 +12,9 @@ Single-page React application for uploading videos, monitoring processing status
 
 Set via Docker Compose `build.args` in `docker-compose.yml` — these are baked into the static build at image build time.
 
-| Variable | Default | Description |
-|---|---|---|
-| `REACT_APP_API_URL` | `/api` | Base URL for the Rust admin API |
+| Variable               | Default   | Description                             |
+| ---------------------- | --------- | --------------------------------------- |
+| `REACT_APP_API_URL`    | `/api`    | Base URL for the Rust admin API         |
 | `REACT_APP_STREAM_URL` | `/stream` | Base URL for the Rust streaming service |
 
 ## Runtime browser configuration
@@ -65,12 +65,12 @@ The production Dockerfile uses a multi-stage build: Node 24 Bookworm Slim builds
 
 ## Dependencies
 
-| Package | Purpose |
-|---|---|
-| `react` / `react-dom` | UI framework |
-| `hls.js` | HLS adaptive streaming player |
-| `axios` | HTTP requests to the admin API |
-| `vite` / `vitest` | Build tooling and unit test runner |
+| Package               | Purpose                            |
+| --------------------- | ---------------------------------- |
+| `react` / `react-dom` | UI framework                       |
+| `hls.js`              | HLS adaptive streaming player      |
+| `axios`               | HTTP requests to the admin API     |
+| `vite` / `vitest`     | Build tooling and unit test runner |
 
 ## Project structure
 
@@ -107,11 +107,11 @@ src/
 
 The frontend is split by responsibility:
 
-| Area | Description |
-|---|---|
-| `App.jsx` | Root shell, tab state, and top navigation |
-| `api/client.js` | Axios calls for auth, upload quotes/uploads, admin actions, and catalog reads |
-| `components/` | Upload, library, login, final quote, and HLS player UI |
-| `hooks/useAuth.js` | Local token storage and `/auth/me` validation |
-| `utils/` | Formatting, status, and resolution ladder helpers |
-| `styles/` | Smaller CSS files grouped by surface |
+| Area               | Description                                                                   |
+| ------------------ | ----------------------------------------------------------------------------- |
+| `App.jsx`          | Root shell, tab state, and top navigation                                     |
+| `api/client.js`    | Axios calls for auth, upload quotes/uploads, admin actions, and catalog reads |
+| `components/`      | Upload, library, login, final quote, and HLS player UI                        |
+| `hooks/useAuth.js` | Local token storage and `/auth/me` validation                                 |
+| `utils/`           | Formatting, status, and resolution ladder helpers                             |
+| `styles/`          | Smaller CSS files grouped by surface                                          |

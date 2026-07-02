@@ -37,11 +37,20 @@ export default function LoginPanel({ onLogin }: LoginPanelProps) {
           <form onSubmit={submit} className="login-form">
             <label>
               <span>Username</span>
-              <input value={username} onChange={(event) => setUsername(event.target.value)} disabled={loading} />
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                disabled={loading}
+              />
             </label>
             <label>
               <span>Password</span>
-              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={loading} />
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={loading}
+              />
             </label>
             {error && <div className="error-box">{error}</div>}
             <button className="primary-action" type="submit" disabled={loading}>

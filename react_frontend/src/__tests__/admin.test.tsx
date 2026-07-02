@@ -89,9 +89,7 @@ test("approves an awaiting upload and deletes the video through admin controls",
   expect(window.confirm).toHaveBeenCalledWith(
     "Delete this video record and remove it from the network catalog?",
   );
-  expect(axios.delete).toHaveBeenCalledWith(
-    "/admin/videos/vid-approval",
-  );
+  expect(axios.delete).toHaveBeenCalledWith("/admin/videos/vid-approval");
   expect(text()).not.toContain("Needs approval");
 });
 
@@ -115,12 +113,14 @@ test("polls the admin library while videos are actively processing", async () =>
     if (url === "/admin/videos") {
       adminListCalls += 1;
       return Promise.resolve({
-        data: [{
-          created_at: "2026-04-27T12:00:00Z",
-          id: "vid-processing",
-          status: "processing",
-          title: `Processing ${adminListCalls}`,
-        }],
+        data: [
+          {
+            created_at: "2026-04-27T12:00:00Z",
+            id: "vid-processing",
+            status: "processing",
+            title: `Processing ${adminListCalls}`,
+          },
+        ],
       });
     }
     return Promise.reject(new Error(`Unexpected GET ${url}`));
@@ -220,17 +220,15 @@ test("publishes and unpublishes ready videos from admin controls", async () => {
   await click(findButton("Publication test"));
 
   await click(findButton(/^Publish$/));
-  expect(axios.patch).toHaveBeenCalledWith(
-    "/admin/videos/admin-publication/publication",
-    { is_public: true },
-  );
+  expect(axios.patch).toHaveBeenCalledWith("/admin/videos/admin-publication/publication", {
+    is_public: true,
+  });
   expect(text()).toContain("Unpublish");
 
   await click(findButton("Unpublish"));
-  expect(axios.patch).toHaveBeenCalledWith(
-    "/admin/videos/admin-publication/publication",
-    { is_public: false },
-  );
+  expect(axios.patch).toHaveBeenCalledWith("/admin/videos/admin-publication/publication", {
+    is_public: false,
+  });
   expect(text()).toContain("Publish");
 });
 
@@ -293,8 +291,9 @@ test("shows detail, delete, and visibility failures without removing the current
   expect(text()).toContain("Delete refused");
   expect(text()).toContain("Admin stream");
 
-  const publishFilename = Array.from(container.querySelectorAll(".visibility-panel input"))
-    .find((input) => input.type === "checkbox");
+  const publishFilename = Array.from(container.querySelectorAll(".visibility-panel input")).find(
+    (input) => input.type === "checkbox",
+  );
   await act(async () => {
     publishFilename.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });

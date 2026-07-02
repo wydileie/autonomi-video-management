@@ -58,16 +58,19 @@ export default function Library({ admin = false }: LibraryProps) {
     }
   }, [admin]);
 
-  const loadDetail = useCallback(async (videoId: string) => {
-    setDetailError("");
-    setActionError("");
-    try {
-      const data = await getVideoDetails({ admin, videoId });
-      setDetail(data);
-    } catch (err) {
-      setDetailError(requestErrorMessage(err, "Could not load video details."));
-    }
-  }, [admin]);
+  const loadDetail = useCallback(
+    async (videoId: string) => {
+      setDetailError("");
+      setActionError("");
+      try {
+        const data = await getVideoDetails({ admin, videoId });
+        setDetail(data);
+      } catch (err) {
+        setDetailError(requestErrorMessage(err, "Could not load video details."));
+      }
+    },
+    [admin],
+  );
 
   const loadCatalogs = useCallback(async () => {
     if (!admin) return;
@@ -188,7 +191,9 @@ export default function Library({ admin = false }: LibraryProps) {
     try {
       const data = await updateVideoVisibility(videoId, next);
       setDetail(data);
-      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
+      setVideos((prev) =>
+        prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)),
+      );
       await loadCatalogs();
     } catch (err) {
       setActionError(requestErrorMessage(err, "Visibility update failed."));
@@ -201,7 +206,9 @@ export default function Library({ admin = false }: LibraryProps) {
     try {
       const data = await updateVideoPublication(videoId, isPublic);
       setDetail(data);
-      setVideos((prev) => prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)));
+      setVideos((prev) =>
+        prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)),
+      );
       await loadCatalogs();
     } catch (err) {
       setActionError(requestErrorMessage(err, isPublic ? "Publish failed." : "Unpublish failed."));
@@ -255,7 +262,9 @@ export default function Library({ admin = false }: LibraryProps) {
       <div className="empty-state">
         <span className="empty-icon" aria-hidden="true" />
         <strong>
-          {admin ? "No videos yet. Upload one to build your first stream." : "No videos are available yet."}
+          {admin
+            ? "No videos yet. Upload one to build your first stream."
+            : "No videos are available yet."}
         </strong>
       </div>
     );
@@ -267,9 +276,15 @@ export default function Library({ admin = false }: LibraryProps) {
       <div className="library-head">
         <div>
           <h2>AutVid library</h2>
-          <p>{admin ? "Manage processing, publishing, and public metadata." : "Browse published streams."}</p>
+          <p>
+            {admin
+              ? "Manage processing, publishing, and public metadata."
+              : "Browse published streams."}
+          </p>
         </div>
-        <span>{videos.length} video{videos.length === 1 ? "" : "s"}</span>
+        <span>
+          {videos.length} video{videos.length === 1 ? "" : "s"}
+        </span>
       </div>
       {loadError && <div className="error-box">{loadError}</div>}
       {detailError && <div className="error-box">{detailError}</div>}
@@ -282,7 +297,8 @@ export default function Library({ admin = false }: LibraryProps) {
             <div>
               <strong>Portable catalogs</strong>
               <span>
-                Published {catalogs?.published_catalog?.videos.length ?? 0} / all {catalogs?.all_catalog?.videos.length ?? 0}
+                Published {catalogs?.published_catalog?.videos.length ?? 0} / all{" "}
+                {catalogs?.all_catalog?.videos.length ?? 0}
               </span>
             </div>
             <button
@@ -345,19 +361,26 @@ export default function Library({ admin = false }: LibraryProps) {
                     onApprove={() => approveVideo(video.id)}
                   />
                 ) : admin && detail.status === "uploading" ? (
-                  <p className="muted">Uploading approved segments and publishing the network manifest...</p>
+                  <p className="muted">
+                    Uploading approved segments and publishing the network manifest...
+                  </p>
                 ) : admin && (detail.status === "processing" || detail.status === "pending") ? (
                   <p className="muted">Processing renditions and preparing the final quote...</p>
                 ) : admin && (detail.status === "error" || detail.status === "expired") ? (
-                  <p className="muted">{detail.error_message || "This video could not be completed."}</p>
+                  <p className="muted">
+                    {detail.error_message || "This video could not be completed."}
+                  </p>
                 ) : detail.variants.length === 0 ? (
                   <p className="muted">No variants available.</p>
                 ) : (
                   <>
                     {(() => {
-                      const selectedVariant = detail.variants.find((variant) => (
-                        playing?.videoId === video.id && playing?.resolution === variant.resolution
-                      )) || detail.variants[0];
+                      const selectedVariant =
+                        detail.variants.find(
+                          (variant) =>
+                            playing?.videoId === video.id &&
+                            playing?.resolution === variant.resolution,
+                        ) || detail.variants[0];
 
                       return (
                         <VideoPlayer
@@ -365,10 +388,12 @@ export default function Library({ admin = false }: LibraryProps) {
                           manifestAddress={admin ? detail.manifest_address : null}
                           variants={detail.variants}
                           resolution={selectedVariant.resolution}
-                          onResolutionChange={(nextResolution) => setPlaying({
-                            videoId: video.id,
-                            resolution: nextResolution,
-                          })}
+                          onResolutionChange={(nextResolution) =>
+                            setPlaying({
+                              videoId: video.id,
+                              resolution: nextResolution,
+                            })
+                          }
                         />
                       );
                     })()}
@@ -380,13 +405,17 @@ export default function Library({ admin = false }: LibraryProps) {
                       <div className="publication-panel">
                         <button
                           type="button"
-                          className={detail.is_public ? "secondary-action" : "primary-action compact-action"}
+                          className={
+                            detail.is_public ? "secondary-action" : "primary-action compact-action"
+                          }
                           disabled={publishing === video.id}
                           onClick={() => updatePublication(video.id, !detail.is_public)}
                         >
                           {publishing === video.id
                             ? "Updating..."
-                            : detail.is_public ? "Unpublish" : "Publish"}
+                            : detail.is_public
+                              ? "Unpublish"
+                              : "Publish"}
                         </button>
                         <span className={`status ${detail.is_public ? "public" : "private"}`}>
                           {detail.is_public ? "public" : "hidden"}
@@ -398,10 +427,12 @@ export default function Library({ admin = false }: LibraryProps) {
                         <input
                           type="checkbox"
                           checked={!!detail.show_manifest_address}
-                          onChange={(event) => updateVisibility(video.id, {
-                            show_original_filename: false,
-                            show_manifest_address: event.target.checked,
-                          })}
+                          onChange={(event) =>
+                            updateVisibility(video.id, {
+                              show_original_filename: false,
+                              show_manifest_address: event.target.checked,
+                            })
+                          }
                         />
                         <span>Publish manifest address</span>
                       </label>
@@ -417,7 +448,11 @@ export default function Library({ admin = false }: LibraryProps) {
                       )}
                     </div>
                     {admin && (
-                      <button type="button" className="danger-action" onClick={(event) => deleteVideo(video.id, event)}>
+                      <button
+                        type="button"
+                        className="danger-action"
+                        onClick={(event) => deleteVideo(video.id, event)}
+                      >
                         Delete
                       </button>
                     )}

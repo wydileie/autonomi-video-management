@@ -97,10 +97,13 @@ export default function VideoPlayer({
     capturePlaybackStateFromVideo(video);
   }, [capturePlaybackStateFromVideo]);
 
-  const handleResolutionChange = useCallback((nextResolution: string) => {
-    capturePlaybackState();
-    onResolutionChange(nextResolution);
-  }, [capturePlaybackState, onResolutionChange]);
+  const handleResolutionChange = useCallback(
+    (nextResolution: string) => {
+      capturePlaybackState();
+      onResolutionChange(nextResolution);
+    },
+    [capturePlaybackState, onResolutionChange],
+  );
 
   useEffect(() => {
     const video = videoRef.current;
@@ -118,17 +121,12 @@ export default function VideoPlayer({
     let nativeSeekRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
     let nativeSeekResumeAt = 0;
     let nativeSeekShouldResume = false;
-    const readCurrentTime = () => (
-      Number.isFinite(video.currentTime) ? video.currentTime : 0
-    );
+    const readCurrentTime = () => (Number.isFinite(video.currentTime) ? video.currentTime : 0);
     const seekVideoTo = (targetTime: number) => {
       if (targetTime <= 0) return;
 
       const duration = video.duration;
-      if (
-        Number.isFinite(duration) &&
-        duration <= targetTime + RESUME_DURATION_TOLERANCE_SECONDS
-      ) {
+      if (Number.isFinite(duration) && duration <= targetTime + RESUME_DURATION_TOLERANCE_SECONDS) {
         return;
       }
 
@@ -150,9 +148,7 @@ export default function VideoPlayer({
         nativeSeekRecoveryTimer = null;
       }
     };
-    const wantsPlayback = () => (
-      playbackIntentRef.current || (!video.paused && !video.ended)
-    );
+    const wantsPlayback = () => playbackIntentRef.current || (!video.paused && !video.ended);
     const requestPlayback = () => {
       playbackIntentRef.current = true;
       video.play().catch(() => {});
@@ -167,7 +163,9 @@ export default function VideoPlayer({
 
         if (video.paused || video.readyState < MEDIA_HAVE_FUTURE_DATA) {
           try {
-            if (Math.abs(readCurrentTime() - nativeSeekResumeAt) > RESUME_DURATION_TOLERANCE_SECONDS) {
+            if (
+              Math.abs(readCurrentTime() - nativeSeekResumeAt) > RESUME_DURATION_TOLERANCE_SECONDS
+            ) {
               video.currentTime = nativeSeekResumeAt;
             }
           } catch {
@@ -238,9 +236,7 @@ export default function VideoPlayer({
       };
       const rememberNativeSeekIntent = () => {
         nativeSeekResumeAt = readCurrentTime();
-        nativeSeekShouldResume = restorePending
-          ? wantsPlayback() || shouldResume
-          : wantsPlayback();
+        nativeSeekShouldResume = restorePending ? wantsPlayback() || shouldResume : wantsPlayback();
         if (nativeSeekShouldResume) scheduleNativeSeekRecovery();
       };
       const resumeAfterNativeSeek = () => {
@@ -295,98 +291,100 @@ export default function VideoPlayer({
       };
     };
 
-    import("hls.js").then(({ default: Hls }) => {
-      if (!active) return;
-      if (Hls.isSupported()) {
-        let mediaRecoveryAttempts = 0;
-        let networkRecoveryAttempts = 0;
-        const hls = new Hls({
-          enableWorker: true,
-          ...HLS_RETRY_CONFIG,
-          autoStartLoad: resumeAt > 0 ? false : true,
-          lowLatencyMode: false,
-          startPosition: resumeAt > 0 ? resumeAt : -1,
-        });
-        hlsRef.current = hls;
-        hls.loadSource(src);
-        hls.attachMedia(video);
-        video.addEventListener("canplay", finishRestore);
-        video.addEventListener("playing", finishRestore);
-        video.addEventListener("seeking", syncPendingSeek);
-        const hlsLoadPosition = () => {
-          const currentTime = readCurrentTime();
-          if (
-            restorePending &&
-            pendingResumeAt > RESUME_DURATION_TOLERANCE_SECONDS &&
-            currentTime <= RESUME_DURATION_TOLERANCE_SECONDS
-          ) {
-            return pendingResumeAt;
-          }
-          return currentTime > 0 ? currentTime : 0;
-        };
-        const recoverHlsPlayback = () => {
-          if (!active || video.ended || video.paused || !wantsPlayback()) return;
-          const loadPosition = hlsLoadPosition();
-          hls.startLoad(loadPosition);
-          seekVideoTo(loadPosition);
-        };
-        video.addEventListener("stalled", recoverHlsPlayback);
-        video.addEventListener("waiting", recoverHlsPlayback);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          hlsManifestParsed = true;
-          if (restorePending) {
+    import("hls.js")
+      .then(({ default: Hls }) => {
+        if (!active) return;
+        if (Hls.isSupported()) {
+          let mediaRecoveryAttempts = 0;
+          let networkRecoveryAttempts = 0;
+          const hls = new Hls({
+            enableWorker: true,
+            ...HLS_RETRY_CONFIG,
+            autoStartLoad: resumeAt > 0 ? false : true,
+            lowLatencyMode: false,
+            startPosition: resumeAt > 0 ? resumeAt : -1,
+          });
+          hlsRef.current = hls;
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          video.addEventListener("canplay", finishRestore);
+          video.addEventListener("playing", finishRestore);
+          video.addEventListener("seeking", syncPendingSeek);
+          const hlsLoadPosition = () => {
+            const currentTime = readCurrentTime();
+            if (
+              restorePending &&
+              pendingResumeAt > RESUME_DURATION_TOLERANCE_SECONDS &&
+              currentTime <= RESUME_DURATION_TOLERANCE_SECONDS
+            ) {
+              return pendingResumeAt;
+            }
+            return currentTime > 0 ? currentTime : 0;
+          };
+          const recoverHlsPlayback = () => {
+            if (!active || video.ended || video.paused || !wantsPlayback()) return;
             const loadPosition = hlsLoadPosition();
             hls.startLoad(loadPosition);
             seekVideoTo(loadPosition);
-          }
-          resumePlayback();
-        });
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data?.fatal) {
-            if (
-              data.type === Hls.ErrorTypes.NETWORK_ERROR
-              && networkRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
-            ) {
-              networkRecoveryAttempts += 1;
+          };
+          video.addEventListener("stalled", recoverHlsPlayback);
+          video.addEventListener("waiting", recoverHlsPlayback);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            hlsManifestParsed = true;
+            if (restorePending) {
               const loadPosition = hlsLoadPosition();
               hls.startLoad(loadPosition);
               seekVideoTo(loadPosition);
-              return;
             }
+            resumePlayback();
+          });
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (data?.fatal) {
+              if (
+                data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+                networkRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
+              ) {
+                networkRecoveryAttempts += 1;
+                const loadPosition = hlsLoadPosition();
+                hls.startLoad(loadPosition);
+                seekVideoTo(loadPosition);
+                return;
+              }
 
-            if (
-              data.type === Hls.ErrorTypes.MEDIA_ERROR
-              && mediaRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
-            ) {
-              mediaRecoveryAttempts += 1;
-              seekVideoTo(hlsLoadPosition());
-              hls.recoverMediaError();
-              return;
+              if (
+                data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+                mediaRecoveryAttempts < HLS_FATAL_RECOVERY_ATTEMPTS
+              ) {
+                mediaRecoveryAttempts += 1;
+                seekVideoTo(hlsLoadPosition());
+                hls.recoverMediaError();
+                return;
+              }
+
+              setPlaybackError("Playback failed because the video segments could not be loaded.");
             }
+          });
+          cleanupPlayback = () => {
+            video.removeEventListener("canplay", finishRestore);
+            video.removeEventListener("playing", finishRestore);
+            video.removeEventListener("seeking", syncPendingSeek);
+            video.removeEventListener("stalled", recoverHlsPlayback);
+            video.removeEventListener("waiting", recoverHlsPlayback);
+            hls.destroy();
+            hlsRef.current = null;
+          };
+          return;
+        }
 
-            setPlaybackError("Playback failed because the video segments could not be loaded.");
-          }
-        });
-        cleanupPlayback = () => {
-          video.removeEventListener("canplay", finishRestore);
-          video.removeEventListener("playing", finishRestore);
-          video.removeEventListener("seeking", syncPendingSeek);
-          video.removeEventListener("stalled", recoverHlsPlayback);
-          video.removeEventListener("waiting", recoverHlsPlayback);
-          hls.destroy();
-          hlsRef.current = null;
-        };
-        return;
-      }
-
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        attachNativePlayback();
-      }
-    }).catch(() => {
-      if (active && video.canPlayType("application/vnd.apple.mpegurl")) {
-        attachNativePlayback();
-      }
-    });
+        if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          attachNativePlayback();
+        }
+      })
+      .catch(() => {
+        if (active && video.canPlayType("application/vnd.apple.mpegurl")) {
+          attachNativePlayback();
+        }
+      });
 
     return () => {
       active = false;

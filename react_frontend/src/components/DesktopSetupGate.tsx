@@ -15,9 +15,9 @@ interface DesktopSetupGateProps {
 type GateState = "checking" | "setup" | "starting" | "ready" | "error";
 
 export default function DesktopSetupGate({ children }: DesktopSetupGateProps) {
-  const [gateState, setGateState] = useState<GateState>(() => (
-    isDesktopRuntime() ? "checking" : "ready"
-  ));
+  const [gateState, setGateState] = useState<GateState>(() =>
+    isDesktopRuntime() ? "checking" : "ready",
+  );
   const [adminUsername, setAdminUsername] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [walletKey, setWalletKey] = useState("");
@@ -86,7 +86,11 @@ export default function DesktopSetupGate({ children }: DesktopSetupGateProps) {
           <div className="section-kicker">Desktop</div>
           <h1>{gateState === "checking" ? "Checking setup..." : "Starting local services..."}</h1>
           {launcherUrl && (
-            <button type="button" className="secondary-action" onClick={() => desktopOpenInBrowser(launcherUrl)}>
+            <button
+              type="button"
+              className="secondary-action"
+              onClick={() => desktopOpenInBrowser(launcherUrl)}
+            >
               Open in browser
             </button>
           )}
@@ -116,7 +120,11 @@ export default function DesktopSetupGate({ children }: DesktopSetupGateProps) {
         <form className="login-form" onSubmit={submit}>
           <label>
             <span>Admin username</span>
-            <input value={adminUsername} onChange={(event) => setAdminUsername(event.target.value)} required />
+            <input
+              value={adminUsername}
+              onChange={(event) => setAdminUsername(event.target.value)}
+              required
+            />
           </label>
           <label>
             <span>Admin password</span>
@@ -146,7 +154,9 @@ export default function DesktopSetupGate({ children }: DesktopSetupGateProps) {
             />
           </label>
           {error && <div className="error-box">{error}</div>}
-          <button className="primary-action" type="submit">Save and start</button>
+          <button className="primary-action" type="submit">
+            Save and start
+          </button>
         </form>
       </section>
     </main>
