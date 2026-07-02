@@ -1,0 +1,52 @@
+# cargo-deny configuration — supply-chain policy for the Rust workspace.
+# Run locally with `cargo deny check` (see Makefile target `deny-rust`).
+
+[advisories]
+version = 2
+yanked = "deny"
+# Every ignore must state why it cannot be fixed locally. Revisit whenever the
+# pinned ant-* / jsonwebtoken dependencies are bumped.
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa timing sidechannel via jsonwebtoken's rust_crypto backend; no patched rsa release exists yet" },
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill unmaintained; transitive via pinned ant-* crates" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via pinned ant-* crates" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; transitive via ant-node -> saorsa-transport" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; transitive via pinned ant-* crates" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; transitive via pinned ant-* crates" },
+]
+
+[licenses]
+version = 2
+# The project itself is GPL-3.0; permissive and copyleft-compatible dependency
+# licenses are allowed. AGPL-3.0 covers saorsa-core (Autonomi protocol stack);
+# CDLA-Permissive-2.0 covers the webpki-roots CA bundles used by rustls.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "GPL-3.0",
+    "AGPL-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+# Workspace crates are publish = false; their GPL-3.0-only license is declared
+# via [workspace.package] in Cargo.toml.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Version-less path dependencies between workspace crates are intentional.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

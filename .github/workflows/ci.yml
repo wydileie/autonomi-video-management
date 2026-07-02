@@ -30,6 +30,46 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  cargo-deny:
+    name: Cargo deny (advisories, licenses, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  desktop-check:
+    name: Desktop app compile check
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libwebkit2gtk-4.1-dev \
+            protobuf-compiler
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: desktop_app/src-tauri
+
+      - name: Check desktop app
+        run: cargo check --manifest-path desktop_app/src-tauri/Cargo.toml
+
   rust-admin-db:
     name: Rust admin SQLite integration tests
     runs-on: ubuntu-latest
@@ -66,6 +106,10 @@ jobs:
 
       - name: Lint
         run: npm run lint
+        working-directory: react_frontend
+
+      - name: Check formatting
+        run: npm run format:check
         working-directory: react_frontend
 
       - name: Build
@@ -136,32 +180,12 @@ jobs:
       - name: Render production Compose config
         run: docker compose --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
 
-  advisory-scans:
-    name: Advisory scans (non-blocking)
+  security-audit:
+    name: Security audits (blocking)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.1
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked || echo "::warning::cargo-audit installation failed; Rust audit will be skipped"
-        continue-on-error: true
-
-      - name: Run cargo audit
-        run: |
-          if command -v cargo-audit >/dev/null 2>&1; then
-            cargo audit
-          else
-            echo "::warning::cargo-audit is not installed; skipping Rust advisory scan"
-          fi
-        continue-on-error: true
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -177,11 +201,9 @@ jobs:
       - name: Run npm production audit
         run: npm audit --omit=dev
         working-directory: react_frontend
-        continue-on-error: true
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
-        continue-on-error: true
         with:
           scan-type: fs
           scan-ref: .

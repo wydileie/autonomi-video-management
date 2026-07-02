@@ -167,6 +167,7 @@ fn file_sha256(path: &FsPath) -> Result<(u64, String), ApiError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use std::io::Write;
 

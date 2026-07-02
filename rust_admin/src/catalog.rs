@@ -17,6 +17,7 @@ pub(crate) use sync::{
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use std::{
         fs,
         net::SocketAddr,

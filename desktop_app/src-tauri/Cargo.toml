@@ -2,6 +2,12 @@
 name = "autvid_desktop"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+# Workspace-excluded crate: mirror [workspace.lints.clippy] from the repo root
+[lints.clippy]
+unwrap_used = "warn"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

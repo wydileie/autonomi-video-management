@@ -165,7 +165,6 @@ impl AntdRestClient {
                             "Autonomi cost estimate failed for {quote_size} quote bytes: {err}"
                         ));
                     }
-                    last_error = Some(err);
                     if attempt < COST_ESTIMATE_ATTEMPTS {
                         self.record_upload_retry();
                         let delay = jitter_duration(Duration::from_millis(
@@ -176,11 +175,12 @@ impl AntdRestClient {
                             attempt,
                             COST_ESTIMATE_ATTEMPTS,
                             quote_size,
-                            last_error.as_ref().unwrap(),
+                            err,
                             delay.as_millis()
                         );
                         sleep(delay).await;
                     }
+                    last_error = Some(err);
                 }
             }
         }
@@ -407,6 +407,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use std::{
         collections::HashMap,
         sync::{

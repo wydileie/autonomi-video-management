@@ -103,6 +103,7 @@ impl CostCache {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     fn response(cost: &str) -> DataCostResponse {

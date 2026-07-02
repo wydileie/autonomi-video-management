@@ -352,6 +352,7 @@ fn default_segment_container() -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::{
         JobKind, ManifestSegment, ManifestVariant, PublicCatalogDocument, PublicCatalogVariant,
         PublicCatalogVideo, VideoManifestDocument,

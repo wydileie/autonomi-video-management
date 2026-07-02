@@ -1060,6 +1060,7 @@ fn is_unsafe_admin_auth_value(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

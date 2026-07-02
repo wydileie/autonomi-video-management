@@ -1,4 +1,4 @@
-.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust fmt-react deny-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -26,6 +26,8 @@ help:
 	@echo "  make clippy-rust-admin Run Rust admin clippy checks"
 	@echo "  make clippy-antd     Run antd service clippy checks"
 	@echo "  make fmt-rust        Check Rust formatting"
+	@echo "  make fmt-react       Check React/TypeScript formatting with Prettier"
+	@echo "  make deny-rust       Run cargo-deny supply-chain checks"
 	@echo "  make compose-config  Validate Compose render paths"
 	@echo "  make up-local        Start local devnet stack in the background"
 	@echo "  make up-local-full   Start local devnet stack with monitoring and logging"
@@ -91,6 +93,16 @@ clippy-antd:
 
 fmt-rust:
 	$(CARGO) fmt --all --check
+
+fmt-react:
+	cd react_frontend && $(NPM) run format:check
+
+deny-rust:
+	@if command -v cargo-deny >/dev/null 2>&1; then \
+		$(CARGO) deny check; \
+	else \
+		echo "cargo-deny is not installed; run 'cargo install cargo-deny --locked'"; \
+	fi
 
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
@@ -208,4 +220,4 @@ audit: audit-rust audit-react audit-trivy
 
 test: test-rust test-react
 
-ci: fmt-rust test-rust clippy-rust install-react lint-react build-react test-react compose-config
+ci: fmt-rust deny-rust test-rust clippy-rust install-react lint-react fmt-react build-react test-react compose-config
