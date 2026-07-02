@@ -2,8 +2,8 @@ services:
   antd:
     image: autonomi-video-management-antd-service
     build:
-      context: .
-      dockerfile: antd_service/Dockerfile
+      context: ..
+      dockerfile: crates/antd_service/Dockerfile
     container_name: antd_daemon
     environment:
       # For production secret-file use, mount the file with an optional
@@ -127,10 +127,10 @@ services:
 
 secrets:
   admin_login_password:
-    file: "${ADMIN_LOGIN_PASSWORD_SECRET_FILE:-./secrets/admin_login_password}"
+    file: "${ADMIN_LOGIN_PASSWORD_SECRET_FILE:-../secrets/admin_login_password}"
   admin_auth_secret:
-    file: "${ADMIN_AUTH_SECRET_SECRET_FILE:-./secrets/admin_auth_secret}"
+    file: "${ADMIN_AUTH_SECRET_SECRET_FILE:-../secrets/admin_auth_secret}"
   antd_internal_token:
-    file: "${ANTD_INTERNAL_TOKEN_SECRET_FILE:-./secrets/antd_internal_token}"
+    file: "${ANTD_INTERNAL_TOKEN_SECRET_FILE:-../secrets/antd_internal_token}"
   autonomi_wallet_key:
-    file: "${AUTONOMI_WALLET_KEY_SECRET_FILE:-./secrets/autonomi_wallet_key}"
+    file: "${AUTONOMI_WALLET_KEY_SECRET_FILE:-../secrets/autonomi_wallet_key}"

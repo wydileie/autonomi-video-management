@@ -11,8 +11,8 @@ Check recent worker logs and admin health first:
 make logs-prod
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec rust_admin /usr/local/bin/rust_admin --healthcheck 127.0.0.1:8000 /health
 ```
 
@@ -23,8 +23,8 @@ app-data processing directory.
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   restart rust_admin
 ```
 
@@ -39,8 +39,8 @@ Check cleanup timing:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   logs --tail=200 rust_admin
 ```
 
@@ -56,13 +56,13 @@ small write quote:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   exec antd curl -fsS http://127.0.0.1:8082/health
 
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   exec antd sh -ceu '
     token="$(cat "$ANTD_INTERNAL_TOKEN_FILE" 2>/dev/null || printf %s "$ANTD_INTERNAL_TOKEN")"
     curl -fsS -X POST \
@@ -90,8 +90,8 @@ quotes or uploads. Confirm peer state and try a small cost probe:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 ```
 

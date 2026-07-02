@@ -164,9 +164,9 @@ wait_url() {
 }
 
 compose() {
-  local -a args=(--env-file "$COMPOSE_ENV" -f docker-compose.yml -f docker-compose.local.yml)
+  local -a args=(--env-file "$COMPOSE_ENV" -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml)
   if [[ "$COMPOSE_MODE" == "local-public" ]]; then
-    args+=(-f docker-compose.local-public.yml)
+    args+=(-f deploy/docker-compose.local-public.yml)
   fi
   docker compose "${args[@]}" "$@"
 }

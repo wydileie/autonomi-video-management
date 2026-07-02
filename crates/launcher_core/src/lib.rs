@@ -870,7 +870,7 @@ fn resolve_frontend_dir(explicit: Option<&Path>) -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from(value));
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_build = manifest_dir.join("../react_frontend/build");
+    let repo_build = manifest_dir.join("../../apps/web/build");
     if repo_build.join("index.html").is_file() {
         return Ok(repo_build);
     }

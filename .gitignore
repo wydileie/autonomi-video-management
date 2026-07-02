@@ -51,7 +51,7 @@ coverage.xml
 .pytest_cache/
 cover/
 coverage/
-react_frontend/coverage/
+apps/web/coverage/
 lcov.info
 
 # Translations
@@ -188,10 +188,10 @@ node_modules/
 **/node_modules/
 
 # Generated desktop sidecars
-desktop_app/src-tauri/binaries/*
-!desktop_app/src-tauri/binaries/.gitkeep
-desktop_app/src-tauri/gen/
-desktop_app/src-tauri/target-linux/
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/.gitkeep
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target-linux/
 
 autonomi-video-management.code-workspace
 .env

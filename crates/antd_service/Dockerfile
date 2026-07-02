@@ -14,25 +14,25 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY common/Cargo.toml common/Cargo.toml
-COPY rust_admin/Cargo.toml rust_admin/Cargo.toml
-COPY rust_stream/Cargo.toml rust_stream/Cargo.toml
-COPY antd_service/Cargo.toml antd_service/Cargo.toml
-COPY launcher_core/Cargo.toml launcher_core/Cargo.toml
-COPY standalone_launcher/Cargo.toml standalone_launcher/Cargo.toml
-RUN mkdir -p common/src rust_admin/src rust_stream/src antd_service/src launcher_core/src standalone_launcher/src && \
-    echo "" > common/src/lib.rs && \
-    echo "fn main(){}" > rust_admin/src/main.rs && \
-    echo "fn main(){}" > rust_stream/src/main.rs && \
-    echo "fn main(){}" > antd_service/src/main.rs && \
-    echo "" > launcher_core/src/lib.rs && \
-    echo "fn main(){}" > standalone_launcher/src/main.rs && \
+COPY crates/common/Cargo.toml crates/common/Cargo.toml
+COPY crates/rust_admin/Cargo.toml crates/rust_admin/Cargo.toml
+COPY crates/rust_stream/Cargo.toml crates/rust_stream/Cargo.toml
+COPY crates/antd_service/Cargo.toml crates/antd_service/Cargo.toml
+COPY crates/launcher_core/Cargo.toml crates/launcher_core/Cargo.toml
+COPY crates/standalone_launcher/Cargo.toml crates/standalone_launcher/Cargo.toml
+RUN mkdir -p crates/common/src crates/rust_admin/src crates/rust_stream/src crates/antd_service/src crates/launcher_core/src crates/standalone_launcher/src && \
+    echo "" > crates/common/src/lib.rs && \
+    echo "fn main(){}" > crates/rust_admin/src/main.rs && \
+    echo "fn main(){}" > crates/rust_stream/src/main.rs && \
+    echo "fn main(){}" > crates/antd_service/src/main.rs && \
+    echo "" > crates/launcher_core/src/lib.rs && \
+    echo "fn main(){}" > crates/standalone_launcher/src/main.rs && \
     cargo build --release -p antd
 
-COPY common/src common/src
-COPY launcher_core/src launcher_core/src
-COPY antd_service/src antd_service/src
-RUN touch common/src/lib.rs launcher_core/src/lib.rs antd_service/src/main.rs && cargo build --release -p antd
+COPY crates/common/src crates/common/src
+COPY crates/launcher_core/src crates/launcher_core/src
+COPY crates/antd_service/src crates/antd_service/src
+RUN touch crates/common/src/lib.rs crates/launcher_core/src/lib.rs crates/antd_service/src/main.rs && cargo build --release -p antd
 
 # ── Stage 2: Minimal runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim

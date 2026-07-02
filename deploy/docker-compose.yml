@@ -1,3 +1,5 @@
+name: autonomi-video-management
+
 services:
 
   # 1) One-shot permissions init for non-root app containers
@@ -14,15 +16,15 @@ services:
         chown -R 1000:1000 /var/lib/autvid
         chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid
     volumes:
-      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid
+      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid
     security_opt:
       - no-new-privileges:true
 
   # 2) Rust Admin — video ingestion, FFmpeg transcoding, metadata API
   rust_admin:
     build:
-      context: .
-      dockerfile: rust_admin/Dockerfile
+      context: ..
+      dockerfile: crates/rust_admin/Dockerfile
     container_name: rust_admin
     environment:
       APP_ENV: "${APP_ENV:-development}"
@@ -97,7 +99,7 @@ services:
     expose:
       - "8000"
     volumes:
-      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid
+      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid
     healthcheck:
       test: ["CMD", "/usr/local/bin/rust_admin", "--healthcheck", "127.0.0.1:8000", "/livez"]
       interval: 10s
@@ -115,8 +117,8 @@ services:
   # 3) Rust streaming — HLS manifest generation + Autonomi segment proxy
   rust_stream:
     build:
-      context: .
-      dockerfile: rust_stream/Dockerfile
+      context: ..
+      dockerfile: crates/rust_stream/Dockerfile
     container_name: rust_stream
     environment:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
@@ -141,7 +143,7 @@ services:
     expose:
       - "8081"
     volumes:
-      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid:ro
+      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/rust_stream", "--healthcheck", "127.0.0.1:8081", "/livez"]
       interval: 10s
@@ -159,7 +161,7 @@ services:
   # 4) React front end
   react_frontend:
     build:
-      context: ./react_frontend
+      context: ../apps/web
       args:
         REACT_APP_API_URL: "/api"
         REACT_APP_STREAM_URL: "/stream"

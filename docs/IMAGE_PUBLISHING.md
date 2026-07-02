@@ -6,12 +6,12 @@ Dockerfiles owned by the Compose stack:
 
 | Service image | Dockerfile | Published image |
 |---|---|---|
-| Rust admin API | `rust_admin/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-rust-admin` |
-| Rust stream API | `rust_stream/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-rust-stream` |
-| Production `antd` gateway | `antd_service/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-antd-service` |
-| Nginx reverse proxy | `nginx/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-nginx` |
-| React frontend | `react_frontend/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-react-frontend` |
-| Local Autonomi devnet | `autonomi_devnet/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-autonomi-devnet` |
+| Rust admin API | `crates/rust_admin/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-rust-admin` |
+| Rust stream API | `crates/rust_stream/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-rust-stream` |
+| Production `antd` gateway | `crates/antd_service/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-antd-service` |
+| Nginx reverse proxy | `deploy/nginx/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-nginx` |
+| React frontend | `apps/web/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-react-frontend` |
+| Local Autonomi devnet | `deploy/autonomi_devnet/Dockerfile` | `ghcr.io/OWNER/autonomi-video-management-autonomi-devnet` |
 
 Replace `OWNER` with the lower-case GitHub user or organization that owns the
 repository. The workflow lower-cases `OWNER/autonomi-video-management` before
@@ -90,7 +90,7 @@ that replaces selected `build:` entries with GHCR images.
 Common base override:
 
 ```yaml
-# docker-compose.images.yml
+# deploy/docker-compose.images.yml
 services:
   rust_admin:
     image: ${AUTVID_IMAGE_PREFIX}-rust-admin:${AUTVID_IMAGE_TAG:-latest}
@@ -100,7 +100,7 @@ services:
     image: ${AUTVID_IMAGE_PREFIX}-rust-stream:${AUTVID_IMAGE_TAG:-latest}
     build: !reset null
 
-  react_frontend:
+  apps/web:
     image: ${AUTVID_IMAGE_PREFIX}-react-frontend:${AUTVID_IMAGE_TAG:-latest}
     build: !reset null
 
@@ -112,7 +112,7 @@ services:
 Production `antd` override:
 
 ```yaml
-# docker-compose.prod.images.yml
+# deploy/docker-compose.prod.images.yml
 services:
   antd:
     image: ${AUTVID_IMAGE_PREFIX}-antd-service:${AUTVID_IMAGE_TAG:-latest}
@@ -122,7 +122,7 @@ services:
 Local-devnet `antd` override:
 
 ```yaml
-# docker-compose.local.images.yml
+# deploy/docker-compose.local.images.yml
 services:
   antd:
     image: ${AUTVID_IMAGE_PREFIX}-autonomi-devnet:${AUTVID_IMAGE_TAG:-latest}
@@ -136,10 +136,10 @@ export AUTVID_IMAGE_PREFIX=ghcr.io/OWNER/autonomi-video-management
 export AUTVID_IMAGE_TAG=1.2.3
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.images.yml \
-  -f docker-compose.prod.images.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.images.yml \
+  -f deploy/docker-compose.prod.images.yml \
   up -d
 ```
 
@@ -150,10 +150,10 @@ export AUTVID_IMAGE_PREFIX=ghcr.io/OWNER/autonomi-video-management
 export AUTVID_IMAGE_TAG=sha-abc1234
 
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.images.yml \
-  -f docker-compose.local.images.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.images.yml \
+  -f deploy/docker-compose.local.images.yml \
   up -d
 ```
 

@@ -1,14 +1,14 @@
 [workspace]
 members = [
-    "common",
-    "antd_service",
-    "launcher_core",
-    "rust_admin",
-    "rust_stream",
-    "standalone_launcher",
+    "crates/common",
+    "crates/antd_service",
+    "crates/launcher_core",
+    "crates/rust_admin",
+    "crates/rust_stream",
+    "crates/standalone_launcher",
 ]
 resolver = "2"
-exclude = ["desktop_app/src-tauri"]
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

@@ -11,30 +11,30 @@ repos:
     rev: v0.10.0.1
     hooks:
       - id: shellcheck
-        files: ^backup_sidecar/.*\.sh$
+        files: ^deploy/backup_sidecar/.*\.sh$
   - repo: local
     hooks:
       - id: frontend-lint
         name: frontend lint
-        entry: npm --prefix react_frontend run lint
+        entry: npm --prefix apps/web run lint
         language: system
         pass_filenames: false
-        files: ^react_frontend/.*\.(ts|tsx|js|jsx|mjs|mts|css)$
+        files: ^apps/web/.*\.(ts|tsx|js|jsx|mjs|mts|css)$
       - id: frontend-format
         name: frontend format
-        entry: npm --prefix react_frontend run format:check
+        entry: npm --prefix apps/web run format:check
         language: system
         pass_filenames: false
-        files: ^react_frontend/.*\.(ts|tsx|js|jsx|mjs|mts|css|json|md)$
+        files: ^apps/web/.*\.(ts|tsx|js|jsx|mjs|mts|css|json|md)$
       - id: frontend-typecheck
         name: frontend typecheck
-        entry: bash -c 'cd react_frontend && npx tsc --noEmit'
+        entry: bash -c 'cd apps/web && npx tsc --noEmit'
         language: system
         pass_filenames: false
-        files: ^react_frontend/.*\.(ts|tsx|mts)$
+        files: ^apps/web/.*\.(ts|tsx|mts)$
       - id: rust-fmt
         name: rust fmt
         entry: cargo fmt --all --check
         language: system
         pass_filenames: false
-        files: ^(common|antd_service|rust_admin|rust_stream|launcher_core|standalone_launcher|desktop_app)/.*\.rs$|^Cargo\.toml$|^Cargo\.lock$
+        files: ^(crates|apps/desktop)/.*\.rs$|^Cargo\.toml$|^Cargo\.lock$

@@ -10,7 +10,7 @@ if [[ "$target_triple" == "$host_triple" ]]; then
 else
   release_dir="$target_root/$target_triple/release"
 fi
-binary_dir="$repo_root/desktop_app/src-tauri/binaries"
+binary_dir="$repo_root/apps/desktop/src-tauri/binaries"
 
 mkdir -p "$binary_dir"
 

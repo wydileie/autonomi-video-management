@@ -10,7 +10,7 @@ Single-page React application for uploading videos, monitoring processing status
 
 ## Environment variables (build-time)
 
-Set via Docker Compose `build.args` in `docker-compose.yml` — these are baked into the static build at image build time.
+Set via Docker Compose `build.args` in `deploy/docker-compose.yml` — these are baked into the static build at image build time.
 
 | Variable               | Default   | Description                             |
 | ---------------------- | --------- | --------------------------------------- |
@@ -33,7 +33,7 @@ Runtime browser config wins over build-time env values. If neither is provided, 
 ## Local development
 
 ```bash
-cd react_frontend
+cd apps/web
 npm install
 REACT_APP_API_URL=http://localhost/api \
 REACT_APP_STREAM_URL=http://localhost/stream \
@@ -45,13 +45,13 @@ The local stack should already be running behind Nginx:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   up --build
 ```
 
 If you specifically need direct service ports for debugging, include
-`docker-compose.debug-ports.yml` and use `http://localhost:8000` and
+`deploy/docker-compose.debug-ports.yml` and use `http://localhost:8000` and
 `http://localhost:8081`.
 
 ## Build

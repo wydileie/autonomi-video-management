@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.autonomi.video-management",
   "build": {
-    "beforeDevCommand": "cd ../react_frontend && npm run start -- --host 127.0.0.1",
-    "beforeBuildCommand": "cd ../react_frontend && npm run build",
+    "beforeDevCommand": "cd ../web && npm run start -- --host 127.0.0.1",
+    "beforeBuildCommand": "cd ../web && npm run build",
     "devUrl": "http://127.0.0.1:5173",
-    "frontendDist": "../../react_frontend/build"
+    "frontendDist": "../../web/build"
   },
   "app": {
     "windows": [
@@ -37,7 +37,7 @@
       "binaries/ffprobe"
     ],
     "resources": {
-      "../../react_frontend/build/": "frontend/"
+      "../../web/build/": "frontend/"
     },
     "macOS": {
       "minimumSystemVersion": "12.0",

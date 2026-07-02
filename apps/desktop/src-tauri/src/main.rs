@@ -95,7 +95,7 @@ fn resolve_frontend_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf
         .filter(|path| path.join("index.html").is_file())
         .or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../react_frontend/build")
+                .join("../../web/build")
                 .canonicalize()
                 .ok()
                 .filter(|path| path.join("index.html").is_file())

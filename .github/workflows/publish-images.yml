@@ -32,32 +32,32 @@ jobs:
             title: Rust admin
             description: Autonomi Video Management admin API
             context: .
-            file: ./rust_admin/Dockerfile
+            file: ./crates/rust_admin/Dockerfile
           - image: rust-stream
             title: Rust stream
             description: Autonomi Video Management stream API
             context: .
-            file: ./rust_stream/Dockerfile
+            file: ./crates/rust_stream/Dockerfile
           - image: antd-service
             title: antd service
             description: Autonomi Video Management production Autonomi gateway
             context: .
-            file: ./antd_service/Dockerfile
+            file: ./crates/antd_service/Dockerfile
           - image: nginx
             title: Nginx
             description: Autonomi Video Management reverse proxy
-            context: ./nginx
-            file: ./nginx/Dockerfile
+            context: ./deploy/nginx
+            file: ./deploy/nginx/Dockerfile
           - image: react-frontend
             title: React frontend
             description: Autonomi Video Management browser UI
-            context: ./react_frontend
-            file: ./react_frontend/Dockerfile
+            context: ./apps/web
+            file: ./apps/web/Dockerfile
           - image: autonomi-devnet
             title: Autonomi devnet
             description: Autonomi Video Management local devnet and gateway
             context: .
-            file: ./autonomi_devnet/Dockerfile
+            file: ./deploy/autonomi_devnet/Dockerfile
 
     steps:
       - name: Checkout

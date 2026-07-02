@@ -19,8 +19,8 @@ services:
   antd:
     image: autonomi-video-management-antd-devnet
     build:
-      context: .
-      dockerfile: autonomi_devnet/Dockerfile
+      context: ..
+      dockerfile: deploy/autonomi_devnet/Dockerfile
     container_name: autonomi_local_devnet
     depends_on:
       init_devnet_permissions:
