@@ -10,8 +10,10 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 http = "1"
 rand = "0.8"
 reqwest.workspace = true
+serde_json.workspace = true
 subtle = "2"
 tokio = { workspace = true, features = ["macros", "signal"] }

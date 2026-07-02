@@ -87,9 +87,9 @@ pub(super) async fn resolve_data_map(
             },
             Err(err) => format!("DataMap resolution task failed: {err}"),
         };
-        ApiError::from_message(detail)
+        ApiError::from_autonomi_message(detail)
     })?
-    .map_err(|err| ApiError::from_message(format!("DataMap resolution failed: {err}")))
+    .map_err(|err| ApiError::from_autonomi_message(format!("DataMap resolution failed: {err}")))
 }
 
 #[cfg(test)]

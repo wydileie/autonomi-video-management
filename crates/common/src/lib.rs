@@ -1,4 +1,5 @@
 pub mod env;
+pub mod error;
 pub mod health;
 pub mod metrics;
 pub mod resilience;
@@ -9,6 +10,7 @@ pub mod shutdown;
 pub use env::{
     bool_from_env, duration_secs_from_env, non_empty_env, parse_env, parse_nonzero_env, secret_env,
 };
+pub use error::ApiError;
 pub use health::{run_healthcheck_from_args, run_http_healthcheck};
 pub use metrics::{
     push_counter, push_gauge, push_histogram, push_histogram_header, push_histogram_samples,

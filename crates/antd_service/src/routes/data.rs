@@ -65,7 +65,7 @@ pub(super) async fn data_cost(
         .client
         .estimate_upload_cost(file.path(), mode, None)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
 
     let response = DataCostResponse {
         cost: estimate.storage_cost_atto,
@@ -89,12 +89,12 @@ pub(super) async fn data_put_public(
         .client
         .data_upload_with_mode(Bytes::from(data), mode)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
     let address = state
         .client
         .data_map_store(&result.data_map)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
 
     Ok(Json(DataPutResponse {
         address: hex::encode(address),
@@ -125,14 +125,14 @@ async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, 
         .client
         .data_map_fetch(&address)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
     let root_map = resolve_data_map(state.client.clone(), data_map).await?;
     state
         .client
         .data_download(&root_map)
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|err| ApiError::from_message(err.to_string()))
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))
 }
 
 fn public_data_json_response(content: &[u8]) -> Json<DataGetResponse> {
