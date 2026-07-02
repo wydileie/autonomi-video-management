@@ -7,3 +7,6 @@
 
 # Prettier one-time reformat of react_frontend
 7ccc26ae9508f739beef3e6d42d78685dedfa2b5
+
+# Directory restructure into crates/, apps/, deploy/ (pure git mv)
+f3057cae9e4e480bff3cbfe1437195846f745bb2
