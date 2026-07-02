@@ -53,8 +53,8 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let cache_config = CacheConfig::from_env();
-    let request_timeout = request_timeout_from_env();
+    let cache_config = CacheConfig::from_env()?;
+    let request_timeout = request_timeout_from_env()?;
 
     let antd = AntdRestClient::new(&antd_url, antd_internal_token)?;
 

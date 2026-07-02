@@ -6,7 +6,9 @@ pub mod security;
 pub mod shutdown;
 
 // Flat re-exports preserve the pre-split public API.
-pub use env::{bool_from_env, duration_secs_from_env, non_empty_env, parse_env, secret_env};
+pub use env::{
+    bool_from_env, duration_secs_from_env, non_empty_env, parse_env, parse_nonzero_env, secret_env,
+};
 pub use health::{run_healthcheck_from_args, run_http_healthcheck};
 pub use metrics::{
     push_counter, push_gauge, push_histogram, push_histogram_header, push_histogram_samples,

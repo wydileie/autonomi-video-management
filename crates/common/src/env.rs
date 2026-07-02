@@ -37,6 +37,20 @@ where
     }
 }
 
+/// Like [`parse_env`], but additionally rejects the type's default value
+/// (zero for the integer types this is used with).
+pub fn parse_nonzero_env<T>(name: &str, default: T) -> anyhow::Result<T>
+where
+    T: std::str::FromStr + PartialEq + Default,
+    T::Err: std::fmt::Display,
+{
+    let value = parse_env(name, default)?;
+    if value == T::default() {
+        anyhow::bail!("{name} must be greater than zero");
+    }
+    Ok(value)
+}
+
 pub fn duration_secs_from_env(name: &str, default: Duration) -> anyhow::Result<Duration> {
     let seconds = parse_env(name, default.as_secs_f64())?;
     if !seconds.is_finite() || seconds < 0.0 {

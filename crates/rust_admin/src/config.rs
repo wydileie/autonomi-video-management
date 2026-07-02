@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration as StdDuration};
 
-use autvid_common::{constant_time_eq, secret_env};
+use autvid_common::{bool_from_env, constant_time_eq, parse_env, secret_env};
 use axum::http::{header, HeaderName, HeaderValue, Method};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -106,8 +106,8 @@ impl Config {
             .unwrap_or(DEFAULT_API_PORT);
         let bind_addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
 
-        let admin_db_min_connections = parse_u32_env("ADMIN_DB_MIN_CONNECTIONS", 1)?;
-        let admin_db_max_connections = parse_u32_env("ADMIN_DB_MAX_CONNECTIONS", 5)?;
+        let admin_db_min_connections = parse_env("ADMIN_DB_MIN_CONNECTIONS", 1)?;
+        let admin_db_max_connections = parse_env("ADMIN_DB_MAX_CONNECTIONS", 5)?;
         if admin_db_max_connections == 0 {
             anyhow::bail!("ADMIN_DB_MAX_CONNECTIONS must be greater than zero");
         }
@@ -116,24 +116,23 @@ impl Config {
                 "ADMIN_DB_MIN_CONNECTIONS must be less than or equal to ADMIN_DB_MAX_CONNECTIONS"
             );
         }
-        let admin_db_connect_timeout_seconds =
-            parse_f64_env("ADMIN_DB_CONNECT_TIMEOUT_SECONDS", 30.0)?;
+        let admin_db_connect_timeout_seconds = parse_env("ADMIN_DB_CONNECT_TIMEOUT_SECONDS", 30.0)?;
         if admin_db_connect_timeout_seconds <= 0.0 {
             anyhow::bail!("ADMIN_DB_CONNECT_TIMEOUT_SECONDS must be greater than zero");
         }
 
         let admin_username = env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".into());
-        let admin_password = optional_secret_env("ADMIN_PASSWORD", "ADMIN_PASSWORD_FILE")?
-            .unwrap_or_else(|| "admin".into());
-        let admin_auth_secret = optional_secret_env("ADMIN_AUTH_SECRET", "ADMIN_AUTH_SECRET_FILE")?
+        let admin_password =
+            secret_env("ADMIN_PASSWORD", "ADMIN_PASSWORD_FILE")?.unwrap_or_else(|| "admin".into());
+        let admin_auth_secret = secret_env("ADMIN_AUTH_SECRET", "ADMIN_AUTH_SECRET_FILE")?
             .unwrap_or_else(|| admin_password.clone());
-        let admin_auth_ttl_hours = parse_i64_env("ADMIN_AUTH_TTL_HOURS", 12)?;
+        let admin_auth_ttl_hours = parse_env("ADMIN_AUTH_TTL_HOURS", 12)?;
         if admin_auth_ttl_hours <= 0 {
             anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
         }
         let admin_auth_cookie_secure =
-            parse_bool_env("ADMIN_AUTH_COOKIE_SECURE", is_production_environment());
-        let admin_refresh_token_ttl_hours = parse_i64_env(
+            bool_from_env("ADMIN_AUTH_COOKIE_SECURE", is_production_environment()?)?;
+        let admin_refresh_token_ttl_hours = parse_env(
             "ADMIN_REFRESH_TOKEN_TTL_HOURS",
             DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS,
         )?;
@@ -149,16 +148,16 @@ impl Config {
                 "ADMIN_AUTH_COOKIE_SAME_SITE=None requires ADMIN_AUTH_COOKIE_SECURE=true"
             );
         }
-        let admin_request_timeout_seconds = parse_f64_env("ADMIN_REQUEST_TIMEOUT_SECONDS", 120.0)?;
+        let admin_request_timeout_seconds = parse_env("ADMIN_REQUEST_TIMEOUT_SECONDS", 120.0)?;
         if admin_request_timeout_seconds <= 0.0 {
             anyhow::bail!("ADMIN_REQUEST_TIMEOUT_SECONDS must be greater than zero");
         }
         let admin_upload_request_timeout_seconds =
-            parse_f64_env("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS", 3600.0)?;
+            parse_env("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS", 3600.0)?;
         if admin_upload_request_timeout_seconds <= 0.0 {
             anyhow::bail!("ADMIN_UPLOAD_REQUEST_TIMEOUT_SECONDS must be greater than zero");
         }
-        let admin_shutdown_grace_seconds = parse_f64_env("ADMIN_SHUTDOWN_GRACE_SECONDS", 15.0)?;
+        let admin_shutdown_grace_seconds = parse_env("ADMIN_SHUTDOWN_GRACE_SECONDS", 15.0)?;
         if admin_shutdown_grace_seconds <= 0.0 {
             anyhow::bail!("ADMIN_SHUTDOWN_GRACE_SECONDS must be greater than zero");
         }
@@ -184,122 +183,118 @@ impl Config {
 
         let ffmpeg_bin = env::var("FFMPEG_BIN").unwrap_or_else(|_| "ffmpeg".into());
         let ffprobe_bin = env::var("FFPROBE_BIN").unwrap_or_else(|_| "ffprobe".into());
-        let hls_segment_duration = parse_f64_env("HLS_SEGMENT_DURATION", 6.0)?;
+        let hls_segment_duration = parse_env("HLS_SEGMENT_DURATION", 6.0)?;
         if hls_segment_duration <= 0.0 {
             anyhow::bail!("HLS_SEGMENT_DURATION must be greater than zero");
         }
 
-        let ffmpeg_threads = parse_usize_env("FFMPEG_THREADS", 2)?;
+        let ffmpeg_threads = parse_env("FFMPEG_THREADS", 2)?;
         if ffmpeg_threads < 1 {
             anyhow::bail!("FFMPEG_THREADS must be at least 1");
         }
-        let ffmpeg_filter_threads = parse_usize_env("FFMPEG_FILTER_THREADS", 1)?;
+        let ffmpeg_filter_threads = parse_env("FFMPEG_FILTER_THREADS", 1)?;
         if ffmpeg_filter_threads < 1 {
             anyhow::bail!("FFMPEG_FILTER_THREADS must be at least 1");
         }
-        let ffmpeg_max_parallel_renditions = parse_usize_env("FFMPEG_MAX_PARALLEL_RENDITIONS", 1)?;
+        let ffmpeg_max_parallel_renditions = parse_env("FFMPEG_MAX_PARALLEL_RENDITIONS", 1)?;
         if ffmpeg_max_parallel_renditions < 1 {
             anyhow::bail!("FFMPEG_MAX_PARALLEL_RENDITIONS must be at least 1");
         }
         let ffmpeg_rendition_timeout_seconds =
-            parse_f64_env("FFMPEG_RENDITION_TIMEOUT_SECONDS", 6.0 * 60.0 * 60.0)?;
+            parse_env("FFMPEG_RENDITION_TIMEOUT_SECONDS", 6.0 * 60.0 * 60.0)?;
         if ffmpeg_rendition_timeout_seconds <= 0.0 {
             anyhow::bail!("FFMPEG_RENDITION_TIMEOUT_SECONDS must be greater than zero");
         }
 
-        let upload_quote_transcoded_overhead =
-            parse_f64_env("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", 1.08)?;
+        let upload_quote_transcoded_overhead = parse_env("UPLOAD_QUOTE_TRANSCODED_OVERHEAD", 1.08)?;
         if upload_quote_transcoded_overhead < 1.0 {
             anyhow::bail!("UPLOAD_QUOTE_TRANSCODED_OVERHEAD must be at least 1");
         }
 
         let upload_quote_max_sample_bytes =
-            parse_usize_env("UPLOAD_QUOTE_MAX_SAMPLE_BYTES", 16 * 1024 * 1024)?;
+            parse_env("UPLOAD_QUOTE_MAX_SAMPLE_BYTES", 16 * 1024 * 1024)?;
         if upload_quote_max_sample_bytes < 1 {
             anyhow::bail!("UPLOAD_QUOTE_MAX_SAMPLE_BYTES must be at least 1");
         }
 
-        let upload_max_file_bytes =
-            parse_u64_env("UPLOAD_MAX_FILE_BYTES", 20 * 1024 * 1024 * 1024)?;
+        let upload_max_file_bytes = parse_env("UPLOAD_MAX_FILE_BYTES", 20 * 1024 * 1024 * 1024)?;
         if upload_max_file_bytes == 0 {
             anyhow::bail!("UPLOAD_MAX_FILE_BYTES must be greater than zero");
         }
-        let upload_min_free_bytes = parse_u64_env("UPLOAD_MIN_FREE_BYTES", 5 * 1024 * 1024 * 1024)?;
-        let upload_max_concurrent_saves = parse_usize_env("UPLOAD_MAX_CONCURRENT_SAVES", 2)?;
+        let upload_min_free_bytes = parse_env("UPLOAD_MIN_FREE_BYTES", 5 * 1024 * 1024 * 1024)?;
+        let upload_max_concurrent_saves = parse_env("UPLOAD_MAX_CONCURRENT_SAVES", 2)?;
         if upload_max_concurrent_saves < 1 {
             anyhow::bail!("UPLOAD_MAX_CONCURRENT_SAVES must be at least 1");
         }
-        let upload_read_idle_timeout_seconds =
-            parse_f64_env("UPLOAD_READ_IDLE_TIMEOUT_SECONDS", 30.0)?;
+        let upload_read_idle_timeout_seconds = parse_env("UPLOAD_READ_IDLE_TIMEOUT_SECONDS", 30.0)?;
         if upload_read_idle_timeout_seconds <= 0.0 {
             anyhow::bail!("UPLOAD_READ_IDLE_TIMEOUT_SECONDS must be greater than zero");
         }
-        let upload_ffprobe_timeout_seconds = parse_f64_env("UPLOAD_FFPROBE_TIMEOUT_SECONDS", 30.0)?;
+        let upload_ffprobe_timeout_seconds = parse_env("UPLOAD_FFPROBE_TIMEOUT_SECONDS", 30.0)?;
         if upload_ffprobe_timeout_seconds <= 0.0 {
             anyhow::bail!("UPLOAD_FFPROBE_TIMEOUT_SECONDS must be greater than zero");
         }
         let upload_max_duration_seconds =
-            parse_f64_env("UPLOAD_MAX_DURATION_SECONDS", 4.0 * 60.0 * 60.0)?;
+            parse_env("UPLOAD_MAX_DURATION_SECONDS", 4.0 * 60.0 * 60.0)?;
         if upload_max_duration_seconds <= 0.0 {
             anyhow::bail!("UPLOAD_MAX_DURATION_SECONDS must be greater than zero");
         }
-        let upload_max_source_pixels = parse_i64_env("UPLOAD_MAX_SOURCE_PIXELS", 7680 * 4320)?;
+        let upload_max_source_pixels = parse_env("UPLOAD_MAX_SOURCE_PIXELS", 7680 * 4320)?;
         if upload_max_source_pixels <= 0 {
             anyhow::bail!("UPLOAD_MAX_SOURCE_PIXELS must be greater than zero");
         }
-        let upload_max_source_long_edge = parse_i64_env("UPLOAD_MAX_SOURCE_LONG_EDGE", 7680)?;
+        let upload_max_source_long_edge = parse_env("UPLOAD_MAX_SOURCE_LONG_EDGE", 7680)?;
         if upload_max_source_long_edge <= 0 {
             anyhow::bail!("UPLOAD_MAX_SOURCE_LONG_EDGE must be greater than zero");
         }
         let final_quote_approval_ttl_seconds =
-            parse_i64_env("FINAL_QUOTE_APPROVAL_TTL_SECONDS", 4 * 60 * 60)?;
+            parse_env("FINAL_QUOTE_APPROVAL_TTL_SECONDS", 4 * 60 * 60)?;
         if final_quote_approval_ttl_seconds <= 0 {
             anyhow::bail!("FINAL_QUOTE_APPROVAL_TTL_SECONDS must be greater than zero");
         }
         let approval_cleanup_interval_seconds =
-            parse_u64_env("APPROVAL_CLEANUP_INTERVAL_SECONDS", 300)?;
+            parse_env("APPROVAL_CLEANUP_INTERVAL_SECONDS", 300)?;
         if approval_cleanup_interval_seconds == 0 {
             anyhow::bail!("APPROVAL_CLEANUP_INTERVAL_SECONDS must be greater than zero");
         }
-        let antd_upload_retries = parse_usize_env("ANTD_UPLOAD_RETRIES", 3)?;
+        let antd_upload_retries = parse_env("ANTD_UPLOAD_RETRIES", 3)?;
         if antd_upload_retries < 1 {
             anyhow::bail!("ANTD_UPLOAD_RETRIES must be at least 1");
         }
-        let antd_upload_timeout_seconds = parse_f64_env("ANTD_UPLOAD_TIMEOUT_SECONDS", 120.0)?;
+        let antd_upload_timeout_seconds = parse_env("ANTD_UPLOAD_TIMEOUT_SECONDS", 120.0)?;
         if antd_upload_timeout_seconds <= 0.0 {
             anyhow::bail!("ANTD_UPLOAD_TIMEOUT_SECONDS must be greater than zero");
         }
-        let antd_quote_concurrency = parse_usize_env("ANTD_QUOTE_CONCURRENCY", 2)?;
+        let antd_quote_concurrency = parse_env("ANTD_QUOTE_CONCURRENCY", 2)?;
         if antd_quote_concurrency < 1 {
             anyhow::bail!("ANTD_QUOTE_CONCURRENCY must be at least 1");
         }
-        let antd_upload_concurrency = parse_usize_env("ANTD_UPLOAD_CONCURRENCY", 4)?;
+        let antd_upload_concurrency = parse_env("ANTD_UPLOAD_CONCURRENCY", 4)?;
         if antd_upload_concurrency < 1 {
             anyhow::bail!("ANTD_UPLOAD_CONCURRENCY must be at least 1");
         }
         let antd_direct_upload_max_bytes =
-            parse_usize_env("ANTD_DIRECT_UPLOAD_MAX_BYTES", 16 * 1024 * 1024)?;
+            parse_env("ANTD_DIRECT_UPLOAD_MAX_BYTES", 16 * 1024 * 1024)?;
         if antd_direct_upload_max_bytes < MIN_ANTD_SELF_ENCRYPTION_BYTES {
             anyhow::bail!("ANTD_DIRECT_UPLOAD_MAX_BYTES must be at least 3");
         }
-        let admin_job_workers = parse_usize_env("ADMIN_JOB_WORKERS", 1)?;
+        let admin_job_workers = parse_env("ADMIN_JOB_WORKERS", 1)?;
         if admin_job_workers < 1 {
             anyhow::bail!("ADMIN_JOB_WORKERS must be at least 1");
         }
-        let admin_job_poll_interval_seconds = parse_u64_env("ADMIN_JOB_POLL_INTERVAL_SECONDS", 2)?;
+        let admin_job_poll_interval_seconds = parse_env("ADMIN_JOB_POLL_INTERVAL_SECONDS", 2)?;
         if admin_job_poll_interval_seconds == 0 {
             anyhow::bail!("ADMIN_JOB_POLL_INTERVAL_SECONDS must be greater than zero");
         }
-        let admin_job_lease_seconds = parse_i64_env("ADMIN_JOB_LEASE_SECONDS", 12 * 60 * 60)?;
+        let admin_job_lease_seconds = parse_env("ADMIN_JOB_LEASE_SECONDS", 12 * 60 * 60)?;
         if admin_job_lease_seconds <= 0 {
             anyhow::bail!("ADMIN_JOB_LEASE_SECONDS must be greater than zero");
         }
-        let admin_job_max_attempts = parse_i32_env("ADMIN_JOB_MAX_ATTEMPTS", 3)?;
+        let admin_job_max_attempts = parse_env("ADMIN_JOB_MAX_ATTEMPTS", 3)?;
         if admin_job_max_attempts < 1 {
             anyhow::bail!("ADMIN_JOB_MAX_ATTEMPTS must be at least 1");
         }
-        let catalog_publish_job_max_attempts =
-            parse_i32_env("CATALOG_PUBLISH_JOB_MAX_ATTEMPTS", 12)?;
+        let catalog_publish_job_max_attempts = parse_env("CATALOG_PUBLISH_JOB_MAX_ATTEMPTS", 12)?;
         if catalog_publish_job_max_attempts < 1 {
             anyhow::bail!("CATALOG_PUBLISH_JOB_MAX_ATTEMPTS must be at least 1");
         }
@@ -307,10 +302,7 @@ impl Config {
         Ok(Self {
             db_path,
             antd_url: env::var("ANTD_URL").unwrap_or_else(|_| "http://localhost:8082".into()),
-            antd_internal_token: optional_secret_env(
-                "ANTD_INTERNAL_TOKEN",
-                "ANTD_INTERNAL_TOKEN_FILE",
-            )?,
+            antd_internal_token: secret_env("ANTD_INTERNAL_TOKEN", "ANTD_INTERNAL_TOKEN_FILE")?,
             antd_payment_mode,
             antd_metadata_payment_mode,
             admin_username,
@@ -361,13 +353,13 @@ impl Config {
             upload_quote_max_sample_bytes,
             final_quote_approval_ttl_seconds,
             approval_cleanup_interval_seconds,
-            antd_upload_verify: parse_bool_env("ANTD_UPLOAD_VERIFY", true),
+            antd_upload_verify: bool_from_env("ANTD_UPLOAD_VERIFY", true)?,
             antd_upload_retries,
             antd_upload_timeout_seconds,
             antd_quote_concurrency,
             antd_upload_concurrency,
-            antd_approve_on_startup: parse_bool_env("ANTD_APPROVE_ON_STARTUP", true),
-            antd_require_cost_ready: parse_bool_env("ANTD_REQUIRE_COST_READY", false),
+            antd_approve_on_startup: bool_from_env("ANTD_APPROVE_ON_STARTUP", true)?,
+            antd_require_cost_ready: bool_from_env("ANTD_REQUIRE_COST_READY", false)?,
             antd_direct_upload_max_bytes,
             admin_job_workers,
             admin_job_poll_interval_seconds,
@@ -380,7 +372,7 @@ impl Config {
 
 impl Config {
     pub(crate) fn admin_refresh_token_ttl_hours(&self) -> i64 {
-        parse_i64_env(
+        parse_env(
             "ADMIN_REFRESH_TOKEN_TTL_HOURS",
             DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS,
         )
@@ -422,65 +414,6 @@ pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
         .expose_headers([HeaderName::from_static("x-request-id")]))
 }
 
-fn optional_secret_env(name: &str, file_name: &str) -> anyhow::Result<Option<String>> {
-    secret_env(name, file_name)
-}
-
-fn parse_i64_env(name: &str, default_value: i64) -> anyhow::Result<i64> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<i64>()
-        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
-}
-
-fn parse_u64_env(name: &str, default_value: u64) -> anyhow::Result<u64> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<u64>()
-        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
-}
-
-fn parse_u32_env(name: &str, default_value: u32) -> anyhow::Result<u32> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<u32>()
-        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
-}
-
-fn parse_i32_env(name: &str, default_value: i32) -> anyhow::Result<i32> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<i32>()
-        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
-}
-
-fn parse_usize_env(name: &str, default_value: usize) -> anyhow::Result<usize> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<usize>()
-        .map_err(|err| anyhow::anyhow!("{name} must be an integer: {err}"))
-}
-
-fn parse_f64_env(name: &str, default_value: f64) -> anyhow::Result<f64> {
-    env::var(name)
-        .unwrap_or_else(|_| default_value.to_string())
-        .parse::<f64>()
-        .map_err(|err| anyhow::anyhow!("{name} must be a number: {err}"))
-}
-
-fn parse_bool_env(name: &str, default_value: bool) -> bool {
-    env::var(name)
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            if normalized.is_empty() {
-                default_value
-            } else {
-                !matches!(normalized.as_str(), "0" | "false" | "no")
-            }
-        })
-        .unwrap_or(default_value)
-}
-
 fn parse_cookie_same_site_env(
     name: &str,
     default_value: AuthCookieSameSite,
@@ -490,8 +423,8 @@ fn parse_cookie_same_site_env(
         .ok_or_else(|| anyhow::anyhow!("{name} must be one of Strict, Lax, or None"))
 }
 
-fn is_production_environment() -> bool {
-    parse_bool_env("AUTVID_STRICT_AUTH", false)
+fn is_production_environment() -> anyhow::Result<bool> {
+    Ok(bool_from_env("AUTVID_STRICT_AUTH", false)?
         || ["APP_ENV", "ENVIRONMENT"].iter().any(|name| {
             matches!(
                 env::var(name)
@@ -501,7 +434,7 @@ fn is_production_environment() -> bool {
                     .as_str(),
                 "prod" | "production"
             )
-        })
+        }))
 }
 
 fn is_unsafe_admin_auth_value(value: &str) -> bool {
@@ -545,7 +478,7 @@ fn validate_admin_auth_config(
     if ttl_hours <= 0 {
         anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
     }
-    if !is_production_environment() {
+    if !is_production_environment()? {
         return Ok(());
     }
 
