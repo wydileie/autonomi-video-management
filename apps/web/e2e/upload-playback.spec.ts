@@ -32,6 +32,8 @@ test("login, upload, approve, publish, and play an HLS segment", async ({ page }
   await page.getByRole("button", { name: "Upload" }).click();
   await page.locator('input[type="file"]').setInputFiles(fixturePath);
   await expect(page.getByText(/selected/i)).toBeVisible();
+  // Wait out the quote debounce so the submit guard sees a priced quote.
+  await expect(page.getByText(/ANT\b/)).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /^Upload / }).click();
 
   await expect(page).toHaveURL(/\/manage/);
