@@ -1,21 +1,10 @@
 import { useCallback, useEffect, useState, type MouseEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import {
-  approveVideoUpload,
-  deleteVideoRecord,
-  getAdminCatalogs,
-  getVideoDetails,
-  listVideos,
-  publishAdminCatalogs,
-  requestErrorMessage,
-  updateVideoPublication,
-  updateVideoVisibility,
-} from "../api/client";
-import type { AdminCatalogs, VideoDetail, VideoSummary, VisibilityUpdate } from "../types";
-import { isActiveStatus, statusLabel } from "../utils/status";
-import FinalQuotePanel from "./FinalQuotePanel";
-import VideoPlayer from "./VideoPlayer";
+import { useCatalogs, useLibraryData, useVideoActions, useVideoDetail } from "../hooks/useLibrary";
+import { statusLabel } from "../utils/status";
+import CatalogPanel from "./library/CatalogPanel";
+import VideoDetailPane from "./library/VideoDetailPane";
 
 interface LibraryProps {
   admin?: boolean;
@@ -30,114 +19,45 @@ export default function Library({ admin = false }: LibraryProps) {
   const navigate = useNavigate();
   const { videoId: routeVideoId } = useParams<{ videoId?: string }>();
   const detailBasePath = admin ? "/manage" : "/library";
-  const [videos, setVideos] = useState<VideoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<PlayingState | null>(null);
-  const [detail, setDetail] = useState<VideoDetail | null>(null);
-  const [approving, setApproving] = useState<string | null>(null);
-  const [publishing, setPublishing] = useState<string | null>(null);
-  const [catalogs, setCatalogs] = useState<AdminCatalogs | null>(null);
-  const [catalogPublishing, setCatalogPublishing] = useState(false);
-  const [catalogCopied, setCatalogCopied] = useState("");
-  const [loadError, setLoadError] = useState("");
-  const [detailError, setDetailError] = useState("");
-  const [actionError, setActionError] = useState("");
-  const [catalogError, setCatalogError] = useState("");
-  const activeDetailId = detail?.id;
-  const activeDetailStatus = detail?.status;
 
-  const load = useCallback(async () => {
-    try {
-      const data = await listVideos({ admin });
-      setVideos(data);
-      setLoadError("");
-    } catch (err) {
-      setLoadError(requestErrorMessage(err, "Could not load the video catalog."));
-    } finally {
-      setLoading(false);
-    }
-  }, [admin]);
+  const { videos, setVideos, loading, loadError, load } = useLibraryData(admin);
+  const { detail, setDetail, detailError, loadDetail } = useVideoDetail(admin, routeVideoId);
+  const {
+    catalogs,
+    catalogPublishing,
+    catalogCopied,
+    catalogError,
+    loadCatalogs,
+    republishCatalogs,
+    copyAddress,
+  } = useCatalogs(admin);
 
-  const loadDetail = useCallback(
-    async (videoId: string) => {
-      setDetailError("");
-      setActionError("");
-      try {
-        const data = await getVideoDetails({ admin, videoId });
-        setDetail(data);
-      } catch (err) {
-        setDetailError(requestErrorMessage(err, "Could not load video details."));
+  const onDeleted = useCallback(
+    (videoId: string) => {
+      if (detail?.id === videoId) {
+        setDetail(null);
+        navigate(detailBasePath, { replace: true });
       }
+      setPlaying((prev) => (prev?.videoId === videoId ? null : prev));
     },
-    [admin],
+    [detail?.id, detailBasePath, navigate, setDetail],
   );
 
-  const loadCatalogs = useCallback(async () => {
-    if (!admin) return;
-    try {
-      const data = await getAdminCatalogs();
-      setCatalogs(data);
-      setCatalogError("");
-    } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Could not load catalog addresses."));
-    }
-  }, [admin]);
+  const {
+    approving,
+    publishing,
+    actionError,
+    setActionError,
+    deleteVideo,
+    approveVideo,
+    updateVisibility,
+    updatePublication,
+  } = useVideoActions({ load, loadCatalogs, onDeleted, setDetail, setVideos });
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    loadCatalogs();
-  }, [loadCatalogs]);
-
-  useEffect(() => {
-    if (!routeVideoId) {
-      setDetail(null);
-      return;
-    }
-
-    let active = true;
-    setDetailError("");
     setActionError("");
-    getVideoDetails({ admin, videoId: routeVideoId })
-      .then((data) => {
-        if (active) setDetail(data);
-      })
-      .catch((err) => {
-        if (active) {
-          setDetail(null);
-          setDetailError(requestErrorMessage(err, "Could not load video details."));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [admin, routeVideoId]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (videos.some((video) => isActiveStatus(video.status))) {
-        load();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [videos, load]);
-
-  useEffect(() => {
-    if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
-    const interval = setInterval(async () => {
-      try {
-        const data = await getVideoDetails({ admin, videoId: activeDetailId });
-        setDetail(data);
-        setDetailError("");
-      } catch (err) {
-        setDetailError(requestErrorMessage(err, "Could not refresh video details."));
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [activeDetailId, activeDetailStatus, admin]);
+  }, [routeVideoId, setActionError]);
 
   const openDetail = async (videoId: string) => {
     if (routeVideoId === videoId && detail?.id === videoId) {
@@ -145,100 +65,16 @@ export default function Library({ admin = false }: LibraryProps) {
       return;
     }
     if (routeVideoId === videoId) {
+      setActionError("");
       await loadDetail(videoId);
       return;
     }
     navigate(`${detailBasePath}/${encodeURIComponent(videoId)}`);
   };
 
-  const deleteVideo = async (videoId: string, event: MouseEvent<HTMLButtonElement>) => {
+  const handleDelete = (videoId: string) => (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    if (!window.confirm("Delete this video record and remove it from the network catalog?")) return;
-    setActionError("");
-    try {
-      await deleteVideoRecord(videoId);
-      setVideos((prev) => prev.filter((video) => video.id !== videoId));
-      await loadCatalogs();
-      if (detail?.id === videoId) {
-        setDetail(null);
-        navigate(detailBasePath, { replace: true });
-      }
-      if (playing?.videoId === videoId) setPlaying(null);
-    } catch (err) {
-      setActionError(requestErrorMessage(err, "Delete failed."));
-    }
-  };
-
-  const approveVideo = async (videoId: string) => {
-    setApproving(videoId);
-    setActionError("");
-    try {
-      const data = await approveVideoUpload(videoId);
-      setDetail(data);
-      await load();
-      await loadCatalogs();
-    } catch (err) {
-      const message = requestErrorMessage(err, "Approval failed.");
-      setActionError(message);
-      window.alert(message);
-    } finally {
-      setApproving(null);
-    }
-  };
-
-  const updateVisibility = async (videoId: string, next: VisibilityUpdate) => {
-    setActionError("");
-    try {
-      const data = await updateVideoVisibility(videoId, next);
-      setDetail(data);
-      setVideos((prev) =>
-        prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)),
-      );
-      await loadCatalogs();
-    } catch (err) {
-      setActionError(requestErrorMessage(err, "Visibility update failed."));
-    }
-  };
-
-  const updatePublication = async (videoId: string, isPublic: boolean) => {
-    setPublishing(videoId);
-    setActionError("");
-    try {
-      const data = await updateVideoPublication(videoId, isPublic);
-      setDetail(data);
-      setVideos((prev) =>
-        prev.map((video) => (video.id === videoId ? { ...video, ...data } : video)),
-      );
-      await loadCatalogs();
-    } catch (err) {
-      setActionError(requestErrorMessage(err, isPublic ? "Publish failed." : "Unpublish failed."));
-    } finally {
-      setPublishing(null);
-    }
-  };
-
-  const republishCatalogs = async () => {
-    setCatalogPublishing(true);
-    setCatalogError("");
-    setCatalogCopied("");
-    try {
-      const data = await publishAdminCatalogs();
-      setCatalogs(data);
-    } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Catalog publish failed."));
-    } finally {
-      setCatalogPublishing(false);
-    }
-  };
-
-  const copyAddress = async (label: string, address?: string | null) => {
-    if (!address) return;
-    try {
-      await navigator.clipboard.writeText(address);
-      setCatalogCopied(label);
-    } catch {
-      setCatalogError("Could not copy the catalog address.");
-    }
+    deleteVideo(videoId);
   };
 
   if (loading) {
@@ -292,39 +128,13 @@ export default function Library({ admin = false }: LibraryProps) {
       {catalogError && <div className="error-box">{catalogError}</div>}
 
       {admin && (
-        <div className="catalog-address-panel">
-          <div className="catalog-address-head">
-            <div>
-              <strong>Portable catalogs</strong>
-              <span>
-                Published {catalogs?.published_catalog?.videos.length ?? 0} / all{" "}
-                {catalogs?.all_catalog?.videos.length ?? 0}
-              </span>
-            </div>
-            <button
-              type="button"
-              className="secondary-action"
-              disabled={catalogPublishing}
-              onClick={republishCatalogs}
-            >
-              {catalogPublishing ? "Publishing..." : "Republish"}
-            </button>
-          </div>
-          <div className="catalog-address-grid">
-            <CatalogAddress
-              label="Published"
-              address={catalogs?.published_catalog_address}
-              copied={catalogCopied === "published"}
-              onCopy={() => copyAddress("published", catalogs?.published_catalog_address)}
-            />
-            <CatalogAddress
-              label="All"
-              address={catalogs?.all_catalog_address}
-              copied={catalogCopied === "all"}
-              onCopy={() => copyAddress("all", catalogs?.all_catalog_address)}
-            />
-          </div>
-        </div>
+        <CatalogPanel
+          catalogs={catalogs}
+          catalogPublishing={catalogPublishing}
+          catalogCopied={catalogCopied}
+          onCopy={copyAddress}
+          onRepublish={republishCatalogs}
+        />
       )}
 
       <div className="video-list">
@@ -352,139 +162,24 @@ export default function Library({ admin = false }: LibraryProps) {
             </button>
 
             {detail?.id === video.id && (
-              <div className="video-detail">
-                {admin && detail.status === "awaiting_approval" ? (
-                  <FinalQuotePanel
-                    quote={detail.final_quote}
-                    expiresAt={detail.approval_expires_at}
-                    approving={approving === video.id}
-                    onApprove={() => approveVideo(video.id)}
-                  />
-                ) : admin && detail.status === "uploading" ? (
-                  <p className="muted">
-                    Uploading approved segments and publishing the network manifest...
-                  </p>
-                ) : admin && (detail.status === "processing" || detail.status === "pending") ? (
-                  <p className="muted">Processing renditions and preparing the final quote...</p>
-                ) : admin && (detail.status === "error" || detail.status === "expired") ? (
-                  <p className="muted">
-                    {detail.error_message || "This video could not be completed."}
-                  </p>
-                ) : detail.variants.length === 0 ? (
-                  <p className="muted">No variants available.</p>
-                ) : (
-                  <>
-                    {(() => {
-                      const selectedVariant =
-                        detail.variants.find(
-                          (variant) =>
-                            playing?.videoId === video.id &&
-                            playing?.resolution === variant.resolution,
-                        ) || detail.variants[0];
-
-                      return (
-                        <VideoPlayer
-                          videoId={video.id}
-                          manifestAddress={admin ? detail.manifest_address : null}
-                          variants={detail.variants}
-                          resolution={selectedVariant.resolution}
-                          onResolutionChange={(nextResolution) =>
-                            setPlaying({
-                              videoId: video.id,
-                              resolution: nextResolution,
-                            })
-                          }
-                        />
-                      );
-                    })()}
-                  </>
-                )}
-                {admin && (
-                  <>
-                    {detail.status === "ready" && (
-                      <div className="publication-panel">
-                        <button
-                          type="button"
-                          className={
-                            detail.is_public ? "secondary-action" : "primary-action compact-action"
-                          }
-                          disabled={publishing === video.id}
-                          onClick={() => updatePublication(video.id, !detail.is_public)}
-                        >
-                          {publishing === video.id
-                            ? "Updating..."
-                            : detail.is_public
-                              ? "Unpublish"
-                              : "Publish"}
-                        </button>
-                        <span className={`status ${detail.is_public ? "public" : "private"}`}>
-                          {detail.is_public ? "public" : "hidden"}
-                        </span>
-                      </div>
-                    )}
-                    <div className="visibility-panel">
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={!!detail.show_manifest_address}
-                          onChange={(event) =>
-                            updateVisibility(video.id, {
-                              show_original_filename: false,
-                              show_manifest_address: event.target.checked,
-                            })
-                          }
-                        />
-                        <span>Publish manifest address</span>
-                      </label>
-                    </div>
-                  </>
-                )}
-                {(admin || detail.manifest_address) && (
-                  <div className="detail-footer">
-                    <div className="detail-addresses">
-                      <code>{detail.manifest_address || "Manifest hidden or pending"}</code>
-                      {admin && detail.original_file_address && (
-                        <code>Original source: {detail.original_file_address}</code>
-                      )}
-                    </div>
-                    {admin && (
-                      <button
-                        type="button"
-                        className="danger-action"
-                        onClick={(event) => deleteVideo(video.id, event)}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+              <VideoDetailPane
+                admin={admin}
+                detail={detail}
+                approving={approving === video.id}
+                publishing={publishing === video.id}
+                selectedResolution={playing?.videoId === video.id ? playing.resolution : null}
+                onApprove={() => approveVideo(video.id)}
+                onDelete={handleDelete(video.id)}
+                onResolutionChange={(nextResolution) =>
+                  setPlaying({ videoId: video.id, resolution: nextResolution })
+                }
+                onUpdatePublication={(isPublic) => updatePublication(video.id, isPublic)}
+                onUpdateVisibility={(next) => updateVisibility(video.id, next)}
+              />
             )}
           </article>
         ))}
       </div>
     </section>
-  );
-}
-
-function CatalogAddress({
-  address,
-  copied,
-  label,
-  onCopy,
-}: {
-  address?: string | null;
-  copied: boolean;
-  label: string;
-  onCopy: () => void;
-}) {
-  return (
-    <div className="catalog-address-row">
-      <span>{label}</span>
-      <code>{address || "Not published yet"}</code>
-      <button type="button" className="secondary-action" disabled={!address} onClick={onCopy}>
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
   );
 }
