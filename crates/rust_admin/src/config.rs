@@ -1,8 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration as StdDuration};
 
-use autvid_common::{bool_from_env, constant_time_eq, parse_env, secret_env};
-use axum::http::{header, HeaderName, HeaderValue, Method};
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use autvid_common::{bool_from_env, non_empty_env, parse_env, secret_env};
+use axum::http::HeaderValue;
 
 use crate::{
     DEFAULT_ADMIN_REFRESH_TOKEN_TTL_HOURS, DEFAULT_API_PORT, MIN_ANTD_SELF_ENCRYPTION_BYTES,
@@ -391,154 +390,11 @@ pub(crate) fn duration_from_secs_f64(seconds: f64) -> StdDuration {
     StdDuration::from_millis((seconds.max(0.001) * 1000.0).ceil() as u64)
 }
 
-pub(crate) fn cors_layer(config: &Config) -> anyhow::Result<CorsLayer> {
-    Ok(CorsLayer::new()
-        .allow_origin(AllowOrigin::list(config.cors_allowed_origins.clone()))
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            header::ACCEPT,
-            header::AUTHORIZATION,
-            header::COOKIE,
-            header::CONTENT_TYPE,
-            header::RANGE,
-            HeaderName::from_static("x-request-id"),
-            HeaderName::from_static("x-csrf-token"),
-        ])
-        .allow_credentials(true)
-        .expose_headers([HeaderName::from_static("x-request-id")]))
-}
+mod cors;
+mod validation;
 
-fn parse_cookie_same_site_env(
-    name: &str,
-    default_value: AuthCookieSameSite,
-) -> anyhow::Result<AuthCookieSameSite> {
-    let raw = env::var(name).unwrap_or_else(|_| default_value.as_cookie_value().to_string());
-    AuthCookieSameSite::parse(&raw)
-        .ok_or_else(|| anyhow::anyhow!("{name} must be one of Strict, Lax, or None"))
-}
-
-fn is_production_environment() -> anyhow::Result<bool> {
-    Ok(bool_from_env("AUTVID_STRICT_AUTH", false)?
-        || ["APP_ENV", "ENVIRONMENT"].iter().any(|name| {
-            matches!(
-                env::var(name)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "prod" | "production"
-            )
-        }))
-}
-
-fn is_unsafe_admin_auth_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "" | "admin"
-            | "administrator"
-            | "changeme"
-            | "change-me"
-            | "change_me"
-            | "default"
-            | "password"
-            | "please-change-me"
-            | "replace-me"
-            | "secret"
-            | "test"
-            | "test-secret"
-    ) || [
-        "change-me",
-        "change_me",
-        "changeme",
-        "change-this",
-        "change_this",
-        "changethis",
-        "replace-me",
-        "replace_me",
-        "replace-this",
-        "replace_this",
-    ]
-    .iter()
-    .any(|placeholder| normalized.contains(placeholder))
-}
-
-fn validate_admin_auth_config(
-    username: &str,
-    password: &str,
-    secret: &str,
-    ttl_hours: i64,
-) -> anyhow::Result<()> {
-    if ttl_hours <= 0 {
-        anyhow::bail!("ADMIN_AUTH_TTL_HOURS must be greater than zero");
-    }
-    if !is_production_environment()? {
-        return Ok(());
-    }
-
-    let mut unsafe_fields = Vec::new();
-    if is_unsafe_admin_auth_value(username) {
-        unsafe_fields.push("ADMIN_USERNAME");
-    }
-    if is_unsafe_admin_auth_value(password) {
-        unsafe_fields.push("ADMIN_PASSWORD");
-    }
-    if is_unsafe_admin_auth_value(secret) {
-        unsafe_fields.push("ADMIN_AUTH_SECRET");
-    }
-    if !unsafe_fields.is_empty() {
-        anyhow::bail!(
-            "Unsafe admin auth configuration for production: {} must not use default, weak, or change-me values",
-            unsafe_fields.join(", ")
-        );
-    }
-    if constant_time_eq(secret, password) {
-        anyhow::bail!(
-            "Unsafe admin auth configuration for production: ADMIN_AUTH_SECRET must not equal ADMIN_PASSWORD"
-        );
-    }
-    if password.len() < 12 {
-        anyhow::bail!(
-            "Unsafe admin auth configuration for production: ADMIN_PASSWORD must be at least 12 characters"
-        );
-    }
-    if secret.len() < 32 {
-        anyhow::bail!(
-            "Unsafe admin auth configuration for production: ADMIN_AUTH_SECRET must be at least 32 characters"
-        );
-    }
-    Ok(())
-}
-
-fn cors_allowed_origins() -> anyhow::Result<Vec<HeaderValue>> {
-    let raw = env::var("CORS_ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost,http://127.0.0.1".into());
-    autvid_common::parse_cors_allowed_origins(&raw)
-}
-
-fn non_empty_env(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
+pub(crate) use cors::*;
+pub(crate) use validation::*;
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    #[test]
-    fn normalizes_cors_origin_without_paths_or_wildcards() {
-        assert_eq!(
-            autvid_common::normalize_cors_origin("http://localhost:5173/").unwrap(),
-            "http://localhost:5173"
-        );
-        assert!(autvid_common::normalize_cors_origin("*").is_err());
-        assert!(autvid_common::normalize_cors_origin("http://localhost/app").is_err());
-    }
-}
+mod tests;
