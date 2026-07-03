@@ -26,3 +26,11 @@ apps/web/dist/
 apps/web/build/
 apps/web/coverage/
 build/
+
+# Not consumed by any root-context (Rust/devnet) image build
+apps/
+docs/
+deploy/monitoring/
+deploy/nginx/
+testvids/
+.claude/
