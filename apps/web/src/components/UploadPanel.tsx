@@ -1,276 +1,79 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useCallback, useRef, type FormEvent } from "react";
 
 import {
-  isRequestCanceled,
-  requestErrorMessage,
-  requestUploadQuote,
-  uploadVideo,
-} from "../api/client";
-import { RESOLUTION_OPTIONS } from "../constants";
-import type {
-  EncodeSettings,
-  SourceVideoMeta,
-  UploadQuote,
-  UploadQuoteRequest,
-  VideoSummary,
-} from "../types";
-import { formatAttoTokens, formatBytes, formatWei } from "../utils/format";
-import {
-  classifyResolution,
-  optionFitsSource,
-  orderedSelection,
-  resolutionByValue,
-  suggestedSelection,
-  targetDimensionsForMeta,
-} from "../utils/resolutions";
-
-interface QuoteState {
-  data: UploadQuote | null;
-  error: string;
-  loading: boolean;
-}
+  useUploadForm,
+  useUploadQuote,
+  useUploadSubmit,
+  type VideoCodec,
+} from "../hooks/useUploadWorkflow";
+import type { VideoSummary } from "../types";
+import { resolutionByValue } from "../utils/resolutions";
+import EncodeSettingsFields from "./upload/EncodeSettingsFields";
+import FileDropZone from "./upload/FileDropZone";
+import UploadQuoteSummary from "./upload/UploadQuoteSummary";
 
 interface UploadPanelProps {
   onUploaded: (video: VideoSummary) => void;
 }
 
-type VideoCodec = EncodeSettings["video_codec"];
-
-const DEFAULT_AUDIO_BITRATE_KBPS = 320;
-
-function defaultVideoBitrate(optionKbps: number, codec: VideoCodec): number {
-  if (codec === "hevc") return Math.max(64, Math.round((optionKbps * 0.7) / 50) * 50);
-  return optionKbps;
-}
-
-function defaultVideoBitrates(codec: VideoCodec): Record<string, number> {
-  return Object.fromEntries(
-    RESOLUTION_OPTIONS.map((option) => [
-      option.value,
-      defaultVideoBitrate(option.defaultVideoBitrateKbps, codec),
-    ]),
-  );
-}
-
-function buildEncodeSettings(
-  resolutions: string[],
-  videoCodec: VideoCodec,
-  videoBitrates: Record<string, number>,
-  audioBitrateKbps: number,
-): EncodeSettings {
-  const video_bitrate_overrides = Object.fromEntries(
-    resolutions.map((resolution) => [
-      resolution,
-      Math.max(64, Math.round(videoBitrates[resolution] || 0)),
-    ]),
-  );
-  return {
-    video_codec: videoCodec,
-    audio_bitrate_kbps: Math.max(32, Math.round(audioBitrateKbps || DEFAULT_AUDIO_BITRATE_KBPS)),
-    video_bitrate_overrides,
-  };
-}
-
 export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [desc, setDesc] = useState("");
-  const [showManifestAddress, setShowManifestAddress] = useState(false);
-  const [uploadOriginal, setUploadOriginal] = useState(false);
-  const [publishWhenReady, setPublishWhenReady] = useState(false);
-  const [selected, setSelected] = useState<string[]>(["720p"]);
-  const [videoCodec, setVideoCodec] = useState<VideoCodec>("h264");
-  const [audioBitrateKbps, setAudioBitrateKbps] = useState(DEFAULT_AUDIO_BITRATE_KBPS);
-  const [videoBitrates, setVideoBitrates] = useState<Record<string, number>>(() =>
-    defaultVideoBitrates("h264"),
+  const form = useUploadForm();
+  const { quote, resetQuote } = useUploadQuote(form);
+
+  const handleUploadSuccess = useCallback(
+    (video: VideoSummary) => {
+      form.reset();
+      resetQuote();
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      onUploaded(video);
+    },
+    [form, onUploaded, resetQuote],
   );
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [dragging, setDragging] = useState(false);
-  const [meta, setMeta] = useState<SourceVideoMeta | null>(null);
-  const [quote, setQuote] = useState<QuoteState>({ loading: false, error: "", data: null });
 
-  const currentProfile = classifyResolution(meta?.width, meta?.height);
+  const { uploading, error, setError, progress, submit } = useUploadSubmit({
+    form,
+    quote,
+    onSuccess: handleUploadSuccess,
+  });
 
-  const inspectFile = useCallback((nextFile?: File) => {
+  const handleFile = (nextFile?: File) => {
     if (!nextFile) return;
     if (!nextFile.type.startsWith("video/")) {
       setError("Please choose a video file.");
       return;
     }
-
     setError("");
-    setFile(nextFile);
-    setQuote({ loading: false, error: "", data: null });
-    setTitle((current) => current || nextFile.name.replace(/\.[^.]+$/, ""));
-    setMeta({ loading: true, width: null, height: null, duration: null });
+    resetQuote();
+    form.inspectFile(nextFile);
+  };
 
-    const objectUrl = URL.createObjectURL(nextFile);
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.onloadedmetadata = () => {
-      const nextMeta = {
-        loading: false,
-        width: video.videoWidth,
-        height: video.videoHeight,
-        duration: video.duration,
-        size: nextFile.size,
-      };
-      setMeta(nextMeta);
-      setSelected(suggestedSelection(nextMeta));
-      URL.revokeObjectURL(objectUrl);
-    };
-    video.onerror = () => {
-      setMeta({ loading: false, width: null, height: null, duration: null, size: nextFile.size });
-      setSelected(["720p"]);
-      URL.revokeObjectURL(objectUrl);
-    };
-    video.src = objectUrl;
-  }, []);
+  const handleCodecChange = (codec: VideoCodec) => {
+    form.changeCodec(codec);
+    resetQuote();
+  };
 
-  useEffect(() => {
-    const duration = meta?.duration;
-    if (!file || !duration || !selected.length) {
-      setQuote({ loading: false, error: "", data: null });
-      return undefined;
-    }
+  const handleAudioBitrateChange = (kbps: number) => {
+    form.setAudioBitrateKbps(kbps);
+    resetQuote();
+  };
 
-    const controller = new AbortController();
-    const timer = setTimeout(async () => {
-      const resolutions = orderedSelection(selected);
-      setQuote({ loading: true, error: "", data: null });
-      try {
-        const encodeSettings = buildEncodeSettings(
-          resolutions,
-          videoCodec,
-          videoBitrates,
-          audioBitrateKbps,
-        );
-        const quoteRequest: UploadQuoteRequest = {
-          duration_seconds: duration,
-          encode_settings: encodeSettings,
-          resolutions,
-          source_width: meta.width,
-          source_height: meta.height,
-        };
-        if (uploadOriginal) {
-          quoteRequest.upload_original = true;
-          quoteRequest.source_size_bytes = file.size;
-        }
-        const data = await requestUploadQuote(quoteRequest, controller.signal);
-        setQuote({ loading: false, error: "", data });
-      } catch (err) {
-        if (isRequestCanceled(err)) return;
-        setQuote({
-          loading: false,
-          error: requestErrorMessage(err, "Could not get upload price quote"),
-          data: null,
-        });
-      }
-    }, 250);
+  const handleVideoBitrateChange = (resolution: string, kbps: number) => {
+    form.setVideoBitrate(resolution, kbps);
+    resetQuote();
+  };
 
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [
-    audioBitrateKbps,
-    file,
-    meta?.duration,
-    meta?.width,
-    meta?.height,
-    selected,
-    uploadOriginal,
-    videoBitrates,
-    videoCodec,
-  ]);
+  const handleUploadOriginalChange = (checked: boolean) => {
+    form.setUploadOriginal(checked);
+    resetQuote();
+  };
 
-  const onDrop = (event: DragEvent<HTMLButtonElement>) => {
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setDragging(false);
-    inspectFile(event.dataTransfer.files?.[0]);
+    submit();
   };
 
-  const toggleRes = (resolution: string) => {
-    setSelected((prev) =>
-      prev.includes(resolution)
-        ? prev.filter((value) => value !== resolution)
-        : [...prev, resolution],
-    );
-  };
-
-  const selectCurrentOnly = () => {
-    if (currentProfile) setSelected([currentProfile.value]);
-  };
-
-  const selectAdaptive = () => {
-    setSelected(suggestedSelection(meta));
-  };
-
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!file) return setError("Drop or choose a video file first.");
-    if (!title.trim()) return setError("Please enter a title.");
-    if (!selected.length) return setError("Select at least one resolution.");
-    if (meta?.duration && !quote.data) {
-      return setError("Waiting for an upload price quote before starting.");
-    }
-
-    setError("");
-    setUploading(true);
-    setProgress(0);
-
-    const resolutionsToUpload = orderedSelection(selected);
-
-    const fd = new FormData();
-    const encodeSettings = buildEncodeSettings(
-      resolutionsToUpload,
-      videoCodec,
-      videoBitrates,
-      audioBitrateKbps,
-    );
-    fd.append("file", file);
-    fd.append("title", title.trim());
-    fd.append("description", desc.trim());
-    fd.append("resolutions", resolutionsToUpload.join(","));
-    fd.append("show_original_filename", "false");
-    fd.append("show_manifest_address", showManifestAddress ? "true" : "false");
-    fd.append("upload_original", uploadOriginal ? "true" : "false");
-    fd.append("publish_when_ready", publishWhenReady ? "true" : "false");
-    fd.append("video_codec", encodeSettings.video_codec);
-    fd.append("audio_bitrate_kbps", String(encodeSettings.audio_bitrate_kbps));
-    fd.append("video_bitrate_overrides", JSON.stringify(encodeSettings.video_bitrate_overrides));
-
-    try {
-      const data = await uploadVideo(fd, (progressEvent) => {
-        if (progressEvent.total) {
-          setProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
-        }
-      });
-      setFile(null);
-      setTitle("");
-      setDesc("");
-      setShowManifestAddress(false);
-      setUploadOriginal(false);
-      setPublishWhenReady(false);
-      setSelected(["720p"]);
-      setVideoCodec("h264");
-      setAudioBitrateKbps(DEFAULT_AUDIO_BITRATE_KBPS);
-      setVideoBitrates(defaultVideoBitrates("h264"));
-      setMeta(null);
-      setQuote({ loading: false, error: "", data: null });
-      setProgress(0);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      onUploaded(data);
-    } catch (err) {
-      setError(requestErrorMessage(err, "Upload failed"));
-    } finally {
-      setUploading(false);
-    }
-    return undefined;
-  };
+  const { file, meta, currentProfile, selected } = form;
 
   return (
     <section className="upload-card">
@@ -286,34 +89,13 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
         <div className="network-pill">Local devnet ready</div>
       </div>
 
-      <form onSubmit={submit}>
-        <button
-          type="button"
-          className={`dropzone ${dragging ? "is-dragging" : ""}`}
-          onClick={() => fileInputRef.current?.click()}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-          disabled={uploading}
-        >
-          <input
-            ref={fileInputRef}
-            className="hidden-input"
-            type="file"
-            accept="video/*"
-            onChange={(event) => inspectFile(event.target.files?.[0])}
-            disabled={uploading}
-          />
-          <span className="drop-icon">+</span>
-          <span className="drop-title">{file ? file.name : "Drag and drop a video file"}</span>
-          <span className="drop-subtitle">
-            {file ? `${formatBytes(file.size)} selected` : "or click to browse from your machine"}
-          </span>
-        </button>
+      <form onSubmit={onSubmit}>
+        <FileDropZone
+          file={file}
+          fileInputRef={fileInputRef}
+          onFile={handleFile}
+          uploading={uploading}
+        />
 
         {file && (
           <div className="source-panel">
@@ -342,16 +124,16 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
           <label>
             <span>Title</span>
             <input
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
+              value={form.title}
+              onChange={(event) => form.setTitle(event.target.value)}
               disabled={uploading}
             />
           </label>
           <label>
             <span>Description</span>
             <input
-              value={desc}
-              onChange={(event) => setDesc(event.target.value)}
+              value={form.desc}
+              onChange={(event) => form.setDesc(event.target.value)}
               disabled={uploading}
             />
           </label>
@@ -361,8 +143,8 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
           <label>
             <input
               type="checkbox"
-              checked={showManifestAddress}
-              onChange={(event) => setShowManifestAddress(event.target.checked)}
+              checked={form.showManifestAddress}
+              onChange={(event) => form.setShowManifestAddress(event.target.checked)}
               disabled={uploading}
             />
             <span>Publish manifest address</span>
@@ -370,11 +152,8 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
           <label>
             <input
               type="checkbox"
-              checked={uploadOriginal}
-              onChange={(event) => {
-                setUploadOriginal(event.target.checked);
-                setQuote({ loading: false, error: "", data: null });
-              }}
+              checked={form.uploadOriginal}
+              onChange={(event) => handleUploadOriginalChange(event.target.checked)}
               disabled={uploading}
             />
             <span>Upload original source file</span>
@@ -382,166 +161,32 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
           <label>
             <input
               type="checkbox"
-              checked={publishWhenReady}
-              onChange={(event) => setPublishWhenReady(event.target.checked)}
+              checked={form.publishWhenReady}
+              onChange={(event) => form.setPublishWhenReady(event.target.checked)}
               disabled={uploading}
             />
             <span>Publish automatically when ready</span>
           </label>
         </div>
 
-        <div className="encoding-panel">
-          <div className="encoding-row">
-            <label>
-              <span>Video codec</span>
-              <select
-                value={videoCodec}
-                onChange={(event) => {
-                  const nextCodec = event.target.value as VideoCodec;
-                  const previousCodec = videoCodec;
-                  setVideoCodec(nextCodec);
-                  setVideoBitrates((current) => {
-                    const previousDefaults = defaultVideoBitrates(previousCodec);
-                    const nextDefaults = defaultVideoBitrates(nextCodec);
-                    return Object.fromEntries(
-                      RESOLUTION_OPTIONS.map((option) => {
-                        const currentValue = current[option.value];
-                        const nextValue =
-                          currentValue === previousDefaults[option.value]
-                            ? nextDefaults[option.value]
-                            : (currentValue ?? nextDefaults[option.value]);
-                        return [option.value, nextValue];
-                      }),
-                    );
-                  });
-                  setQuote({ loading: false, error: "", data: null });
-                }}
-                disabled={uploading}
-              >
-                <option value="h264">H.264</option>
-                <option value="hevc">HEVC / H.265</option>
-              </select>
-            </label>
-            <label>
-              <span>Audio bitrate</span>
-              <input
-                type="number"
-                min={32}
-                max={1024}
-                step={32}
-                value={audioBitrateKbps}
-                onChange={(event) => {
-                  setAudioBitrateKbps(Number(event.target.value));
-                  setQuote({ loading: false, error: "", data: null });
-                }}
-                disabled={uploading}
-              />
-            </label>
-          </div>
-          <div className="bitrate-grid">
-            {orderedSelection(selected).map((resolution) => {
-              const option = resolutionByValue(resolution);
-              return (
-                <label key={resolution}>
-                  <span>{option?.label || resolution}</span>
-                  <input
-                    type="number"
-                    min={64}
-                    max={200000}
-                    step={1}
-                    value={videoBitrates[resolution] || 0}
-                    onChange={(event) => {
-                      const nextValue = Number(event.target.value);
-                      setVideoBitrates((current) => ({
-                        ...current,
-                        [resolution]: nextValue,
-                      }));
-                      setQuote({ loading: false, error: "", data: null });
-                    }}
-                    disabled={uploading}
-                  />
-                </label>
-              );
-            })}
-          </div>
-        </div>
+        <EncodeSettingsFields
+          file={file}
+          meta={meta}
+          currentProfile={currentProfile}
+          selected={selected}
+          videoCodec={form.videoCodec}
+          audioBitrateKbps={form.audioBitrateKbps}
+          videoBitrates={form.videoBitrates}
+          uploading={uploading}
+          onCodecChange={handleCodecChange}
+          onAudioBitrateChange={handleAudioBitrateChange}
+          onVideoBitrateChange={handleVideoBitrateChange}
+          onToggleRes={form.toggleRes}
+          onSelectCurrentOnly={form.selectCurrentOnly}
+          onSelectAdaptive={form.selectAdaptive}
+        />
 
-        <div className="resolution-toolbar">
-          <div>
-            <span className="meta-label">Renditions to create</span>
-            <p>Higher-than-source options are dimmed to avoid accidental upscales.</p>
-          </div>
-          <div className="quick-actions">
-            <button
-              type="button"
-              onClick={selectCurrentOnly}
-              disabled={!currentProfile || uploading}
-            >
-              Current only
-            </button>
-            <button type="button" onClick={selectAdaptive} disabled={!file || uploading}>
-              Current + lower
-            </button>
-          </div>
-        </div>
-
-        <div className="resolution-grid">
-          {RESOLUTION_OPTIONS.map((option) => {
-            const isCurrent = currentProfile?.value === option.value;
-            const disabledBySource = !!file && !optionFitsSource(option, meta);
-            const targetDimensions = targetDimensionsForMeta(option, meta);
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={`resolution-card ${selected.includes(option.value) ? "selected" : ""}`}
-                onClick={() => !disabledBySource && toggleRes(option.value)}
-                disabled={uploading || disabledBySource}
-              >
-                <span className="resolution-label">{option.label}</span>
-                <span>
-                  {targetDimensions.width} x {targetDimensions.height}
-                </span>
-                <span>
-                  {option.bitrate} · {option.note}
-                </span>
-                {isCurrent && <strong>Current source profile</strong>}
-              </button>
-            );
-          })}
-        </div>
-
-        {file && (
-          <div className="quote-panel">
-            <div className="quote-main">
-              <span className="meta-label">Upload price quote</span>
-              {quote.loading && <strong>Quoting Autonomi storage...</strong>}
-              {!quote.loading && quote.data && (
-                <strong>{formatAttoTokens(quote.data.storage_cost_atto)}</strong>
-              )}
-              {!quote.loading && !quote.data && (
-                <strong>{quote.error ? "Quote unavailable" : "Waiting for video duration"}</strong>
-              )}
-              <p>
-                {quote.data
-                  ? `${formatBytes(quote.data.estimated_bytes)} across ${quote.data.segment_count} HLS segments${quote.data.original_file ? ", original file," : ""} and metadata`
-                  : quote.error || "The estimate refreshes when renditions change."}
-              </p>
-            </div>
-            {quote.data && (
-              <div className="quote-breakdown">
-                <span>{formatWei(quote.data.estimated_gas_cost_wei)}</span>
-                <span>{quote.data.payment_mode} payment mode</span>
-                {quote.data.original_file && (
-                  <span>
-                    {formatBytes(quote.data.original_file.estimated_bytes)} original source
-                  </span>
-                )}
-                {quote.data.sampled && <span>large segment estimate sampled</span>}
-              </div>
-            )}
-          </div>
-        )}
+        {file && <UploadQuoteSummary quote={quote} />}
 
         {uploading && (
           <div className="upload-progress">
