@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{errors::ApiError, state::AppState, STATUS_READY};
 
-pub(crate) async fn ensure_schema(pool: &SqlitePool) -> anyhow::Result<()> {
+pub async fn ensure_schema(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
 }

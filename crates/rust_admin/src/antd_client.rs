@@ -32,12 +32,12 @@ impl AntdMetricsRecorder for AdminMetrics {
 }
 
 #[derive(Clone)]
-pub(crate) struct AntdRestClient {
+pub struct AntdRestClient {
     inner: AntdClient,
 }
 
 impl AntdRestClient {
-    pub(crate) fn new(
+    pub fn new(
         base_url: &str,
         timeout_seconds: f64,
         metrics: Arc<AdminMetrics>,
