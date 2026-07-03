@@ -146,3 +146,25 @@ Runtime gate (phases 2, 3, 6 + once after 4/5): `make smoke-local` (login → up
 - `common/src/lib.rs` (nucleus of phases 3–4)
 - `desktop_app/src-tauri/tauri.conf.json` + `launcher_core/src/lib.rs:873` (highest-risk untested path couplings in the restructure)
 - `docker-compose.yml` (needs `name:` pinned before the move — volume identity)
+
+## Execution status (2026-07-03)
+
+All seven phases implemented and verified, as a stacked PR train (merge in order):
+
+| Phase | PR | Runtime proof |
+|---|---|---|
+| 1 — Tooling baseline & CI safety net | #121 | full lint/test gate |
+| 2 — Directory restructure | #122 | `make smoke-local` |
+| 3 — autvid_common consolidation | #123 | smoke + smoke-restart + /metrics name check |
+| 4 — Rust decomposition | #124 | smoke |
+| 5 — Frontend refactors + lazy routes | #125 | smoke + Playwright e2e |
+| 6 — cargo-chef, pinned Foundry, CI e2e | #126 | full rebuild + smoke + cache-hit proof |
+| 7 — Integration test extraction | #127 | full test gate |
+
+Deviations from the plan, all documented in the PRs: antd_service stayed on
+debian-slim (needs libssl3 from ant-* deps); models.rs/upload.rs were left
+unsplit (already under the 500-line target); antd_service `tests/api.rs`
+deferred (10 inline mock tests already cover the routes).
+
+Reminder for deployed hosts (see DEPLOYMENT.md migration note): update relative
+paths in real `.env*` files (`./` → `../`) after Phase 2 merges.
