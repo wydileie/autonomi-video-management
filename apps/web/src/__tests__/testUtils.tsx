@@ -77,6 +77,20 @@ export function text(): string {
   return container.textContent;
 }
 
+/**
+ * Waits for the lazily-loaded upload page to render its file input. Call
+ * before installing fake timers: the first dynamic import needs real time.
+ */
+export async function findFileInput(): Promise<HTMLInputElement> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const input = container.querySelector('input[type="file"]');
+    if (input) return input as HTMLInputElement;
+    await flushPromises();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 5)));
+  }
+  throw new Error("file input did not render");
+}
+
 export function findButton(label: string | RegExp): HTMLButtonElement {
   const matcher = label instanceof RegExp ? label : new RegExp(label, "i");
   const button = Array.from(container.querySelectorAll("button")).find((candidate) =>

@@ -253,8 +253,8 @@ export function useUploadQuote({
           duration_seconds: metaDuration,
           encode_settings: encodeSettings,
           resolutions,
-          source_width: metaWidth,
-          source_height: metaHeight,
+          source_width: metaWidth ?? null,
+          source_height: metaHeight ?? null,
         };
         if (uploadOriginal) {
           quoteRequest.upload_original = true;

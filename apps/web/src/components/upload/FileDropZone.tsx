@@ -1,10 +1,10 @@
-import { useState, type DragEvent, type RefObject } from "react";
+import { useState, type DragEvent, type MutableRefObject } from "react";
 
 import { formatBytes } from "../../utils/format";
 
 interface FileDropZoneProps {
   file: File | null;
-  fileInputRef: RefObject<HTMLInputElement | null>;
+  fileInputRef: MutableRefObject<HTMLInputElement | null>;
   onFile: (file?: File) => void;
   uploading: boolean;
 }

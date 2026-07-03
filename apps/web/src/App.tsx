@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { lazy, Suspense, useCallback, useState } from "react";
 import {
   BrowserRouter,
   Navigate,
@@ -12,9 +12,12 @@ import {
 import "./App.css";
 import DesktopSetupGate from "./components/DesktopSetupGate";
 import ErrorBoundary from "./components/ErrorBoundary";
-import Library from "./components/Library";
 import LoginPanel from "./components/LoginPanel";
-import UploadPanel from "./components/UploadPanel";
+
+// Route-split the heavy pages so the initial bundle (and the hls.js chunk
+// pulled in by the player) loads on demand.
+const Library = lazy(() => import("./components/Library"));
+const UploadPanel = lazy(() => import("./components/UploadPanel"));
 import { BRAND_IMAGE } from "./constants";
 import useAuth from "./hooks/useAuth";
 import type { AuthState } from "./types";
@@ -108,45 +111,58 @@ function AppRoutes() {
       </header>
 
       <main className="workspace-main">
-        <Routes>
-          <Route path="/" element={<Navigate to="/library" replace />} />
-          <Route path="/library" element={<Library key={`public-${refreshKey}`} />} />
-          <Route path="/library/:videoId" element={<Library key={`public-${refreshKey}`} />} />
-          <Route path="/videos/:videoId" element={<VideoDetailRedirect />} />
-          <Route
-            path="/manage"
-            element={
-              auth ? (
-                <Library key={`admin-${refreshKey}`} admin />
-              ) : (
-                <Navigate to="/login" replace />
-              )
-            }
-          />
-          <Route
-            path="/manage/:videoId"
-            element={
-              auth ? (
-                <Library key={`admin-${refreshKey}`} admin />
-              ) : (
-                <Navigate to="/login" replace />
-              )
-            }
-          />
-          <Route
-            path="/upload"
-            element={
-              auth ? <UploadPanel onUploaded={handleUploaded} /> : <Navigate to="/login" replace />
-            }
-          />
-          <Route
-            path="/login"
-            element={
-              auth ? <Navigate to="/manage" replace /> : <LoginPanel onLogin={handleLogin} />
-            }
-          />
-          <Route path="*" element={<Navigate to="/library" replace />} />
-        </Routes>
+        <Suspense
+          fallback={
+            <div className="empty-state">
+              <span className="empty-icon" aria-hidden="true" />
+              <strong>Loading...</strong>
+            </div>
+          }
+        >
+          <Routes>
+            <Route path="/" element={<Navigate to="/library" replace />} />
+            <Route path="/library" element={<Library key={`public-${refreshKey}`} />} />
+            <Route path="/library/:videoId" element={<Library key={`public-${refreshKey}`} />} />
+            <Route path="/videos/:videoId" element={<VideoDetailRedirect />} />
+            <Route
+              path="/manage"
+              element={
+                auth ? (
+                  <Library key={`admin-${refreshKey}`} admin />
+                ) : (
+                  <Navigate to="/login" replace />
+                )
+              }
+            />
+            <Route
+              path="/manage/:videoId"
+              element={
+                auth ? (
+                  <Library key={`admin-${refreshKey}`} admin />
+                ) : (
+                  <Navigate to="/login" replace />
+                )
+              }
+            />
+            <Route
+              path="/upload"
+              element={
+                auth ? (
+                  <UploadPanel onUploaded={handleUploaded} />
+                ) : (
+                  <Navigate to="/login" replace />
+                )
+              }
+            />
+            <Route
+              path="/login"
+              element={
+                auth ? <Navigate to="/manage" replace /> : <LoginPanel onLogin={handleLogin} />
+              }
+            />
+            <Route path="*" element={<Navigate to="/library" replace />} />
+          </Routes>
+        </Suspense>
       </main>
     </div>
   );
