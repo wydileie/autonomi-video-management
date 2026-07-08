@@ -867,9 +867,9 @@ dependencies = [
 
 [[package]]
 name = "ant-node"
-version = "0.14.0"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02e6e8f726bdc4fa307c6b4732b4b80233d231fa8cbedd6048fde6a8996a7a29"
+checksum = "3f7f5de9683a7ce865dbc34eb51356fc748a0ee5b274e4fb343aec4de5dc3c81"
 dependencies = [
  "ant-protocol",
  "blake3",
@@ -878,7 +878,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "directories",
- "evmlib",
+ "evmlib 0.9.0",
  "flate2",
  "fs2",
  "futures",
@@ -917,13 +917,13 @@ dependencies = [
 
 [[package]]
 name = "ant-protocol"
-version = "2.2.0"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f61260c89bbc0039e0643f3e2ec79b1c17aee9d81b58d7edbc52314689489f39"
+checksum = "5b665880152b4e124094acc1faaff5f20a275594e6364b8a729b50f3bc326674"
 dependencies = [
  "blake3",
  "bytes",
- "evmlib",
+ "evmlib 0.9.0",
  "hex",
  "postcard",
  "rmp-serde",
@@ -945,7 +945,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
- "evmlib",
+ "evmlib 0.8.1",
  "futures-util",
  "hex",
  "rmp-serde",
@@ -2588,6 +2588,27 @@ name = "evmlib"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebd96cf24017cd31cd422c80de3078a821b7884a5b1feb00087e98209326c676"
+dependencies = [
+ "alloy",
+ "ant-merkle",
+ "exponential-backoff",
+ "hex",
+ "rand 0.8.6",
+ "rmp-serde",
+ "serde",
+ "serde_with",
+ "thiserror 1.0.69",
+ "tiny-keccak",
+ "tokio",
+ "tracing",
+ "xor_name",
+]
+
+[[package]]
+name = "evmlib"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8da0d9ad5b5cab92cc92ddac9afb884f86b226340caf17f6e5c41d51175dcaa1"
 dependencies = [
  "alloy",
  "ant-merkle",
@@ -5570,9 +5591,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-core"
-version = "0.26.0"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa8cc1b7f59f97d018760ff150bbb4f217197c41622b83f7085c9cf0424b736e"
+checksum = "5d9c05644c46b8de670aa5c8eea037b90731f1f204e8aa5d8a2f03496d740401"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5685,9 +5706,9 @@ dependencies = [
 
 [[package]]
 name = "saorsa-transport"
-version = "0.35.0"
+version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "621d0a207914a8fd6453f25e4bcc369914cbfaf59a2857e898c079b95f52f5bb"
+checksum = "3c39d5524d6c886e402d9024d927988ea4e80b0105ce04ff03c89191579d2ada"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6610,7 +6631,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
