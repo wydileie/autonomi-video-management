@@ -1,4 +1,4 @@
-.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust fmt-react deny-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust fmt-react deny-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart e2e-local smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -53,6 +53,7 @@ help:
 	@echo "  make smoke-local     Run an end-to-end local devnet smoke test"
 	@echo "  make smoke-local-restart Run smoke test with rust_admin restart recovery"
 	@echo "  make smoke-local-large-original Run smoke test with >16MB original source upload"
+	@echo "  make e2e-local       Run the Playwright e2e against a running local stack"
 	@echo "  make audit-rust      Run cargo audit if installed"
 	@echo "  make audit-react     Run npm production audit"
 	@echo "  make audit-trivy     Run Trivy filesystem scan if installed"
@@ -189,6 +190,9 @@ test-react:
 
 coverage-react:
 	cd apps/web && CI=true $(NPM) run test:coverage
+
+e2e-local:
+	cd apps/web && E2E_BASE_URL=http://localhost $(NPM) run e2e
 
 smoke-local:
 	scripts/smoke-local-devnet.sh

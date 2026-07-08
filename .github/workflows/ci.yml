@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
 
 jobs:
   rust-workspace:
@@ -259,3 +262,62 @@ jobs:
           ignore-unfixed: true
           severity: CRITICAL,HIGH
           exit-code: "1"
+
+  e2e:
+    name: End-to-end Playwright against local devnet
+    # Too heavy per-PR: full stack boot + real transcode pipeline. Runs on main
+    # pushes, nightly, and on demand. Treat as advisory until a week of green.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare env file
+        run: cp .env.local.example .env.local
+
+      - name: Boot stack with prebuilt devnet image
+        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml up -d --build --wait
+        timeout-minutes: 30
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/web
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium --with-deps
+        working-directory: apps/web
+
+      - name: Generate test fixture
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i testsrc=size=640x360:rate=24 \
+            -f lavfi -i sine=frequency=880:sample_rate=44100 \
+            -t 4 -shortest -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac -movflags +faststart /tmp/e2e-sample.mp4
+
+      - name: Run Playwright e2e
+        run: npm run e2e
+        working-directory: apps/web
+        env:
+          E2E_BASE_URL: http://localhost
+          E2E_VIDEO_PATH: /tmp/e2e-sample.mp4
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+
+      - name: Dump compose logs
+        if: failure()
+        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml logs --tail 200

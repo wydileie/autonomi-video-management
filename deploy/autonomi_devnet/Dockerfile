@@ -66,13 +66,16 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Pinned: a live "latest release" lookup made builds unreproducible and
+# subject to GitHub API rate limits. Bump deliberately.
+ARG FOUNDRY_TAG=v1.4.1
+
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in \
       amd64) FOUNDRY_ARCH="amd64" ;; \
       arm64) FOUNDRY_ARCH="arm64" ;; \
       *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac && \
-    FOUNDRY_TAG="$(curl -fsSL https://api.github.com/repos/foundry-rs/foundry/releases/latest | jq -r '.tag_name')" && \
     curl -fsSLo /tmp/foundry.tar.gz \
       "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_TAG}/foundry_${FOUNDRY_TAG}_linux_${FOUNDRY_ARCH}.tar.gz" && \
     tar -xzf /tmp/foundry.tar.gz -C /usr/local/bin anvil forge cast chisel && \

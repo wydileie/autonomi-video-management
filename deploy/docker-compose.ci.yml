@@ -1,0 +1,7 @@
+# CI overlay: use the prebuilt devnet image from GHCR instead of the 30+ minute
+# from-source build. Apply after docker-compose.local.yml:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml ...
+services:
+  antd:
+    image: "${DEVNET_IMAGE:-ghcr.io/wydileie/autonomi-video-management-autonomi-devnet:latest}"
+    build: !reset null

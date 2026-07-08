@@ -206,4 +206,8 @@ testvids/
 testvids/**
 testvids/*
 ChatGPT Image Apr 29, 2026 at 02_45_59 PM.png
+
+# Playwright artifacts
+apps/web/test-results/
+apps/web/playwright-report/
 .claude/
