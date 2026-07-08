@@ -19,7 +19,7 @@ pub(crate) struct JobMetricsSnapshot {
     pub(crate) oldest_queued_age_seconds: u64,
 }
 
-pub(crate) struct AdminMetrics {
+pub struct AdminMetrics {
     pub(crate) http: HttpMetrics,
     jobs_started_total: AtomicU64,
     jobs_succeeded_total: AtomicU64,

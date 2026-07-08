@@ -8,15 +8,15 @@ use tokio_util::sync::CancellationToken;
 use crate::{antd_client::AntdRestClient, config::Config, metrics::AdminMetrics};
 
 #[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) config: Arc<Config>,
-    pub(crate) pool: SqlitePool,
-    pub(crate) antd: AntdRestClient,
-    pub(crate) metrics: Arc<AdminMetrics>,
-    pub(crate) catalog_lock: Arc<Mutex<()>>,
-    pub(crate) catalog_publish_lock: Arc<Mutex<()>>,
-    pub(crate) catalog_publish_epoch: Arc<AtomicU64>,
-    pub(crate) upload_save_semaphore: Arc<Semaphore>,
-    pub(crate) shutdown: CancellationToken,
-    pub(crate) job_notify_tx: watch::Sender<u64>,
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub pool: SqlitePool,
+    pub antd: AntdRestClient,
+    pub metrics: Arc<AdminMetrics>,
+    pub catalog_lock: Arc<Mutex<()>>,
+    pub catalog_publish_lock: Arc<Mutex<()>>,
+    pub catalog_publish_epoch: Arc<AtomicU64>,
+    pub upload_save_semaphore: Arc<Semaphore>,
+    pub shutdown: CancellationToken,
+    pub job_notify_tx: watch::Sender<u64>,
 }
