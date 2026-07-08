@@ -70,6 +70,17 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
+      # tauri-build validates every configured externalBin and bundle
+      # resource during cargo check; stage empty host-triple sidecars and an
+      # empty frontend dist directory so a compile-only check can pass.
+      - name: Stage dummy sidecars and frontend dist for compile check
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          for name in antd rust_admin rust_stream ffmpeg ffprobe; do
+            install -m 0755 /dev/null "apps/desktop/src-tauri/binaries/${name}-${triple}"
+          done
+          mkdir -p apps/web/build
+
       - name: Check desktop app
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
