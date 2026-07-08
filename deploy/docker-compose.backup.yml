@@ -21,8 +21,8 @@ services:
     networks:
       - appnet
     volumes:
-      - ${BACKUP_HOST_PATH:-./backups}:/backups
-      - ${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid:ro
+      - ${BACKUP_HOST_PATH:-../backups}:/backups
+      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid:ro
       - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/var/lib/node_exporter/textfile_collector
     restart: unless-stopped
     security_opt:

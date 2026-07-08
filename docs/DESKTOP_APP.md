@@ -1,6 +1,6 @@
 # Desktop App
 
-The installable desktop app lives in `desktop_app/` and uses Tauri v2 as a
+The installable desktop app lives in `apps/desktop/` and uses Tauri v2 as a
 native shell around the existing local service stack.
 
 ## Runtime Shape
@@ -39,7 +39,7 @@ make build-tauri
 ```
 
 `make stage-tauri-sidecars` builds the Rust sidecars and copies `ffmpeg` and
-`ffprobe` into `desktop_app/src-tauri/binaries` using Tauri's target-triple
+`ffprobe` into `apps/desktop/src-tauri/binaries` using Tauri's target-triple
 sidecar naming. Release builds must provide self-contained FFmpeg tools with
 either:
 

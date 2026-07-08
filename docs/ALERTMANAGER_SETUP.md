@@ -4,7 +4,7 @@ The checked-in Alertmanager config intentionally uses an empty `default`
 receiver. It lets the monitoring stack start everywhere without sending test
 alerts to a real on-call channel.
 
-For production, edit `monitoring/alertmanager/alertmanager.yml` on the deploy
+For production, edit `deploy/monitoring/alertmanager/alertmanager.yml` on the deploy
 host or use a private Compose override that mounts a host-local config file.
 Do not commit real webhook URLs, SMTP passwords, or routing keys.
 
@@ -114,9 +114,9 @@ Validate the merged Compose config before starting:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
   config
 ```
 
@@ -124,9 +124,9 @@ Validate Alertmanager config inside the running container:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
   exec alertmanager amtool check-config /etc/alertmanager/alertmanager.yml
 ```
 
@@ -134,8 +134,8 @@ Restart Alertmanager after changing the mounted file:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
   restart alertmanager
 ```

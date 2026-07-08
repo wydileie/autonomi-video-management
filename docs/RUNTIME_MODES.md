@@ -15,10 +15,10 @@ gateway, SQLite database, catalog state file, `/api`, and `/stream` contracts.
 
 | File | Role |
 |---|---|
-| `docker-compose.yml` | Base app services, internal network, app-data mount, Nginx routing, health checks |
-| `docker-compose.local.yml` | Self-contained local Autonomi devnet and `antd` for testing |
-| `docker-compose.prod.yml` | Production/default-network `antd` daemon configuration |
-| `docker-compose.debug-ports.yml` | Optional direct host ports for admin and stream debugging |
+| `deploy/docker-compose.yml` | Base app services, internal network, app-data mount, Nginx routing, health checks |
+| `deploy/docker-compose.local.yml` | Self-contained local Autonomi devnet and `antd` for testing |
+| `deploy/docker-compose.prod.yml` | Production/default-network `antd` daemon configuration |
+| `deploy/docker-compose.debug-ports.yml` | Optional direct host ports for admin and stream debugging |
 
 Important runtime glue:
 

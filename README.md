@@ -49,7 +49,7 @@ Browser
 | `antd` | Rust | 8082 (REST), 50051 (gRPC) | Autonomi network gateway daemon |
 | `rust_admin` | Rust / Axum | 8000 | Video upload, FFmpeg transcoding, metadata API |
 | `rust_stream` | Rust / Axum | 8081 | HLS manifest generation + Autonomi segment proxy |
-| `react_frontend` | React | 80 | Upload UI, video library, HLS player |
+| `apps/web` | React | 80 | Upload UI, video library, HLS player |
 | `nginx` | — | 80 | Reverse proxy for the frontend, admin API, and stream API |
 
 ### URL routing (via Nginx)
@@ -210,8 +210,8 @@ final approval, publication, `/stream` playlists, and segment fetches.
 ```bash
 # In one terminal, run the local stack.
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   up --build
 
 # In another terminal, run the workflow smoke.
@@ -237,9 +237,9 @@ than the legacy JSON body path.
 The app is intended to run as a containerized stack. Use the base Compose file
 plus one overlay:
 
-- `docker-compose.local.yml` runs a self-contained local Autonomi devnet for testing.
-- `docker-compose.local-public.yml` keeps that local devnet internal while exposing only the app proxy for internet-accessible demos.
-- `docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
+- `deploy/docker-compose.local.yml` runs a self-contained local Autonomi devnet for testing.
+- `deploy/docker-compose.local-public.yml` keeps that local devnet internal while exposing only the app proxy for internet-accessible demos.
+- `deploy/docker-compose.prod.yml` runs `antd` against the configured Autonomi network.
 
 Compose remains the supported deployment runtime. The repo also documents the
 service boundary used by the native launcher so local packages can reuse the
@@ -266,8 +266,8 @@ cp .env.local.example .env.local
 # limited by the actual free space on AUTVID_DATA_HOST_PATH.
 
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   up --build
 ```
 
@@ -281,9 +281,9 @@ To publish direct admin and stream debug ports, add the debug overlay:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.debug-ports.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.debug-ports.yml \
   up --build
 ```
 
@@ -298,13 +298,13 @@ cp .env.local-public.example .env.local-public
 # Fill in the domain, admin credentials, auth secret, and processing path.
 
 docker compose --env-file .env.local-public \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.local-public.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.local-public.yml \
   up --build -d
 ```
 
-Do not add `docker-compose.debug-ports.yml` on an internet-facing demo unless
+Do not add `deploy/docker-compose.debug-ports.yml` on an internet-facing demo unless
 you intentionally want debug ports exposed. The local devnet is not permanent
 public Autonomi storage; data lives in local Docker volumes.
 
@@ -316,8 +316,8 @@ cp .env.production.example .env.production
 # then fill in domain and any network/payment settings.
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   up --build -d
 ```
 
@@ -353,7 +353,7 @@ for deployment. `.env.example` contains the full variable set in one file.
 | `APP_ENV` | Production | Set to `production` in deployments. Production mode rejects default or weak admin credentials at startup |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Yes | Single uploader/admin login for uploads, approvals, deletes, and library management |
 | `ADMIN_AUTH_SECRET` | Yes | Long random secret used to sign admin login tokens |
-| `ADMIN_LOGIN_PASSWORD_SECRET_FILE` / `ADMIN_AUTH_SECRET_SECRET_FILE` / `ANTD_INTERNAL_TOKEN_SECRET_FILE` / `AUTONOMI_WALLET_KEY_SECRET_FILE` | Production | Host paths used by `docker-compose.prod.yml` for file-backed Docker secrets |
+| `ADMIN_LOGIN_PASSWORD_SECRET_FILE` / `ADMIN_AUTH_SECRET_SECRET_FILE` / `ANTD_INTERNAL_TOKEN_SECRET_FILE` / `AUTONOMI_WALLET_KEY_SECRET_FILE` | Production | Host paths used by `deploy/docker-compose.prod.yml` for file-backed Docker secrets |
 | `ADMIN_AUTH_TTL_HOURS` | No | Admin login token lifetime. Default: `12` |
 | `ADMIN_REFRESH_TOKEN_TTL_HOURS` | No | HttpOnly refresh-cookie session lifetime. Default: `720` |
 | `ADMIN_AUTH_COOKIE_SAME_SITE` | No | SameSite attribute for admin access and refresh cookies: `Strict`, `Lax`, or `None`. Default: `Lax`; `None` requires secure cookies |
@@ -573,23 +573,23 @@ autonomi-video-management/
 │   ├── start_autonomi.sh       # postStartCommand: starts local devnet + antd
 │   ├── setup_claude.py         # Writes MCP server config to ~/.claude.json
 │   └── setup_codex.py          # Registers MCP servers with Codex
-├── antd_service/
+├── crates/antd_service/
 │   ├── Dockerfile              # Production/default-network antd daemon container
 │   └── src/                    # Axum gateway split into client, routes, errors, and state
-├── autonomi_devnet/
+├── deploy/autonomi_devnet/
 │   ├── Dockerfile              # Self-contained local ant-devnet + antd testnet
 │   └── start-local-devnet.sh
-├── common/
+├── crates/common/
 │   └── src/lib.rs              # Shared Rust helpers used by multiple services
-├── rust_admin/
+├── crates/rust_admin/
 │   ├── Dockerfile
 │   ├── Cargo.toml
 │   └── src/                    # Axum admin API split into config, auth, routes, jobs, upload, media, catalog, pipeline, storage, DB, models, state, and antd client
-├── rust_stream/
+├── crates/rust_stream/
 │   ├── Dockerfile
 │   ├── Cargo.toml
 │   └── src/                    # Axum stream API split into config, cache, HLS, routes, and antd client
-├── react_frontend/
+├── apps/web/
 │   ├── Dockerfile
 │   ├── index.html
 │   ├── package.json
@@ -602,17 +602,17 @@ autonomi-video-management/
 │       ├── hooks/              # Browser auth/session hooks
 │       ├── styles/             # Split component-oriented CSS
 │       └── utils/              # Formatting, status, and resolution helpers
-├── nginx/
+├── deploy/nginx/
 │   └── conf.d/default.conf     # Local HTTP reverse proxy
-├── standalone_launcher/        # Linux/macOS local web launcher
+├── crates/standalone_launcher/        # Linux/macOS local web launcher
 ├── docs/
 │   ├── DEPLOYMENT.md           # Production deployment guide
 │   ├── RUNTIME_MODES.md        # Compose and standalone runtime boundaries
 │   └── runtime-contract.example.json # Example native host endpoint/path contract
-├── docker-compose.yml          # Base app services
-├── docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
-├── docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
-├── docker-compose.prod.yml     # Production/default-network antd overlay
+├── deploy/docker-compose.yml          # Base app services
+├── deploy/docker-compose.local.yml    # Local self-contained Autonomi devnet overlay
+├── deploy/docker-compose.debug-ports.yml # Optional direct admin/stream debug ports
+├── deploy/docker-compose.prod.yml     # Production/default-network antd overlay
 ├── .env.local.example
 ├── .env.production.example
 └── .env.example

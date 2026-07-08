@@ -11,41 +11,41 @@ updates:
       interval: weekly
 
   - package-ecosystem: npm
-    directory: /react_frontend
+    directory: /apps/web
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /rust_admin
+    directory: /crates/rust_admin
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /rust_stream
+    directory: /crates/rust_stream
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /antd_service
+    directory: /crates/antd_service
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /nginx
+    directory: /deploy/nginx
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /react_frontend
+    directory: /apps/web
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /backup_sidecar
+    directory: /deploy/backup_sidecar
     schedule:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /autonomi_devnet
+    directory: /deploy/autonomi_devnet
     schedule:
       interval: weekly

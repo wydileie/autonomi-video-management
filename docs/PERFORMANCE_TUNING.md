@@ -100,4 +100,4 @@ The production Compose overlay sets resource ceilings for the main services:
 | `rust_admin` | 2 CPU / 2 GB |
 | `rust_stream` | 1 CPU / 512 MB |
 | `nginx` | 0.5 CPU / 256 MB |
-| `react_frontend` | 0.5 CPU / 256 MB |
+| `apps/web` | 0.5 CPU / 256 MB |

@@ -1,6 +1,6 @@
 # Backup Sidecar
 
-`docker-compose.backup.yml` adds an opt-in `backup_sidecar` service for
+`deploy/docker-compose.backup.yml` adds an opt-in `backup_sidecar` service for
 scheduled production backups. It is not part of the base or production Compose
 files; include the override only on hosts where you want automated backups.
 
@@ -23,9 +23,9 @@ sudo chmod 700 /srv/autonomi-video-management/backups
 
 BACKUP_HOST_PATH=/srv/autonomi-video-management/backups \
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.backup.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.backup.yml \
   up --build -d
 ```
 
@@ -34,9 +34,9 @@ Run a one-shot backup:
 ```bash
 BACKUP_HOST_PATH=/srv/autonomi-video-management/backups \
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.backup.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.backup.yml \
   run --rm backup_sidecar run
 ```
 

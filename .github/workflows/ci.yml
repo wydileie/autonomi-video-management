@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -65,7 +65,7 @@ jobs:
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          workspaces: desktop_app/src-tauri
+          workspaces: apps/desktop/src-tauri
 
       # tauri-build validates every configured externalBin and bundle
       # resource during cargo check; stage empty host-triple sidecars and an
@@ -74,12 +74,12 @@ jobs:
         run: |
           triple=$(rustc -vV | sed -n 's/^host: //p')
           for name in antd rust_admin rust_stream ffmpeg ffprobe; do
-            install -m 0755 /dev/null "desktop_app/src-tauri/binaries/${name}-${triple}"
+            install -m 0755 /dev/null "apps/desktop/src-tauri/binaries/${name}-${triple}"
           done
-          mkdir -p react_frontend/build
+          mkdir -p apps/web/build
 
       - name: Check desktop app
-        run: cargo check --manifest-path desktop_app/src-tauri/Cargo.toml
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   rust-admin-db:
     name: Rust admin SQLite integration tests
@@ -109,40 +109,40 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: react_frontend/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install dependencies
         run: npm ci
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Lint
         run: npm run lint
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Check formatting
         run: npm run format:check
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Build
         run: npm run build
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Run tests
         run: npm test
-        working-directory: react_frontend
+        working-directory: apps/web
         env:
           CI: "true"
 
       - name: Run coverage
         run: npm run test:coverage
-        working-directory: react_frontend
+        working-directory: apps/web
         env:
           CI: "true"
 
       - name: Upload frontend coverage
         uses: codecov/codecov-action@v7
         with:
-          files: react_frontend/coverage/lcov.info
+          files: apps/web/coverage/lcov.info
           flags: frontend
           fail_ci_if_error: false
 
@@ -183,13 +183,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Render local Compose config
-        run: docker compose --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
+        run: docker compose --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/tmp/autvid-compose-local.yml
 
       - name: Render public local-devnet Compose config
-        run: docker compose --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
+        run: docker compose --env-file .env.local-public.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
 
       - name: Render production Compose config
-        run: docker compose --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
+        run: docker compose --env-file .env.production.example -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
 
   security-audit:
     name: Security audits (blocking)
@@ -203,15 +203,15 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: react_frontend/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
 
       - name: Install React dependencies
         run: npm ci
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Run npm production audit
         run: npm audit --omit=dev
-        working-directory: react_frontend
+        working-directory: apps/web
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -230,20 +230,20 @@ jobs:
       matrix:
         image:
           - tag: autvid-rust-admin:ci
-            dockerfile: rust_admin/Dockerfile
+            dockerfile: crates/rust_admin/Dockerfile
             context: .
           - tag: autvid-rust-stream:ci
-            dockerfile: rust_stream/Dockerfile
+            dockerfile: crates/rust_stream/Dockerfile
             context: .
           - tag: autvid-antd-service:ci
-            dockerfile: antd_service/Dockerfile
+            dockerfile: crates/antd_service/Dockerfile
             context: .
           - tag: autvid-nginx:ci
             dockerfile: Dockerfile
-            context: ./nginx
+            context: ./deploy/nginx
           - tag: autvid-react-frontend:ci
             dockerfile: Dockerfile
-            context: ./react_frontend
+            context: ./apps/web
     steps:
       - name: Checkout
         uses: actions/checkout@v7

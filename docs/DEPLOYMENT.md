@@ -4,6 +4,24 @@ This project is designed to deploy as containers. That is the easiest path
 across Linux, macOS, and Windows because the stack depends on Rust, FFmpeg,
 Nginx, SQLite app data, and Autonomi tooling.
 
+## Migration note: compose files moved to `deploy/`
+
+All `docker-compose.*.yml` files now live in `deploy/`. Two things to know for
+hosts that ran the stack before the move:
+
+- **Volume and network identity is preserved** by the pinned
+  `name: autonomi-video-management` in `deploy/docker-compose.yml`. Do not
+  remove it: without a project name, Compose derives one from the directory of
+  the first `-f` file (`deploy`), which would recreate every named volume
+  empty. If a host previously relied on a custom project name, set
+  `COMPOSE_PROJECT_NAME` explicitly in its env file.
+- **Relative host paths in `.env*` files now resolve from `deploy/`**, not the
+  repo root. If your `.env`, `.env.local`, or `.env.production` sets values
+  like `AUTVID_DATA_HOST_PATH=./.autvid/app_data` or
+  `ADMIN_LOGIN_PASSWORD_SECRET_FILE=./secrets/...`, change `./` to `../` (or
+  switch to absolute paths, which are recommended for production). The
+  `.env*.example` files already use the new form.
+
 ## Local Testnet
 
 Use this mode for repeatable end-to-end testing without spending real storage
@@ -13,8 +31,8 @@ tokens. It starts `ant-devnet`, Anvil, and `antd` inside the Compose stack.
 cp .env.local.example .env.local
 
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   up --build
 ```
 
@@ -47,13 +65,13 @@ If another local process already owns those ports, change `APP_HTTP_PORT`,
 override. Container-to-container traffic still uses the standard internal ports.
 
 To publish direct admin and stream debug ports, add
-`docker-compose.debug-ports.yml` to the same command:
+`deploy/docker-compose.debug-ports.yml` to the same command:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.debug-ports.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.debug-ports.yml \
   up --build
 ```
 
@@ -69,9 +87,9 @@ cp .env.local-public.example .env.local-public
 # Edit .env.local-public before starting.
 
 docker compose --env-file .env.local-public \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.local-public.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.local-public.yml \
   up --build -d
 ```
 
@@ -88,7 +106,7 @@ CORS_ALLOWED_ORIGINS=https://demo.example.com,http://demo.example.com
 AUTVID_DATA_HOST_PATH=/srv/autonomi-video-management/app-data
 ```
 
-Do not add `docker-compose.debug-ports.yml` for a public demo unless you
+Do not add `deploy/docker-compose.debug-ports.yml` for a public demo unless you
 intentionally want direct admin/stream debug ports published. Keep cloud or host
 firewall rules limited to SSH plus HTTP/HTTPS. Docker-published ports can bypass
 some host firewall frontends, so prefer removing unwanted port publishes with
@@ -116,8 +134,8 @@ cp .env.production.example .env.production
 # Edit .env.production before starting.
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   up --build -d
 ```
 
@@ -164,8 +182,8 @@ Start production:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   up --build -d
 ```
 
@@ -196,13 +214,13 @@ Useful checks:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   logs --tail=200 antd
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 
 # For readiness and write-cost probes, use any HTTP client from the Compose
@@ -221,8 +239,8 @@ Check services:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   ps
 ```
 
@@ -230,8 +248,8 @@ Follow logs:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   logs -f rust_admin rust_stream antd
 ```
 
@@ -265,16 +283,16 @@ raw metrics; the production Rust/antd runtime images intentionally do not ship
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec antd /usr/local/bin/antd --healthcheck 127.0.0.1:8082 /livez
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec rust_admin /usr/local/bin/rust_admin --healthcheck 127.0.0.1:8000 /livez
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   exec rust_stream /usr/local/bin/rust_stream --healthcheck 127.0.0.1:8081 /livez
 ```
 
@@ -287,10 +305,10 @@ the backup override with a shared `BACKUP_TEXTFILE_HOST_PATH`:
 ```bash
 BACKUP_TEXTFILE_HOST_PATH=/srv/autonomi-video-management/textfile \
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.backup.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
+  -f deploy/docker-compose.backup.yml \
   up --build -d
 ```
 
@@ -324,8 +342,8 @@ Stop without deleting data:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
   down
 ```
 
@@ -333,8 +351,8 @@ Destructive local reset:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   down -v
 ```
 

@@ -4,7 +4,7 @@ import path from "node:path";
 const adminUsername = process.env.E2E_ADMIN_USERNAME || "admin";
 const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin";
 const fixturePath =
-  process.env.E2E_VIDEO_PATH || path.resolve(__dirname, "../../testvids/sample.mp4");
+  process.env.E2E_VIDEO_PATH || path.resolve(__dirname, "../../../testvids/sample.mp4");
 
 function positiveIntEnv(name: string, fallback: number) {
   const parsed = Number.parseInt(process.env[name] || "", 10);

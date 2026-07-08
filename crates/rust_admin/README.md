@@ -34,7 +34,7 @@ Run in the local stack:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
   up --build rust_admin
 ```

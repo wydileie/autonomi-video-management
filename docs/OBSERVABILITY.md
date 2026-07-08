@@ -64,9 +64,9 @@ Start the local devnet stack with monitoring:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.monitoring.yml \
   up --build
 ```
 
@@ -74,10 +74,10 @@ Start local monitoring plus log collection:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.logging.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.monitoring.yml \
+  -f deploy/docker-compose.logging.yml \
   up --build
 ```
 
@@ -115,9 +115,9 @@ Add the monitoring overlay to the production Compose command:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
   up --build -d
 ```
 
@@ -127,10 +127,10 @@ inspection, or after the monitoring overlay for metrics and logs together:
 
 ```bash
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.logging.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
+  -f deploy/docker-compose.logging.yml \
   up --build -d
 ```
 
@@ -146,7 +146,7 @@ privileged.
 ## Grafana Dashboards
 
 Grafana is provisioned with a Prometheus datasource named `Prometheus`. When
-`docker-compose.logging.yml` is included, it also gets a `Loki` datasource.
+`deploy/docker-compose.logging.yml` is included, it also gets a `Loki` datasource.
 These dashboards are loaded in the `Autonomi Video Management` folder:
 
 | Dashboard | Coverage |
@@ -163,7 +163,7 @@ pickup, and stream segment fetches.
 
 ## Alerts
 
-Prometheus loads `monitoring/prometheus/rules/autvid-alerts.yml` and sends
+Prometheus loads `deploy/monitoring/prometheus/rules/autvid-alerts.yml` and sends
 alerts to Alertmanager. The default Alertmanager receiver intentionally drops
 notifications until you add email, Slack, webhook, or another receiver for
 your environment.
@@ -195,23 +195,23 @@ Render the merged Compose config before starting:
 
 ```bash
 docker compose --env-file .env.local \
-  -f docker-compose.yml \
-  -f docker-compose.local.yml \
-  -f docker-compose.monitoring.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.local.yml \
+  -f deploy/docker-compose.monitoring.yml \
   config
 
 docker compose --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml \
-  -f docker-compose.monitoring.yml \
-  -f docker-compose.logging.yml \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.prod.yml \
+  -f deploy/docker-compose.monitoring.yml \
+  -f deploy/docker-compose.logging.yml \
   config
 ```
 
 Validate dashboard JSON locally:
 
 ```bash
-for file in monitoring/grafana/dashboards/*.json; do
+for file in deploy/monitoring/grafana/dashboards/*.json; do
   jq empty "$file"
 done
 ```

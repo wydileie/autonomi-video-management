@@ -5,10 +5,10 @@ CARGO ?= cargo
 DOCKER_COMPOSE ?= docker compose
 LOCAL_ENV ?= .env.local
 PROD_ENV ?= .env.production
-LOCAL_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.local.yml
-LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f docker-compose.monitoring.yml
-LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f docker-compose.logging.yml
-PROD_COMPOSE_FILES = -f docker-compose.yml -f docker-compose.prod.yml
+LOCAL_COMPOSE_FILES = -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml
+LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f deploy/docker-compose.monitoring.yml
+LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f deploy/docker-compose.logging.yml
+PROD_COMPOSE_FILES = -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml
 CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend
 MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki promtail
 
@@ -95,7 +95,7 @@ fmt-rust:
 	$(CARGO) fmt --all --check
 
 fmt-react:
-	cd react_frontend && $(NPM) run format:check
+	cd apps/web && $(NPM) run format:check
 
 deny-rust:
 	@if command -v cargo-deny >/dev/null 2>&1; then \
@@ -105,13 +105,13 @@ deny-rust:
 	fi
 
 compose-config:
-	$(DOCKER_COMPOSE) --env-file .env.local.example -f docker-compose.yml -f docker-compose.local.yml config >/tmp/autvid-compose-local.yml
-	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
+	$(DOCKER_COMPOSE) --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/tmp/autvid-compose-local.yml
+	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_FULL_COMPOSE_FILES) config >/tmp/autvid-compose-local-full.yml
-	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
-	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
-	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.monitoring.yml -f docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
-	$(DOCKER_COMPOSE) --env-file .env.production.example -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.backup.yml config >/tmp/autvid-compose-prod-backup.yml
+	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f deploy/docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml -f deploy/docker-compose.monitoring.yml -f deploy/docker-compose.logging.yml config >/tmp/autvid-compose-prod-observability.yml
+	$(DOCKER_COMPOSE) --env-file .env.production.example -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml -f deploy/docker-compose.backup.yml config >/tmp/autvid-compose-prod-backup.yml
 
 up-local:
 	$(DOCKER_COMPOSE) --env-file $(LOCAL_ENV) $(LOCAL_COMPOSE_FILES) up --build -d
@@ -167,28 +167,28 @@ restore-production:
 	scripts/restore-production.sh $(ARGS)
 
 install-react:
-	cd react_frontend && $(NPM) ci
+	cd apps/web && $(NPM) ci
 
 install-desktop:
-	cd desktop_app && $(NPM) ci
+	cd apps/desktop && $(NPM) ci
 
 build-react:
-	cd react_frontend && $(NPM) run build
+	cd apps/web && $(NPM) run build
 
 stage-tauri-sidecars:
 	scripts/stage-tauri-sidecars.sh
 
 build-tauri: install-react install-desktop stage-tauri-sidecars
-	cd desktop_app && $(NPM) run tauri -- build
+	cd apps/desktop && $(NPM) run tauri -- build
 
 lint-react:
-	cd react_frontend && $(NPM) run lint
+	cd apps/web && $(NPM) run lint
 
 test-react:
-	cd react_frontend && CI=true $(NPM) test
+	cd apps/web && CI=true $(NPM) test
 
 coverage-react:
-	cd react_frontend && CI=true $(NPM) run test:coverage
+	cd apps/web && CI=true $(NPM) run test:coverage
 
 smoke-local:
 	scripts/smoke-local-devnet.sh
@@ -207,7 +207,7 @@ audit-rust:
 	fi
 
 audit-react:
-	cd react_frontend && $(NPM) audit --omit=dev
+	cd apps/web && $(NPM) audit --omit=dev
 
 audit-trivy:
 	@if command -v trivy >/dev/null 2>&1; then \

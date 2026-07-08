@@ -14,7 +14,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow = "1"
-launcher_core = { path = "../../launcher_core" }
+launcher_core = { path = "../../../crates/launcher_core" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

@@ -22,5 +22,7 @@ lcov.info
 .pytest_cache/
 .cache/
 dist/
-react_frontend/dist/
+apps/web/dist/
+apps/web/build/
+apps/web/coverage/
 build/
