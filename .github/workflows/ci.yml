@@ -73,7 +73,7 @@ jobs:
         run: |
           triple=$(rustc -vV | sed -n 's/^host: //p')
           for name in antd rust_admin rust_stream ffmpeg ffprobe; do
-            install -m 0755 /dev/null "desktop_app/src-tauri/binaries/${name}-${triple}"
+            install -m 0755 /dev/null "apps/desktop/src-tauri/binaries/${name}-${triple}"
           done
 
       - name: Check desktop app
