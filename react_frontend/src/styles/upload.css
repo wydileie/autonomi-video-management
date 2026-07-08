@@ -1,8 +1,7 @@
 .dropzone {
   align-items: center;
   background:
-    linear-gradient(135deg, rgba(232, 111, 25, 0.1), transparent 48%),
-    rgba(255, 255, 255, 0.82);
+    linear-gradient(135deg, rgba(232, 111, 25, 0.1), transparent 48%), rgba(255, 255, 255, 0.82);
   border: 1px dashed rgba(34, 40, 49, 0.3);
   border-radius: var(--radius);
   color: var(--charcoal);
@@ -14,15 +13,18 @@
   padding: 28px;
   position: relative;
   text-align: center;
-  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
   width: 100%;
 }
 
 .dropzone:hover,
 .dropzone.is-dragging {
   background:
-    linear-gradient(135deg, rgba(232, 111, 25, 0.16), transparent 52%),
-    rgba(255, 255, 255, 0.96);
+    linear-gradient(135deg, rgba(232, 111, 25, 0.16), transparent 52%), rgba(255, 255, 255, 0.96);
   border-color: var(--orange);
   box-shadow: 0 14px 30px rgba(232, 111, 25, 0.12);
   transform: translateY(-2px);
@@ -119,7 +121,10 @@
   min-height: 48px;
   outline: none;
   padding: 13px 14px;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
   width: 100%;
 }
 
@@ -239,7 +244,10 @@
   min-height: 44px;
   outline: none;
   padding: 10px 12px;
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
   width: 100%;
 }
 
@@ -289,7 +297,11 @@
   font-weight: 850;
   min-height: 38px;
   padding: 9px 13px;
-  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
 }
 
 .quick-actions button:hover:not(:disabled),
@@ -315,7 +327,11 @@
   min-height: 154px;
   padding: 15px;
   text-align: left;
-  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
 }
 
 .resolution-card:hover:not(:disabled) {
@@ -325,9 +341,7 @@
 }
 
 .resolution-card.selected {
-  background:
-    linear-gradient(135deg, rgba(232, 111, 25, 0.24), transparent 55%),
-    var(--charcoal);
+  background: linear-gradient(135deg, rgba(232, 111, 25, 0.24), transparent 55%), var(--charcoal);
   border-color: rgba(232, 111, 25, 0.74);
   color: var(--paper-warm);
 }
@@ -360,7 +374,6 @@
   margin-top: 12px;
   text-transform: uppercase;
 }
-
 
 .upload-progress {
   background: rgba(34, 40, 49, 0.08);

@@ -97,9 +97,7 @@ test("adds CSRF to unsafe non-login requests without adding Authorization", asyn
 
   expect(config.headers).toMatchObject({ "X-CSRF-Token": "csrf-123" });
   expect(config.headers).not.toHaveProperty("Authorization");
-  expect(requestInterceptor({ method: "post", url: "/auth/login" })).not.toHaveProperty(
-    "headers",
-  );
+  expect(requestInterceptor({ method: "post", url: "/auth/login" })).not.toHaveProperty("headers");
 });
 
 test("shares one refresh across concurrent 401s and retries without bearer headers", async () => {
@@ -145,14 +143,16 @@ test("notifies listeners when refresh fails", async () => {
   client.subscribeAuthRefresh((auth) => refreshEvents.push(auth));
   axiosMock.post.mockRejectedValue(refreshError);
 
-  await expect(rejectedInterceptor({
-    config: {
-      headers: {},
-      method: "get",
-      url: "/admin/videos",
-    },
-    response: { status: 401 },
-  })).rejects.toBe(refreshError);
+  await expect(
+    rejectedInterceptor({
+      config: {
+        headers: {},
+        method: "get",
+        url: "/admin/videos",
+      },
+      response: { status: 401 },
+    }),
+  ).rejects.toBe(refreshError);
 
   expect(refreshEvents).toEqual([null]);
   expect(axiosMock.request).not.toHaveBeenCalled();
@@ -229,17 +229,27 @@ test("does not retry file upload, approve, or delete requests after 5xx errors",
 test("surfaces request IDs from error responses", async () => {
   const { client } = await loadClient();
 
-  expect(client.requestErrorMessage({
-    response: {
-      data: { detail: "Quote failed" },
-      headers: { "x-request-id": "req-123" },
-    },
-  }, "Fallback")).toBe("Quote failed (request req-123)");
+  expect(
+    client.requestErrorMessage(
+      {
+        response: {
+          data: { detail: "Quote failed" },
+          headers: { "x-request-id": "req-123" },
+        },
+      },
+      "Fallback",
+    ),
+  ).toBe("Quote failed (request req-123)");
 
-  expect(client.requestErrorMessage({
-    response: {
-      data: { detail: "Upload failed", request_id: "req-456" },
-      headers: { "x-request-id": "req-ignored" },
-    },
-  }, "Fallback")).toBe("Upload failed (request req-456)");
+  expect(
+    client.requestErrorMessage(
+      {
+        response: {
+          data: { detail: "Upload failed", request_id: "req-456" },
+          headers: { "x-request-id": "req-ignored" },
+        },
+      },
+      "Fallback",
+    ),
+  ).toBe("Upload failed (request req-456)");
 });

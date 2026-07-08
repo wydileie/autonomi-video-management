@@ -62,20 +62,20 @@ pub(crate) async fn quote_data_size(
     let quote_bytes = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES as i64);
     let sample_bytes = quote_sample_bytes(byte_size, state.config.upload_quote_max_sample_bytes)
         .unwrap_or(MIN_ANTD_SELF_ENCRYPTION_BYTES as i64);
-    if cache.get(&sample_bytes).is_none() {
-        let estimate = state
-            .antd
-            .data_cost_for_size(sample_bytes as usize)
-            .await
-            .map_err(|err| {
-                ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!("Could not get Autonomi price quote: {err}"),
-                )
-            })?;
-        cache.insert(
-            sample_bytes,
-            QuoteValue {
+    let quoted = match cache.get(&sample_bytes) {
+        Some(value) => value.clone(),
+        None => {
+            let estimate = state
+                .antd
+                .data_cost_for_size(sample_bytes as usize)
+                .await
+                .map_err(|err| {
+                    ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Could not get Autonomi price quote: {err}"),
+                    )
+                })?;
+            let value = QuoteValue {
                 sampled: false,
                 storage_cost_atto: parse_cost_u128(estimate.cost.as_deref()),
                 estimated_gas_cost_wei: parse_cost_u128(estimate.estimated_gas_cost_wei.as_deref()),
@@ -83,11 +83,11 @@ pub(crate) async fn quote_data_size(
                 payment_mode: estimate
                     .payment_mode
                     .unwrap_or_else(|| state.config.antd_payment_mode.clone()),
-            },
-        );
-    }
-
-    let quoted = cache.get(&sample_bytes).cloned().unwrap();
+            };
+            cache.insert(sample_bytes, value.clone());
+            value
+        }
+    };
     if sample_bytes == quote_bytes {
         return Ok(quoted);
     }

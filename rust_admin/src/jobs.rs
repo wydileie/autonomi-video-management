@@ -19,6 +19,7 @@ use scheduling::job_retry_delay_seconds;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use std::{fs, path::PathBuf};
 
     use serde_json::json;
@@ -77,6 +78,7 @@ mod tests {
 
 #[cfg(all(test, feature = "db-tests"))]
 mod db_tests {
+    #![allow(clippy::unwrap_used)]
     use std::{
         fs,
         net::SocketAddr,

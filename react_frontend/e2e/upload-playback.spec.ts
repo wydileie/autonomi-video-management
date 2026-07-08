@@ -3,8 +3,8 @@ import path from "node:path";
 
 const adminUsername = process.env.E2E_ADMIN_USERNAME || "admin";
 const adminPassword = process.env.E2E_ADMIN_PASSWORD || "admin";
-const fixturePath = process.env.E2E_VIDEO_PATH
-  || path.resolve(__dirname, "../../testvids/sample.mp4");
+const fixturePath =
+  process.env.E2E_VIDEO_PATH || path.resolve(__dirname, "../../testvids/sample.mp4");
 
 function positiveIntEnv(name: string, fallback: number) {
   const parsed = Number.parseInt(process.env[name] || "", 10);
@@ -15,9 +15,9 @@ const pipelineTimeoutMs = positiveIntEnv("E2E_PIPELINE_TIMEOUT_MS", 180_000);
 test.setTimeout(pipelineTimeoutMs + 60_000);
 
 async function csrfHeader(page: Page) {
-  const csrf = (await page.context().cookies())
-    .find((cookie) => cookie.name === "autvid_csrf")
-    ?.value;
+  const csrf = (await page.context().cookies()).find(
+    (cookie) => cookie.name === "autvid_csrf",
+  )?.value;
   expect(csrf).toBeTruthy();
   return { "X-CSRF-Token": csrf! };
 }
@@ -35,9 +35,9 @@ test("login, upload, approve, publish, and play an HLS segment", async ({ page }
   await page.getByRole("button", { name: /^Upload / }).click();
 
   await expect(page).toHaveURL(/\/manage/);
-  await page.waitForResponse((response) => (
-    response.url().includes("/api/admin/videos") && response.status() === 200
-  ));
+  await page.waitForResponse(
+    (response) => response.url().includes("/api/admin/videos") && response.status() === 200,
+  );
 
   const deadline = Date.now() + pipelineTimeoutMs;
   let videoId = "";

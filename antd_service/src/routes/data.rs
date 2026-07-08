@@ -162,6 +162,7 @@ fn cost_cache_key(data: &[u8], payment_mode: &str) -> CostCacheKey {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
     use axum::body::to_bytes;
     use axum::http::StatusCode;

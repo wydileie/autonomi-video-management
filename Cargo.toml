@@ -10,6 +10,15 @@ members = [
 resolver = "2"
 exclude = ["desktop_app/src-tauri"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
 [workspace.dependencies]
 anyhow = "1"
 axum = "0.8"

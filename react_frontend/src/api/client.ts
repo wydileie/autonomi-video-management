@@ -117,11 +117,13 @@ function canRetryTransient(error: AxiosError, config: RetryableRequestConfig): b
 function cookieValue(name: string): string {
   if (typeof document === "undefined") return "";
   const prefix = `${name}=`;
-  return document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))
-    ?.slice(prefix.length) || "";
+  return (
+    document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(prefix))
+      ?.slice(prefix.length) || ""
+  );
 }
 
 export function hasCsrfCookie(): boolean {
@@ -168,10 +170,10 @@ function installInterceptors() {
       const config = error.config as RetryableRequestConfig | undefined;
 
       if (
-        config
-        && error.response?.status === 401
-        && !config._authRetry
-        && !isAuthEndpoint(config)
+        config &&
+        error.response?.status === 401 &&
+        !config._authRetry &&
+        !isAuthEndpoint(config)
       ) {
         config._authRetry = true;
         try {
@@ -218,10 +220,12 @@ function headerValue(headers: RequestErrorHeaders | undefined, name: string): st
 }
 
 function requestIdFromError(requestError: RequestErrorShape): string {
-  return requestError.response?.data?.request_id
-    || requestError.response?.data?.requestId
-    || headerValue(requestError.response?.headers, "x-request-id")
-    || headerValue(requestError.response?.headers, "X-Request-ID");
+  return (
+    requestError.response?.data?.request_id ||
+    requestError.response?.data?.requestId ||
+    headerValue(requestError.response?.headers, "x-request-id") ||
+    headerValue(requestError.response?.headers, "X-Request-ID")
+  );
 }
 
 export function requestErrorMessage(err: unknown, fallback: string): string {
@@ -271,7 +275,9 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   return res.data;
 }
 
-export async function listVideos({ admin = false }: { admin?: boolean } = {}): Promise<VideoSummary[]> {
+export async function listVideos({ admin = false }: { admin?: boolean } = {}): Promise<
+  VideoSummary[]
+> {
   const res = await api.get<VideoSummary[]>(`${admin ? "/admin" : ""}/videos`);
   return res.data;
 }
@@ -279,7 +285,10 @@ export async function listVideos({ admin = false }: { admin?: boolean } = {}): P
 export async function getVideoDetails({
   admin = false,
   videoId,
-}: { admin?: boolean; videoId: string }): Promise<VideoDetail> {
+}: {
+  admin?: boolean;
+  videoId: string;
+}): Promise<VideoDetail> {
   const res = await api.get<VideoDetail>(`${admin ? "/admin" : ""}/videos/${videoId}`);
   return res.data;
 }
@@ -324,10 +333,9 @@ export async function updateVideoPublication(
   videoId: string,
   isPublic: boolean,
 ): Promise<VideoDetail> {
-  const res = await api.patch<VideoDetail>(
-    `/admin/videos/${videoId}/publication`,
-    { is_public: isPublic },
-  );
+  const res = await api.patch<VideoDetail>(`/admin/videos/${videoId}/publication`, {
+    is_public: isPublic,
+  });
   return res.data;
 }
 

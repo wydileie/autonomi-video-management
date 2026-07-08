@@ -1,0 +1,9 @@
+# Mechanical / formatting-only commits, excluded from git blame.
+# Usage: git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Entries are appended as the corresponding commits land:
+# - Prettier one-time reformat of react_frontend
+# - Directory restructure (git mv) commits
+
+# Prettier one-time reformat of react_frontend
+7ccc26ae9508f739beef3e6d42d78685dedfa2b5

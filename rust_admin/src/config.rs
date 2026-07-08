@@ -598,6 +598,7 @@ fn non_empty_env(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     #[test]
     fn normalizes_cors_origin_without_paths_or_wildcards() {
         assert_eq!(

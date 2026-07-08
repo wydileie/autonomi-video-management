@@ -8,12 +8,18 @@ interface FinalQuotePanelProps {
   quote?: UploadQuote | null;
 }
 
-export default function FinalQuotePanel({ quote, expiresAt, onApprove, approving }: FinalQuotePanelProps) {
+export default function FinalQuotePanel({
+  quote,
+  expiresAt,
+  onApprove,
+  approving,
+}: FinalQuotePanelProps) {
   if (!quote) {
     return <p className="muted">Preparing the final quote from transcoded segments...</p>;
   }
   const originalBytes = quote.original_file?.byte_size || quote.original_file?.estimated_bytes || 0;
-  const transcodedBytes = quote.actual_transcoded_bytes || quote.actual_media_bytes || quote.estimated_bytes;
+  const transcodedBytes =
+    quote.actual_transcoded_bytes || quote.actual_media_bytes || quote.estimated_bytes;
 
   return (
     <div className="quote-panel final-quote-panel">
@@ -24,7 +30,8 @@ export default function FinalQuotePanel({ quote, expiresAt, onApprove, approving
           {originalBytes
             ? `${formatBytes(transcodedBytes)} transcoded media plus ${formatBytes(originalBytes)} original source`
             : `${formatBytes(transcodedBytes)} of transcoded media`}
-          across {quote.segment_count} HLS segments. Approval expires {formatDateTime(expiresAt || quote.approval_expires_at)}.
+          across {quote.segment_count} HLS segments. Approval expires{" "}
+          {formatDateTime(expiresAt || quote.approval_expires_at)}.
         </p>
       </div>
       <div className="quote-breakdown">

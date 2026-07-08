@@ -544,6 +544,7 @@ pub(crate) fn csrf_header_token(headers: &HeaderMap) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

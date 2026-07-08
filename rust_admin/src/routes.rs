@@ -117,6 +117,7 @@ pub(crate) fn router(config: &Config, state: AppState) -> anyhow::Result<Router>
 
 #[cfg(all(test, feature = "db-tests"))]
 mod db_tests {
+    #![allow(clippy::unwrap_used)]
     use std::{
         fs,
         net::SocketAddr,

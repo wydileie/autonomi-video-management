@@ -1,13 +1,11 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type DragEvent,
-  type FormEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 
-import { isRequestCanceled, requestErrorMessage, requestUploadQuote, uploadVideo } from "../api/client";
+import {
+  isRequestCanceled,
+  requestErrorMessage,
+  requestUploadQuote,
+  uploadVideo,
+} from "../api/client";
 import { RESOLUTION_OPTIONS } from "../constants";
 import type {
   EncodeSettings,
@@ -84,8 +82,8 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   const [selected, setSelected] = useState<string[]>(["720p"]);
   const [videoCodec, setVideoCodec] = useState<VideoCodec>("h264");
   const [audioBitrateKbps, setAudioBitrateKbps] = useState(DEFAULT_AUDIO_BITRATE_KBPS);
-  const [videoBitrates, setVideoBitrates] = useState<Record<string, number>>(
-    () => defaultVideoBitrates("h264"),
+  const [videoBitrates, setVideoBitrates] = useState<Record<string, number>>(() =>
+    defaultVideoBitrates("h264"),
   );
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -196,11 +194,11 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
   };
 
   const toggleRes = (resolution: string) => {
-    setSelected((prev) => (
+    setSelected((prev) =>
       prev.includes(resolution)
         ? prev.filter((value) => value !== resolution)
-        : [...prev, resolution]
-    ));
+        : [...prev, resolution],
+    );
   };
 
   const selectCurrentOnly = () => {
@@ -281,8 +279,8 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
         <div>
           <h1>Drop a video. Build a streaming ladder. Store it on Autonomi.</h1>
           <p>
-            The browser reads the source dimensions locally, then we prepare the current
-            resolution plus any lower renditions you choose.
+            The browser reads the source dimensions locally, then we prepare the current resolution
+            plus any lower renditions you choose.
           </p>
         </div>
         <div className="network-pill">Local devnet ready</div>
@@ -311,9 +309,7 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
             disabled={uploading}
           />
           <span className="drop-icon">+</span>
-          <span className="drop-title">
-            {file ? file.name : "Drag and drop a video file"}
-          </span>
+          <span className="drop-title">{file ? file.name : "Drag and drop a video file"}</span>
           <span className="drop-subtitle">
             {file ? `${formatBytes(file.size)} selected` : "or click to browse from your machine"}
           </span>
@@ -345,11 +341,19 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
         <div className="form-grid">
           <label>
             <span>Title</span>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} disabled={uploading} />
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              disabled={uploading}
+            />
           </label>
           <label>
             <span>Description</span>
-            <input value={desc} onChange={(event) => setDesc(event.target.value)} disabled={uploading} />
+            <input
+              value={desc}
+              onChange={(event) => setDesc(event.target.value)}
+              disabled={uploading}
+            />
           </label>
         </div>
 
@@ -402,9 +406,10 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
                     return Object.fromEntries(
                       RESOLUTION_OPTIONS.map((option) => {
                         const currentValue = current[option.value];
-                        const nextValue = currentValue === previousDefaults[option.value]
-                          ? nextDefaults[option.value]
-                          : currentValue ?? nextDefaults[option.value];
+                        const nextValue =
+                          currentValue === previousDefaults[option.value]
+                            ? nextDefaults[option.value]
+                            : (currentValue ?? nextDefaults[option.value]);
                         return [option.value, nextValue];
                       }),
                     );
@@ -467,8 +472,16 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
             <p>Higher-than-source options are dimmed to avoid accidental upscales.</p>
           </div>
           <div className="quick-actions">
-            <button type="button" onClick={selectCurrentOnly} disabled={!currentProfile || uploading}>Current only</button>
-            <button type="button" onClick={selectAdaptive} disabled={!file || uploading}>Current + lower</button>
+            <button
+              type="button"
+              onClick={selectCurrentOnly}
+              disabled={!currentProfile || uploading}
+            >
+              Current only
+            </button>
+            <button type="button" onClick={selectAdaptive} disabled={!file || uploading}>
+              Current + lower
+            </button>
           </div>
         </div>
 
@@ -486,8 +499,12 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
                 disabled={uploading || disabledBySource}
               >
                 <span className="resolution-label">{option.label}</span>
-                <span>{targetDimensions.width} x {targetDimensions.height}</span>
-                <span>{option.bitrate} · {option.note}</span>
+                <span>
+                  {targetDimensions.width} x {targetDimensions.height}
+                </span>
+                <span>
+                  {option.bitrate} · {option.note}
+                </span>
                 {isCurrent && <strong>Current source profile</strong>}
               </button>
             );
@@ -515,7 +532,11 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
               <div className="quote-breakdown">
                 <span>{formatWei(quote.data.estimated_gas_cost_wei)}</span>
                 <span>{quote.data.payment_mode} payment mode</span>
-                {quote.data.original_file && <span>{formatBytes(quote.data.original_file.estimated_bytes)} original source</span>}
+                {quote.data.original_file && (
+                  <span>
+                    {formatBytes(quote.data.original_file.estimated_bytes)} original source
+                  </span>
+                )}
                 {quote.data.sampled && <span>large segment estimate sampled</span>}
               </div>
             )}
@@ -525,10 +546,21 @@ export default function UploadPanel({ onUploaded }: UploadPanelProps) {
         {uploading && (
           <div className="upload-progress">
             <div>
-              <span>{progress < 100 ? `Uploading source file ${progress}%` : "Transcoding and preparing final quote..."}</span>
-              <span>{selected.map((value) => resolutionByValue(value)?.label || value).join(", ")}</span>
+              <span>
+                {progress < 100
+                  ? `Uploading source file ${progress}%`
+                  : "Transcoding and preparing final quote..."}
+              </span>
+              <span>
+                {selected.map((value) => resolutionByValue(value)?.label || value).join(", ")}
+              </span>
             </div>
-            <progress className="progress-track" value={progress} max={100} aria-label="Upload progress" />
+            <progress
+              className="progress-track"
+              value={progress}
+              max={100}
+              aria-label="Upload progress"
+            />
           </div>
         )}
 

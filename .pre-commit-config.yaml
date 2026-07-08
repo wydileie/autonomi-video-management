@@ -20,6 +20,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^react_frontend/.*\.(ts|tsx|js|jsx|mjs|mts|css)$
+      - id: frontend-format
+        name: frontend format
+        entry: npm --prefix react_frontend run format:check
+        language: system
+        pass_filenames: false
+        files: ^react_frontend/.*\.(ts|tsx|js|jsx|mjs|mts|css|json|md)$
       - id: frontend-typecheck
         name: frontend typecheck
         entry: bash -c 'cd react_frontend && npx tsc --noEmit'
@@ -31,4 +37,4 @@ repos:
         entry: cargo fmt --all --check
         language: system
         pass_filenames: false
-        files: ^(common|antd_service|rust_admin|rust_stream)/.*\.rs$|^Cargo\.toml$|^Cargo\.lock$
+        files: ^(common|antd_service|rust_admin|rust_stream|launcher_core|standalone_launcher|desktop_app)/.*\.rs$|^Cargo\.toml$|^Cargo\.lock$

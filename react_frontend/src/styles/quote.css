@@ -1,8 +1,7 @@
 .quote-panel {
   align-items: center;
   background:
-    linear-gradient(90deg, rgba(232, 111, 25, 0.1), transparent 52%),
-    rgba(237, 241, 243, 0.82);
+    linear-gradient(90deg, rgba(232, 111, 25, 0.1), transparent 52%), rgba(237, 241, 243, 0.82);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   display: flex;
@@ -61,7 +60,10 @@
   font-weight: 950;
   min-height: 46px;
   padding: 13px 18px;
-  transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  transition:
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .approve-action:hover:not(:disabled),

@@ -1,7 +1,12 @@
 [package]
 name = "rust_admin"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
 
 [features]
 db-tests = []

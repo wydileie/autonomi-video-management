@@ -7,9 +7,9 @@ type TargetDimensions = {
 };
 
 export function orderedSelection(selected: string[]): string[] {
-  return RESOLUTION_OPTIONS
-    .map((option) => option.value)
-    .filter((value) => selected.includes(value));
+  return RESOLUTION_OPTIONS.map((option) => option.value).filter((value) =>
+    selected.includes(value),
+  );
 }
 
 export function classifyResolution(
@@ -18,9 +18,11 @@ export function classifyResolution(
 ): ResolutionOption | null {
   if (!width || !height) return null;
   const shortEdge = Math.min(width, height);
-  return RESOLUTION_OPTIONS.find((option) => (
-    shortEdge >= Math.min(option.width, option.height) * 0.92
-  )) || RESOLUTION_OPTIONS[RESOLUTION_OPTIONS.length - 1];
+  return (
+    RESOLUTION_OPTIONS.find(
+      (option) => shortEdge >= Math.min(option.width, option.height) * 0.92,
+    ) || RESOLUTION_OPTIONS[RESOLUTION_OPTIONS.length - 1]
+  );
 }
 
 export function optionFitsSource(option: ResolutionOption, meta?: SourceVideoMeta | null): boolean {
@@ -79,9 +81,9 @@ export function targetDimensionsForMeta(
 
 export function suggestedSelection(meta?: SourceVideoMeta | null): string[] {
   if (!meta?.width || !meta?.height) return ["720p"];
-  return RESOLUTION_OPTIONS
-    .filter((option) => optionFitsSource(option, meta))
-    .map((option) => option.value);
+  return RESOLUTION_OPTIONS.filter((option) => optionFitsSource(option, meta)).map(
+    (option) => option.value,
+  );
 }
 
 export function resolutionByValue(value: string): ResolutionOption | undefined {

@@ -67,15 +67,41 @@ function AppRoutes() {
         <div className="topbar-actions">
           {auth && <span className="user-pill">{auth.username || "Admin"}</span>}
           <nav aria-label="Primary">
-            <button type="button" className={activeSection === "library" ? "active" : ""} onClick={() => navigate("/library")}>Library</button>
+            <button
+              type="button"
+              className={activeSection === "library" ? "active" : ""}
+              onClick={() => navigate("/library")}
+            >
+              Library
+            </button>
             {auth ? (
               <>
-                <button type="button" className={activeSection === "manage" ? "active" : ""} onClick={() => navigate("/manage")}>Manage</button>
-                <button type="button" className={activeSection === "upload" ? "active" : ""} onClick={() => navigate("/upload")}>Upload</button>
-                <button type="button" onClick={logout}>Logout</button>
+                <button
+                  type="button"
+                  className={activeSection === "manage" ? "active" : ""}
+                  onClick={() => navigate("/manage")}
+                >
+                  Manage
+                </button>
+                <button
+                  type="button"
+                  className={activeSection === "upload" ? "active" : ""}
+                  onClick={() => navigate("/upload")}
+                >
+                  Upload
+                </button>
+                <button type="button" onClick={logout}>
+                  Logout
+                </button>
               </>
             ) : (
-              <button type="button" className={activeSection === "login" ? "active" : ""} onClick={() => navigate("/login")}>Login</button>
+              <button
+                type="button"
+                className={activeSection === "login" ? "active" : ""}
+                onClick={() => navigate("/login")}
+              >
+                Login
+              </button>
             )}
           </nav>
         </div>
@@ -89,19 +115,35 @@ function AppRoutes() {
           <Route path="/videos/:videoId" element={<VideoDetailRedirect />} />
           <Route
             path="/manage"
-            element={auth ? <Library key={`admin-${refreshKey}`} admin /> : <Navigate to="/login" replace />}
+            element={
+              auth ? (
+                <Library key={`admin-${refreshKey}`} admin />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
           />
           <Route
             path="/manage/:videoId"
-            element={auth ? <Library key={`admin-${refreshKey}`} admin /> : <Navigate to="/login" replace />}
+            element={
+              auth ? (
+                <Library key={`admin-${refreshKey}`} admin />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
           />
           <Route
             path="/upload"
-            element={auth ? <UploadPanel onUploaded={handleUploaded} /> : <Navigate to="/login" replace />}
+            element={
+              auth ? <UploadPanel onUploaded={handleUploaded} /> : <Navigate to="/login" replace />
+            }
           />
           <Route
             path="/login"
-            element={auth ? <Navigate to="/manage" replace /> : <LoginPanel onLogin={handleLogin} />}
+            element={
+              auth ? <Navigate to="/manage" replace /> : <LoginPanel onLogin={handleLogin} />
+            }
           />
           <Route path="*" element={<Navigate to="/library" replace />} />
         </Routes>

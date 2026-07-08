@@ -226,6 +226,7 @@ async fn start_node_with_warmup(node: Arc<P2PNode>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use std::io::Write;
 
     use tempfile::NamedTempFile;

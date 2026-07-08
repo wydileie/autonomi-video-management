@@ -917,6 +917,7 @@ pub(crate) fn enforce_upload_media_limits(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use std::fs;
     use std::path::Path;
 

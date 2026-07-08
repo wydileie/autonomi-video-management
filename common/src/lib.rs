@@ -516,6 +516,7 @@ pub fn parse_cors_allowed_origins(raw_origins: &str) -> anyhow::Result<Vec<Heade
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
