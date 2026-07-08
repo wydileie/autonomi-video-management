@@ -121,7 +121,7 @@ fn resolve_binary_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> 
         })
         .or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/release")
+                .join("../../../target/release")
                 .canonicalize()
                 .ok()
                 .filter(|path| path.is_dir())
