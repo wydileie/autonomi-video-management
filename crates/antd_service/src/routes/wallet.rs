@@ -61,6 +61,6 @@ pub(super) async fn wallet_approve(
         .client
         .approve_token_spend()
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
     Ok(Json(WalletApproveResponse { approved: true }))
 }

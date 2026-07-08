@@ -10,8 +10,15 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
+bytes.workspace = true
 http = "1"
 rand = "0.8"
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 subtle = "2"
-tokio = { workspace = true, features = ["macros", "signal"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing.workspace = true

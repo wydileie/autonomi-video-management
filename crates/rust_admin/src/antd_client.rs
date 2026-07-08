@@ -1,78 +1,39 @@
 use std::{path::Path as FsPath, sync::Arc, time::Duration};
 
-use autvid_common::{
-    is_retryable_antd_error, jitter_duration, AutonomiHttpStatusError, CircuitBreaker,
-};
+use autvid_common::antd::{AntdClient, AntdMetricsRecorder};
+use autvid_common::{is_retryable_antd_error, jitter_duration};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use tokio::{fs as tokio_fs, io::AsyncReadExt, time::sleep};
-use tokio_util::io::ReaderStream;
+use tokio::time::sleep;
 use tracing::warn;
 
 use crate::{
     config::duration_from_secs_f64, metrics::AdminMetrics, MIN_ANTD_SELF_ENCRYPTION_BYTES,
 };
 
+#[cfg(test)]
+pub(crate) use autvid_common::antd::hex_lower;
+pub(crate) use autvid_common::antd::{
+    is_missing_file_upload_endpoint, AntdDataCostResponse, AntdDataPutResponse,
+    AntdFilePutResponse, AntdHealthResponse, AntdPublicDataResponse, AntdWalletAddressResponse,
+    AntdWalletApproveResponse, AntdWalletBalanceResponse,
+};
+
 const COST_ESTIMATE_ATTEMPTS: usize = 5;
+
+impl AntdMetricsRecorder for AdminMetrics {
+    fn record_request(&self, path: &str, latency: Duration, ok: bool) {
+        self.record_antd_request(path, latency, ok);
+    }
+
+    fn record_upload_retry(&self) {
+        AdminMetrics::record_upload_retry(self);
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct AntdRestClient {
-    base_url: String,
-    client: reqwest::Client,
-    metrics: Arc<AdminMetrics>,
-    internal_token: Option<String>,
-    circuit: Arc<CircuitBreaker>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AntdHealthResponse {
-    pub(crate) status: String,
-    pub(crate) network: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AntdWalletAddressResponse {
-    pub(crate) address: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AntdWalletBalanceResponse {
-    pub(crate) balance: String,
-    pub(crate) gas_balance: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct AntdWalletApproveResponse {
-    pub(crate) approved: bool,
-}
-
-#[derive(Deserialize)]
-struct AntdPublicDataResponse {
-    data: String,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AntdDataCostResponse {
-    pub(crate) cost: Option<String>,
-    pub(crate) chunk_count: Option<i64>,
-    pub(crate) estimated_gas_cost_wei: Option<String>,
-    pub(crate) payment_mode: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AntdDataPutResponse {
-    pub(crate) address: String,
-    pub(crate) cost: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct AntdFilePutResponse {
-    pub(crate) address: String,
-    pub(crate) byte_size: u64,
-    pub(crate) storage_cost_atto: String,
-    pub(crate) payment_mode_used: String,
+    inner: AntdClient,
 }
 
 impl AntdRestClient {
@@ -83,15 +44,12 @@ impl AntdRestClient {
         internal_token: Option<String>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(Duration::from_secs(5))
-                .timeout(duration_from_secs_f64(timeout_seconds))
-                .build()?,
-            metrics,
-            internal_token,
-            circuit: Arc::new(CircuitBreaker::default()),
+            inner: AntdClient::new(
+                base_url,
+                duration_from_secs_f64(timeout_seconds),
+                internal_token,
+                metrics,
+            )?,
         })
     }
 
@@ -216,87 +174,13 @@ impl AntdRestClient {
         verify: bool,
         upload_retries: usize,
     ) -> anyhow::Result<AntdFilePutResponse> {
-        let (_, sha256) = sha256_file_async(path).await?;
-        let attempts = upload_retries.max(1);
-        let mut last_error = None;
-        for attempt in 1..=attempts {
-            match self
-                .file_put_public_once(path, payment_mode, verify, &sha256)
-                .await
-            {
-                Ok(result) => return Ok(result),
-                Err(err) if attempt < attempts && is_retryable_antd_error(&err) => {
-                    // Full file uploads back off more slowly to avoid re-sending large streams.
-                    let delay = jitter_duration(Duration::from_secs(
-                        2_u64.pow((attempt - 1).min(4) as u32),
-                    ));
-                    warn!(
-                        "Autonomi file upload failed on attempt {}/{} for {}: {}; retrying in {}ms",
-                        attempt,
-                        attempts,
-                        path.display(),
-                        err,
-                        delay.as_millis()
-                    );
-                    self.record_upload_retry();
-                    last_error = Some(err);
-                    sleep(delay).await;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-
-        Err(last_error
-            .map(|err| {
-                anyhow::anyhow!("Autonomi file upload failed after {attempts} attempt(s): {err}")
-            })
-            .unwrap_or_else(|| {
-                anyhow::anyhow!("Autonomi file upload failed after {attempts} attempt(s)")
-            }))
+        self.inner
+            .file_put_public(path, payment_mode, verify, upload_retries)
+            .await
     }
 
-    async fn file_put_public_once(
-        &self,
-        path: &FsPath,
-        payment_mode: &str,
-        verify: bool,
-        sha256: &str,
-    ) -> anyhow::Result<AntdFilePutResponse> {
-        self.circuit.check()?;
-        let file = tokio_fs::File::open(path).await?;
-        let stream = ReaderStream::new(file);
-        let url = format!(
-            "{}/v1/file/public?payment_mode={payment_mode}&verify={}",
-            self.base_url, verify
-        );
-        let started = std::time::Instant::now();
-        let result = async {
-            let request = self
-                .apply_internal_auth(self.client.post(url))
-                .header("content-type", "application/octet-stream")
-                .header("x-content-sha256", sha256)
-                .body(reqwest::Body::wrap_stream(stream));
-            let response = request.send().await?;
-            let status = response.status();
-            let text = response.text().await?;
-            if !status.is_success() {
-                return Err(AutonomiHttpStatusError {
-                    method: reqwest::Method::POST,
-                    path: "/v1/file/public".to_string(),
-                    status,
-                    body: text,
-                }
-                .into());
-            }
-            serde_json::from_str(&text).map_err(|err| {
-                anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err)
-            })
-        }
-        .await;
-        self.circuit.record_result(&result);
-        self.metrics
-            .record_antd_request("/v1/file/public", started.elapsed(), result.is_ok());
-        result
+    pub(crate) fn record_upload_retry(&self) {
+        self.inner.record_upload_retry();
     }
 
     async fn request_json<T>(
@@ -306,103 +190,10 @@ impl AntdRestClient {
         json_body: Option<Value>,
     ) -> anyhow::Result<T>
     where
-        T: for<'de> Deserialize<'de>,
+        T: for<'de> serde::Deserialize<'de>,
     {
-        self.circuit.check()?;
-        let metric_path = metrics_path(path);
-        let started = std::time::Instant::now();
-        let result = async {
-            let url = format!("{}{}", self.base_url, path);
-            let mut request = self.apply_internal_auth(self.client.request(method.clone(), url));
-            if let Some(body) = json_body {
-                request = request.json(&body);
-            }
-            let response = request.send().await?;
-            let status = response.status();
-            let text = response.text().await?;
-            if !status.is_success() {
-                return Err(AutonomiHttpStatusError {
-                    method: method.clone(),
-                    path: path.to_string(),
-                    status,
-                    body: text,
-                }
-                .into());
-            }
-            serde_json::from_str(&text).map_err(|err| {
-                anyhow::anyhow!("{} {} returned invalid JSON: {}", method, path, err)
-            })
-        }
-        .await;
-        self.circuit.record_result(&result);
-        self.metrics
-            .record_antd_request(&metric_path, started.elapsed(), result.is_ok());
-        result
+        self.inner.request_json(method, path, json_body).await
     }
-
-    pub(crate) fn record_upload_retry(&self) {
-        self.metrics.record_upload_retry();
-    }
-
-    fn apply_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self.internal_token.as_deref() {
-            Some(token) => request.bearer_auth(token),
-            None => request,
-        }
-    }
-}
-
-fn metrics_path(path: &str) -> String {
-    if path.starts_with("/v1/data/public/") {
-        "/v1/data/public/:address".to_string()
-    } else {
-        path.to_string()
-    }
-}
-
-pub(crate) fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
-    if let Some(status) = err
-        .downcast_ref::<AutonomiHttpStatusError>()
-        .map(|err| err.status)
-    {
-        return matches!(
-            status,
-            reqwest::StatusCode::NOT_FOUND
-                | reqwest::StatusCode::METHOD_NOT_ALLOWED
-                | reqwest::StatusCode::NOT_IMPLEMENTED
-        );
-    }
-
-    let message = err.to_string();
-    message.contains("/v1/file/public")
-        && (message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 "))
-}
-
-async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
-    let mut file = tokio_fs::File::open(path).await?;
-    let mut hasher = Sha256::new();
-    let mut byte_size = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        byte_size += read as u64;
-        hasher.update(&buffer[..read]);
-    }
-    let digest = hasher.finalize();
-    Ok((byte_size, hex_lower(&digest)))
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -431,9 +222,9 @@ mod tests {
 
     use autvid_common::AutonomiHttpStatusError;
 
-    use super::{
-        hex_lower, is_missing_file_upload_endpoint, AntdRestClient, Digest, Sha256, BASE64,
-    };
+    use sha2::{Digest, Sha256};
+
+    use super::{hex_lower, is_missing_file_upload_endpoint, AntdRestClient, BASE64};
     use crate::metrics::AdminMetrics;
 
     #[derive(Clone, Default)]

@@ -100,12 +100,12 @@ pub(super) async fn file_put_public(
         .client
         .file_upload_with_mode(&path, mode)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
     let address = state
         .client
         .data_map_store(&result.data_map)
         .await
-        .map_err(|err| ApiError::from_message(err.to_string()))?;
+        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
 
     let mut verified = false;
     if query.verify {
@@ -115,10 +115,10 @@ pub(super) async fn file_put_public(
             .client
             .file_download(&result.data_map, &verify_path)
             .await
-            .map_err(|err| ApiError::from_message(err.to_string()))?;
+            .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
         let (verify_size, verify_sha256) = file_sha256(&verify_path)?;
         if downloaded != byte_size || verify_size != byte_size || verify_sha256 != computed_sha256 {
-            return Err(ApiError::from_message(format!(
+            return Err(ApiError::from_autonomi_message(format!(
                 "file verification mismatch: uploaded {byte_size} bytes sha256={computed_sha256}, downloaded {downloaded} bytes sha256={verify_sha256}"
             )));
         }
