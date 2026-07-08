@@ -3,9 +3,9 @@ import { vi } from "vitest";
 import {
   axios,
   click,
-  container,
   findButton,
   findCheckbox,
+  findFileInput,
   flushPromises,
   renderApp,
   setAuthenticatedCookies,
@@ -14,7 +14,6 @@ import {
 } from "./testUtils";
 
 test("shows an upload quote after local video metadata is available", async () => {
-  vi.useFakeTimers();
   setAuthenticatedCookies();
   setupGetRoutes();
 
@@ -80,7 +79,8 @@ test("shows an upload quote after local video metadata is available", async () =
   await renderApp();
   await click(findButton("Upload"));
 
-  const fileInput = container.querySelector('input[type="file"]');
+  const fileInput = await findFileInput();
+  vi.useFakeTimers();
   const file = new File(["fake video"], "launch.mp4", { type: "video/mp4" });
   await act(async () => {
     Object.defineProperty(fileInput, "files", { configurable: true, value: [file] });
@@ -101,7 +101,6 @@ test("shows an upload quote after local video metadata is available", async () =
 });
 
 test("sends original-source and auto-publish options with an upload", async () => {
-  vi.useFakeTimers();
   setAuthenticatedCookies();
   setupGetRoutes();
 
@@ -165,7 +164,8 @@ test("sends original-source and auto-publish options with an upload", async () =
   await renderApp();
   await click(findButton("Upload"));
 
-  const fileInput = container.querySelector('input[type="file"]');
+  const fileInput = await findFileInput();
+  vi.useFakeTimers();
   const file = new File(["original source"], "source.mp4", { type: "video/mp4" });
   expect(file.size).toBe(15);
   await act(async () => {
@@ -200,7 +200,6 @@ test("sends original-source and auto-publish options with an upload", async () =
 });
 
 test("shows quote and upload errors without clearing the selected source", async () => {
-  vi.useFakeTimers();
   setAuthenticatedCookies();
   setupGetRoutes();
 
@@ -255,7 +254,8 @@ test("shows quote and upload errors without clearing the selected source", async
   await renderApp();
   await click(findButton("Upload"));
 
-  const fileInput = container.querySelector('input[type="file"]');
+  const fileInput = await findFileInput();
+  vi.useFakeTimers();
   const file = new File(["source bytes"], "failure.mp4", { type: "video/mp4" });
   await act(async () => {
     Object.defineProperty(fileInput, "files", { configurable: true, value: [file] });
