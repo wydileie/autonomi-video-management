@@ -1,5 +1,5 @@
 # ── Stage 1: Chef (shared toolchain + cargo-chef, layer-identical across services) ──
-FROM rust:1.96-slim-bookworm AS chef
+FROM rust:1.97-slim-bookworm AS chef
 
 RUN apt-get update && apt-get install -y \
     build-essential \
