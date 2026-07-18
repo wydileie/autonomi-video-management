@@ -172,7 +172,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <DesktopSetupGate>
-        <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <BrowserRouter>
           <AppRoutes />
         </BrowserRouter>
       </DesktopSetupGate>
