@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-ant-core = "=0.2.8"
+ant-core = "=0.3.0"
 ant-node = "=0.14.0"
 autvid_common = { path = "../common" }
 axum.workspace = true
