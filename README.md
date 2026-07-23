@@ -620,9 +620,9 @@ autonomi-video-management/
 
 ---
 
-## Autonomi SDK 2.0
+## Autonomi gateway architecture
 
-This project uses the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) (v2.0) architecture:
+The application stack follows the [ant-sdk](https://github.com/WithAutonomi/ant-sdk) v2.0 gateway architecture. Its Compose image builds the in-repository `antd` gateway against the pinned Autonomi crates, while the devcontainer separately installs the upstream SDK daemon, client, and MCP tooling for development:
 
 - **`antd`** is a local gateway daemon (Rust) that handles all network connectivity, EVM payments, and content addressing. Your application code never touches the Autonomi peer network directly.
 - **Admin writes** — `rust_admin` talks to the `antd` REST API for quotes, uploads, wallet approval, and catalog/manifest writes.
