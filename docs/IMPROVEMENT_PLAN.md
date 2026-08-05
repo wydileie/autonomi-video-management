@@ -106,7 +106,7 @@ Verify: `npm run lint && npm run format:check && npm test && npm run test:covera
 ## Phase 6 — Docker & CI optimization
 
 - cargo-chef in the 3 Rust Dockerfiles (chef → planner → cook recipe → build; root context; tighten `.dockerignore` to exclude `apps/`, `deploy/monitoring`, `docs/` so the planner stage doesn't invalidate spuriously)
-- `deploy/autonomi_devnet/Dockerfile`: pin Foundry via `ARG FOUNDRY_VERSION` (delete the live GitHub API "latest" call); pin ant-sdk/ant-node clones to tags/SHAs via ARGs
+- `deploy/autonomi_devnet/Dockerfile`: pin Foundry via `ARG FOUNDRY_VERSION` (delete the live GitHub API "latest" call); pin the remaining ant-node clone to a tag/SHA via an ARG
 - antd_service runtime: attempt distroless/cc + `liblzma.so.5` copy (all crates use rustls, no libssl needed); fall back to debian-slim if smoke fails. rust_admin stays debian-slim (ffmpeg)
 - New CI `e2e` job (main pushes + nightly schedule + workflow_dispatch): committed `deploy/docker-compose.ci.yml` overriding devnet to prebuilt GHCR image; compose up --wait; `npx playwright install chromium --with-deps`; `E2E_BASE_URL=http://localhost npm run e2e`; upload report + compose logs on failure. Verify `.env.local.example` boots the stack (add committed `.env.ci` if placeholders block boot). Mark non-required initially; promote after a week of green nightlies
 - Makefile `e2e-local` target
