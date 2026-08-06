@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::{env, fs};
 
 use ant_core::data::{
-    Client as CoreClient, ClientConfig, CoreNodeConfig, IPDiversityConfig, MultiAddr, NodeMode,
-    P2PNode, MAX_WIRE_MESSAGE_SIZE,
+    Client as CoreClient, ClientConfig, CoreNodeConfig, EvmNetwork, IPDiversityConfig, MultiAddr,
+    NodeMode, P2PNode, Wallet, MAX_WIRE_MESSAGE_SIZE,
 };
 use tracing::{info, warn};
 use zeroize::Zeroize;
@@ -78,7 +78,7 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
         unprefixed_private_key.zeroize();
     }
 
-    let wallet = match evmlib::wallet::Wallet::new_from_private_key(evm_network, &private_key) {
+    let wallet = match Wallet::new_from_private_key(evm_network, &private_key) {
         Ok(wallet) => wallet,
         Err(err) => {
             private_key.zeroize();
@@ -114,7 +114,7 @@ fn read_wallet_key_file(path: &str) -> Option<String> {
     }
 }
 
-fn evm_network() -> evmlib::Network {
+fn evm_network() -> EvmNetwork {
     let rpc_url = first_env(&["EVM_RPC_URL", "PROD_EVM_RPC_URL"]);
     let token = first_env(&[
         "EVM_PAYMENT_TOKEN_ADDRESS",
@@ -125,7 +125,7 @@ fn evm_network() -> evmlib::Network {
         "PROD_EVM_PAYMENT_VAULT_ADDRESS",
     ]);
     if let (Some(rpc_url), Some(token), Some(vault)) = (rpc_url, token, vault) {
-        return evmlib::Network::new_custom(&rpc_url, &token, &vault);
+        return EvmNetwork::new_custom(&rpc_url, &token, &vault);
     }
 
     match env::var("EVM_NETWORK")
@@ -133,9 +133,9 @@ fn evm_network() -> evmlib::Network {
         .as_str()
     {
         "arbitrum-sepolia" | "arbitrum-sepolia-test" | "evm-arbitrum-sepolia-test" => {
-            evmlib::Network::ArbitrumSepoliaTest
+            EvmNetwork::ArbitrumSepoliaTest
         }
-        _ => evmlib::Network::ArbitrumOne,
+        _ => EvmNetwork::ArbitrumOne,
     }
 }
 

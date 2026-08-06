@@ -26,6 +26,8 @@ echo "[autonomi-devnet] starting ant-devnet preset=${PRESET}"
 ant-devnet \
   --preset "$PRESET" \
   --enable-evm \
+  --enable-logging \
+  --log-level "${ANT_DEVNET_LOG_LEVEL:-info}" \
   --data-dir "$DATA_DIR" \
   --manifest "$MANIFEST" \
   > "$LOG_DIR/ant-devnet.log" 2>&1 &
