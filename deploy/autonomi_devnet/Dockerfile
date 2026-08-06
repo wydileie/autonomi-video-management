@@ -1,8 +1,7 @@
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
 FROM rust:1.97-slim-bookworm AS builder
 
-ARG AUTONOMI_ANT_SDK_REF=v0.10.0
-ARG AUTONOMI_ANT_NODE_REF=v0.13.0
+ARG AUTONOMI_ANT_NODE_REF=v0.17.0
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -15,13 +14,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-
-RUN git clone https://github.com/WithAutonomi/ant-sdk.git ant-sdk && \
-    cd ant-sdk && \
-    git checkout "$AUTONOMI_ANT_SDK_REF" && \
-    cd antd && \
-    cargo build --release && \
-    cp target/release/antd /usr/local/bin/antd
 
 RUN git clone https://github.com/WithAutonomi/ant-node.git ant-node && \
     cd ant-node && \
@@ -81,7 +73,6 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     tar -xzf /tmp/foundry.tar.gz -C /usr/local/bin anvil forge cast chisel && \
     rm -f /tmp/foundry.tar.gz
 
-COPY --from=builder /usr/local/bin/antd /usr/local/bin/antd
 COPY --from=builder /usr/local/bin/ant-devnet /usr/local/bin/ant-devnet
 COPY --from=builder /usr/local/bin/autvid-antd-gateway /usr/local/bin/autvid-antd-gateway
 COPY deploy/autonomi_devnet/start-local-devnet.sh /usr/local/bin/start-local-devnet.sh

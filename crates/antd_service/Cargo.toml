@@ -10,17 +10,14 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-ant-core = "=0.2.8"
-ant-node = "=0.14.0"
+ant-core = "=0.5.1"
 autvid_common = { path = "../common" }
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
-evmlib = "=0.8.1"
 hex = "0.4"
 futures-util = "0.3"
 rmp-serde = "1"
-self_encryption = "=0.36.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,5 +27,4 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thr
 tower-http = { workspace = true, features = ["cors", "request-id", "timeout", "trace", "util"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-xor_name = "=5.0.0"
 zeroize = "1"

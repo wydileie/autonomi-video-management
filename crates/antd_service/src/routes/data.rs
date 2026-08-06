@@ -13,9 +13,7 @@ use tempfile::NamedTempFile;
 use crate::error::ApiError;
 use crate::state::{AppState, CostCacheKey};
 
-use super::shared::{
-    decode_base64, format_payment_mode, hex_to_address, parse_payment_mode, resolve_data_map,
-};
+use super::shared::{decode_base64, format_payment_mode, hex_to_address, parse_payment_mode};
 
 #[derive(Deserialize)]
 pub(super) struct DataRequest {
@@ -126,10 +124,9 @@ async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, 
         .data_map_fetch(&address)
         .await
         .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
-    let root_map = resolve_data_map(state.client.clone(), data_map).await?;
     state
         .client
-        .data_download(&root_map)
+        .data_download(&data_map)
         .await
         .map(|bytes| bytes.to_vec())
         .map_err(|err| ApiError::from_autonomi_message(err.to_string()))

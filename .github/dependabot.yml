@@ -9,6 +9,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      autonomi-protocol-stack:
+        patterns:
+          - ant-core
+          - ant-node
+          - ant-protocol
+          - evmlib
 
   - package-ecosystem: npm
     directory: /apps/web
