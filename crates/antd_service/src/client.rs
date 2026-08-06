@@ -22,9 +22,7 @@ const DEFAULT_PEERS: &[&str] = &[
 
 pub(crate) fn init_logging() {
     let level = env::var("ANTD_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    let filter = format!(
-        "{level},antd=info,ant_core=info,ant_node=warn,saorsa_core=warn,saorsa_transport=warn"
-    );
+    let filter = format!("{level},antd=info,ant_core=info,saorsa_core=warn,saorsa_transport=warn");
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
