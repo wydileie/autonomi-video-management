@@ -16,6 +16,13 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      globals: globals.node,
+    },
+  },
+  {
     files: ["src/**/*.{ts,tsx}", "vite.config.mts"],
     languageOptions: {
       ecmaVersion: "latest",

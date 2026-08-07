@@ -23,7 +23,13 @@ async function csrfHeader(page: Page) {
 }
 
 test("login, upload, approve, publish, and play an HLS segment", async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
   await page.goto("/login");
+  await expect(page.getByLabel("Username")).toBeVisible({ timeout: 15_000 });
+  expect(pageErrors, `page errors: ${pageErrors.map((error) => error.message).join("; ")}`).toEqual(
+    [],
+  );
   await page.getByLabel("Username").fill(adminUsername);
   await page.getByLabel("Password").fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
@@ -87,4 +93,7 @@ test("login, upload, approve, publish, and play an HLS segment", async ({ page }
   const segment = await page.request.get(segmentUrl);
   expect(segment.ok()).toBeTruthy();
   expect((await segment.body()).byteLength).toBeGreaterThan(0);
+  expect(pageErrors, `page errors: ${pageErrors.map((error) => error.message).join("; ")}`).toEqual(
+    [],
+  );
 });
