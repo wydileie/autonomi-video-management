@@ -7,7 +7,11 @@ export const allowedAdvisories = new Map([
     new Map([
       [
         "GHSA-qwww-vcr4-c8h2",
-        "Only affects unstable React Router RSC APIs, which this SPA does not use; remove when 8.3.0 is published on npm.",
+        {
+          expiresOn: "2026-12-31",
+          reason:
+            "Only affects unstable React Router RSC APIs, which this SPA does not use; remove when 8.3.0 is published on npm.",
+        },
       ],
     ]),
   ],
@@ -17,7 +21,11 @@ function advisoryId(via) {
   return via.url?.match(/GHSA-[a-z0-9-]+/i)?.[0];
 }
 
-export function findUnapprovedPackages(vulnerabilities, allowlist = allowedAdvisories) {
+export function findUnapprovedPackages(
+  vulnerabilities,
+  allowlist = allowedAdvisories,
+  asOf = new Date().toISOString().slice(0, 10),
+) {
   const memo = new Map();
 
   function hasUnapprovedAdvisory(packageName, visiting = new Set()) {
@@ -36,7 +44,10 @@ export function findUnapprovedPackages(vulnerabilities, allowlist = allowedAdvis
       }
 
       const id = advisoryId(via);
-      return !id || !allowlist.get(packageName)?.has(id);
+      const approval = id && allowlist.get(packageName)?.get(id);
+      return (
+        !approval || !/^\d{4}-\d{2}-\d{2}$/.test(approval.expiresOn) || approval.expiresOn < asOf
+      );
     });
 
     memo.set(packageName, unapproved);
@@ -97,8 +108,8 @@ function run() {
 
   console.warn("npm audit reported only explicitly reviewed production advisories:");
   for (const [packageName, advisories] of allowedAdvisories) {
-    for (const [id, reason] of advisories) {
-      console.warn(`- ${packageName} ${id}: ${reason}`);
+    for (const [id, approval] of advisories) {
+      console.warn(`- ${packageName} ${id} (expires ${approval.expiresOn}): ${approval.reason}`);
     }
   }
 }

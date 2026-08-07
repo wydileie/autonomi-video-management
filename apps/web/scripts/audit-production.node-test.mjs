@@ -52,6 +52,27 @@ test("rejects an additional advisory on an otherwise approved package", () => {
   assert.deepEqual(findUnapprovedPackages(vulnerabilities), ["react-router"]);
 });
 
+test("rejects the reviewed advisory after its approval expires", () => {
+  const vulnerabilities = {
+    "react-router": { via: [approvedAdvisory] },
+  };
+
+  assert.deepEqual(findUnapprovedPackages(vulnerabilities, undefined, "2027-01-01"), [
+    "react-router",
+  ]);
+});
+
+test("rejects a malformed approval", () => {
+  const vulnerabilities = {
+    "react-router": { via: [approvedAdvisory] },
+  };
+  const malformedAllowlist = new Map([
+    ["react-router", new Map([["GHSA-qwww-vcr4-c8h2", { reason: "missing expiry" }]])],
+  ]);
+
+  assert.deepEqual(findUnapprovedPackages(vulnerabilities, malformedAllowlist), ["react-router"]);
+});
+
 test("accepts an empty vulnerability report", () => {
   assert.deepEqual(findUnapprovedPackages({}), []);
 });
