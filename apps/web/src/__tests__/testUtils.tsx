@@ -140,6 +140,9 @@ export async function mouseLeave(element: Element) {
 }
 
 export async function renderApp() {
+  // Resolve the route-split library before starting the assertion clock. On a
+  // cold CI worker, transforming this module can exceed waitFor's retry window.
+  await import("../components/Library");
   container = document.createElement("div");
   document.body.appendChild(container);
   const appRoot = createRoot(container);

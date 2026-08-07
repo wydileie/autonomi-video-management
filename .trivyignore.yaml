@@ -1,0 +1,8 @@
+vulnerabilities:
+  - id: GHSA-qwww-vcr4-c8h2
+    paths:
+      - apps/web/package-lock.json
+    purls:
+      - pkg:npm/react-router@7.18.2
+    statement: The application is a BrowserRouter SPA and does not use the affected unstable RSC APIs.
+    expired_at: 2026-12-31
