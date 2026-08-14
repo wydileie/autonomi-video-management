@@ -4,7 +4,7 @@
   "private": true,
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "axios": "^1.18.1",
+    "axios": "^1.19.0",
     "hls.js": "^1.6.17",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -13,10 +13,10 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.62.1",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
-    "@vitejs/plugin-react": "^6.0.3",
+    "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
