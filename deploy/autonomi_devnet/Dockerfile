@@ -1,5 +1,5 @@
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
-FROM rust:1.97-slim-bookworm AS builder
+FROM rust:1.98-slim-bookworm AS builder
 
 ARG AUTONOMI_ANT_NODE_REF=v0.17.0
 
