@@ -8,7 +8,7 @@
     "hls.js": "^1.6.17",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "7.18.2"
+    "react-router-dom": "7.18.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -16,7 +16,7 @@
     "@types/node": "^26.2.0",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
-    "@vitejs/plugin-react": "^6.0.5",
+    "@vitejs/plugin-react": "^6.1.0",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
@@ -26,9 +26,9 @@
     "jsdom": "^30.0.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.67.0",
-    "vite": "^8.2.2",
-    "vitest": "^4.1.9"
+    "typescript-eslint": "^8.68.0",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.11"
   },
   "scripts": {
     "start": "vite --host 0.0.0.0",
