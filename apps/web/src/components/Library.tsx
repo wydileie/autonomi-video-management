@@ -97,15 +97,11 @@ export default function Library({ admin = false }: LibraryProps) {
       </div>
     );
   }
-  if (!videos.length) {
+  if (!videos.length && !admin) {
     return (
       <div className="empty-state">
         <span className="empty-icon" aria-hidden="true" />
-        <strong>
-          {admin
-            ? "No videos yet. Upload one to build your first stream."
-            : "No videos are available yet."}
-        </strong>
+        <strong>No videos are available yet.</strong>
       </div>
     );
   }
@@ -144,6 +140,12 @@ export default function Library({ admin = false }: LibraryProps) {
       )}
 
       <div className="video-list">
+        {!videos.length && (
+          <p>
+            No videos yet. Upload one to build your first stream. You can also publish the empty
+            catalog.
+          </p>
+        )}
         {videos.map((video) => (
           <article className="video-row" key={video.id}>
             <button type="button" className="video-summary" onClick={() => openDetail(video.id)}>
