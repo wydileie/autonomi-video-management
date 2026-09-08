@@ -1,5 +1,36 @@
 services:
+  init_payment_permissions:
+    image: alpine:3.20
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /data
+        chown 10001:10001 /data
+        chmod 700 /data
+        for file in /data/antd-payments.sqlite3 /data/antd-payments.sqlite3-wal /data/antd-payments.sqlite3-shm /data/antd-payments.lock; do
+          if [ -f "$$file" ]; then
+            chown 10001:10001 "$$file"
+            chmod 600 "$$file"
+          fi
+        done
+    volumes:
+      - antd_payment_state:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+
   antd:
+    depends_on:
+      init_payment_permissions:
+        condition: service_completed_successfully
     image: autonomi-video-management-antd-service
     build:
       context: ..
@@ -14,6 +45,9 @@ services:
       ANTD_NETWORK: "${PROD_ANTD_NETWORK:-default}"
       PROD_AUTONOMI_PEERS: "${PROD_AUTONOMI_PEERS:-}"
       ANT_PEERS: "${ANT_PEERS:-}"
+      ANTD_PAYMENT_DB_PATH: "/data/antd-payments.sqlite3"
+      ANTD_PEER_CACHE_PATH: "/data/peer-cache.json"
+      ANTD_READ_TOKEN_FILE: /run/secrets/antd_read_token
       ANTD_REST_ADDR: "0.0.0.0:8082"
       ANTD_LOG_LEVEL: "${ANTD_LOG_LEVEL:-warn}"
       ANTD_REQUEST_TIMEOUT_SECONDS: "${ANTD_REQUEST_TIMEOUT_SECONDS:-150}"
@@ -27,11 +61,13 @@ services:
       ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
       ANTD_CORS_ALLOWED_ORIGINS: "${ANTD_CORS_ALLOWED_ORIGINS:-}"
       ANTD_FILE_UPLOAD_MAX_BYTES: "${ANTD_FILE_UPLOAD_MAX_BYTES:-21474836480}"
-      ANTD_UPLOAD_TEMP_DIR: "${ANTD_UPLOAD_TEMP_DIR:-/tmp}"
+      ANTD_UPLOAD_TEMP_DIR: "${ANTD_UPLOAD_TEMP_DIR:-/data/uploads}"
       EVM_NETWORK: "${PROD_EVM_NETWORK:-arbitrum-one}"
       PROD_EVM_RPC_URL: "${PROD_EVM_RPC_URL:-}"
       PROD_EVM_PAYMENT_TOKEN_ADDRESS: "${PROD_EVM_PAYMENT_TOKEN_ADDRESS:-}"
       PROD_EVM_PAYMENT_VAULT_ADDRESS: "${PROD_EVM_PAYMENT_VAULT_ADDRESS:-}"
+    volumes:
+      - antd_payment_state:/data
     expose:
       - "8082"
     networks:
@@ -48,6 +84,7 @@ services:
       - ALL
     secrets:
       - antd_internal_token
+      - antd_read_token
       - autonomi_wallet_key
     deploy:
       resources:
@@ -72,7 +109,7 @@ services:
       ADMIN_AUTH_SECRET_FILE: /run/secrets/admin_auth_secret
       ANTD_INTERNAL_TOKEN: !reset null
       ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
-      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-false}"
     secrets:
       - admin_login_password
       - admin_auth_secret
@@ -93,9 +130,9 @@ services:
     environment:
       ANTD_URL: "http://antd:8082"
       ANTD_INTERNAL_TOKEN: !reset null
-      ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_internal_token
+      ANTD_INTERNAL_TOKEN_FILE: /run/secrets/antd_read_token
     secrets:
-      - antd_internal_token
+      - antd_read_token
     deploy:
       resources:
         limits:
@@ -126,6 +163,8 @@ services:
           memory: 128M
 
 secrets:
+  antd_read_token:
+    file: "${ANTD_READ_TOKEN_SECRET_FILE:-../secrets/antd_read_token}"
   admin_login_password:
     file: "${ADMIN_LOGIN_PASSWORD_SECRET_FILE:-../secrets/admin_login_password}"
   admin_auth_secret:
@@ -134,3 +173,6 @@ secrets:
     file: "${ANTD_INTERNAL_TOKEN_SECRET_FILE:-../secrets/antd_internal_token}"
   autonomi_wallet_key:
     file: "${AUTONOMI_WALLET_KEY_SECRET_FILE:-../secrets/autonomi_wallet_key}"
+
+volumes:
+  antd_payment_state:

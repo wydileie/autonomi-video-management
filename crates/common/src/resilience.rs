@@ -9,7 +9,7 @@ use std::{
 };
 
 use http::{Method, StatusCode};
-use rand::Rng;
+use rand::RngExt;
 
 #[derive(Debug)]
 pub struct AutonomiHttpStatusError {
@@ -125,7 +125,7 @@ pub fn jitter_duration(base: Duration) -> Duration {
     if base.is_zero() {
         return base;
     }
-    let factor = rand::thread_rng().gen_range(0.8..=1.2);
+    let factor = rand::rng().random_range(0.8..=1.2);
     let millis = (base.as_millis() as f64 * factor).round().max(1.0) as u64;
     Duration::from_millis(millis)
 }

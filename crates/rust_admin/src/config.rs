@@ -99,11 +99,7 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| data_dir.join("autvid.sqlite3"));
 
-        let bind_port = env::var("RUST_ADMIN_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_API_PORT);
-        let bind_addr = SocketAddr::from(([0, 0, 0, 0], bind_port));
+        let bind_addr = autvid_common::env::bind_addr_from_env("RUST_ADMIN", DEFAULT_API_PORT)?;
 
         let admin_db_min_connections = parse_env("ADMIN_DB_MIN_CONNECTIONS", 1)?;
         let admin_db_max_connections = parse_env("ADMIN_DB_MAX_CONNECTIONS", 5)?;
@@ -285,7 +281,11 @@ impl Config {
         if admin_job_poll_interval_seconds == 0 {
             anyhow::bail!("ADMIN_JOB_POLL_INTERVAL_SECONDS must be greater than zero");
         }
-        let admin_job_lease_seconds = parse_env("ADMIN_JOB_LEASE_SECONDS", 12 * 60 * 60)?;
+        let requested_lease_seconds: i64 = parse_env("ADMIN_JOB_LEASE_SECONDS", 120)?;
+        let admin_job_lease_seconds = requested_lease_seconds.min(300);
+        if requested_lease_seconds > 300 {
+            tracing::warn!("ADMIN_JOB_LEASE_SECONDS exceeds the renewal limit; using 300 seconds with heartbeats");
+        }
         if admin_job_lease_seconds <= 0 {
             anyhow::bail!("ADMIN_JOB_LEASE_SECONDS must be greater than zero");
         }
@@ -357,7 +357,7 @@ impl Config {
             antd_upload_timeout_seconds,
             antd_quote_concurrency,
             antd_upload_concurrency,
-            antd_approve_on_startup: bool_from_env("ANTD_APPROVE_ON_STARTUP", true)?,
+            antd_approve_on_startup: bool_from_env("ANTD_APPROVE_ON_STARTUP", false)?,
             antd_require_cost_ready: bool_from_env("ANTD_REQUIRE_COST_READY", false)?,
             antd_direct_upload_max_bytes,
             admin_job_workers,

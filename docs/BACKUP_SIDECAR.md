@@ -7,6 +7,7 @@ files; include the override only on hosts where you want automated backups.
 The sidecar writes the same core artifacts as `scripts/backup-production.sh`:
 
 - `autvid.sqlite3`: SQLite database backup created with SQLite's online backup command
+- `antd-payments.sqlite3`: payment journal backup, required for safe restore
 - `catalog.json`: current catalog state when present
 - `manifest.env`: backup metadata
 - `SHA256SUMS`: checksums for backup artifacts
@@ -61,6 +62,7 @@ docker compose --env-file .env.production \
 ## Restore
 
 ```bash
+ANTD_PAYMENT_DB_PATH=/srv/autonomi-video-management/gateway/antd-payments.sqlite3 \
 scripts/restore-production.sh \
   --backup-dir /srv/autonomi-video-management/backups/autvid-YYYYMMDDTHHMMSSZ \
   --yes
@@ -70,3 +72,11 @@ Stop the stack before restoring so SQLite sidecar files are not in use. The
 restore script replaces `autvid.sqlite3`, removes stale WAL/SHM sidecars when
 the backup does not contain legacy copies of them, and overwrites `catalog.json`
 when the backup contains one.
+
+The sidecar mounts the gateway journal volume read-only. `ANTD_BACKUP_VOLUME`
+is required when rendering the backup overlay: select `antd_payment_state` for
+production or `autonomi_devnet_data` for local devnets. The example environment
+files provide these values. A missing journal fails the backup instead of creating
+an incomplete recovery set. Backup files use private permissions and checksums.
+Drain paid jobs for coordinated migration snapshots. Restore requires both
+databases and pauses signing until chain reconciliation (`PAYMENT_RECOVERY.md`).

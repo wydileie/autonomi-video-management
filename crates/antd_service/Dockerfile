@@ -1,37 +1,18 @@
-# ── Stage 1: Chef (shared toolchain + cargo-chef, layer-identical across services) ──
-FROM rust:1.98-slim-bookworm AS chef
-
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    liblzma-dev \
-    perl \
-    pkg-config \
-    libssl-dev \
-    protobuf-compiler \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install cargo-chef --locked
-
+# syntax=docker/dockerfile:1
+FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS builder
+# Official Docker images lag the patch release; install the pinned toolchain explicitly.
+RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1 && rustup toolchain uninstall 1.98.0
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git liblzma-dev perl pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-# ── Stage 2: Plan (recipe.json only changes when dependencies change) ─────────
-FROM chef AS planner
-
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-RUN cargo chef prepare --recipe-path recipe.json
+COPY vendor/ vendor/
+ARG TARGETARCH
+# Share cached dependencies across service builds while keeping source patches real.
+RUN --mount=type=cache,id=autvid-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=autvid-rust-${TARGETARCH},target=/app/target,sharing=locked \
+    cargo build --locked --release -p antd && mkdir -p /out && cp /app/target/release/antd /out/
 
-# ── Stage 3: Build (dependency layer cached on recipe content) ────────────────
-FROM chef AS builder
-
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json -p antd
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-RUN cargo build --release -p antd
-
-# ── Stage 4: Runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
@@ -40,9 +21,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/antd /usr/local/bin/antd
+COPY --from=builder /out/antd /usr/local/bin/antd
 
 RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin appuser
+RUN mkdir -p /data && chown 10001:10001 /data
 USER appuser
 
 EXPOSE 8082

@@ -13,6 +13,8 @@ use crate::routes::data::DataCostResponse;
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) client: Arc<CoreClient>,
+    pub(crate) download_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) payments: Arc<crate::payments::Payments>,
     pub(crate) network: String,
     pub(crate) metrics: Arc<HttpMetrics>,
     pub(crate) cost_cache: Arc<CostCache>,
@@ -108,6 +110,10 @@ mod tests {
 
     fn response(cost: &str) -> DataCostResponse {
         DataCostResponse {
+            address: "00".repeat(32),
+            content_sha256: "00".repeat(32),
+            network: "test".into(),
+            confidence: "test".into(),
             cost: cost.to_string(),
             file_size: 3,
             chunk_count: 1,

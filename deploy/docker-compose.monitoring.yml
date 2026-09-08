@@ -1,6 +1,6 @@
 services:
   prometheus:
-    image: "${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}"
+    image: "${PROMETHEUS_IMAGE:-prom/prometheus:v3.14.0}"
     container_name: autvid_prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   node_exporter:
-    image: "${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.8.2}"
+    image: "${NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.12.1}"
     container_name: autvid_node_exporter
     command:
       - "--path.rootfs=/host"
@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
 
   alertmanager:
-    image: "${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.27.0}"
+    image: "${ALERTMANAGER_IMAGE:-prom/alertmanager:v0.34.0}"
     container_name: autvid_alertmanager
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -55,7 +55,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: "${GRAFANA_IMAGE:-grafana/grafana:11.3.0}"
+    image: "${GRAFANA_IMAGE:-grafana/grafana:13.2.1}"
     container_name: autvid_grafana
     depends_on:
       - prometheus

@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::scheduling::{
-    enqueue_catalog_publish_job, schedule_processing_job, schedule_upload_job,
+    enqueue_catalog_publish_job, schedule_processing_job, schedule_quote_job, schedule_upload_job,
 };
 use crate::{
     catalog::read_catalog_state_value, db::set_status, media::resolution_preset, state::AppState,
@@ -19,6 +19,9 @@ use crate::{
 };
 
 pub(crate) async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<()> {
+    crate::catalog::payments::restore_snapshot(&state)
+        .await
+        .map_err(|e| anyhow::anyhow!(e.detail))?;
     let now = Utc::now();
     let reset_jobs = sqlx::query(
         r#"
@@ -28,7 +31,7 @@ pub(crate) async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<
             lease_expires_at=NULL,
             run_after=$2,
             updated_at=$2
-        WHERE status=$3
+        WHERE status=$3 AND (lease_expires_at IS NULL OR lease_expires_at <= $2)
         "#,
     )
     .bind(JOB_STATUS_QUEUED)
@@ -47,10 +50,12 @@ pub(crate) async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<
         r#"
         SELECT id, status, job_dir, job_source_path, requested_resolutions
         FROM videos
-        WHERE status IN ('pending', 'processing', 'uploading')
+        WHERE status IN ('pending', 'processing', 'uploading', 'quoting')
+          AND NOT EXISTS(SELECT 1 FROM video_jobs j WHERE j.video_id=videos.id AND j.status='running' AND j.lease_expires_at > $1)
         ORDER BY created_at
         "#,
     )
+    .bind(now)
     .fetch_all(&state.pool)
     .await?;
 
@@ -94,6 +99,10 @@ pub(crate) async fn recover_interrupted_jobs(state: AppState) -> anyhow::Result<
                 .await
                 .map_err(|err| anyhow::anyhow!(err.detail))?;
             recovered_processing += 1;
+        } else if status == "quoting" {
+            schedule_quote_job(&state, &video_id)
+                .await
+                .map_err(|err| anyhow::anyhow!(err.detail))?;
         } else if status == STATUS_UPLOADING {
             schedule_upload_job(&state, &video_id)
                 .await

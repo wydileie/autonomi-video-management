@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use rand::{rngs::OsRng, RngCore};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -64,7 +64,7 @@ pub(crate) fn new_refresh_token(state: &AppState) -> IssuedRefreshToken {
 
 pub(crate) fn generate_refresh_token() -> String {
     let mut bytes = [0u8; REFRESH_TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -86,6 +86,6 @@ pub(crate) fn hex_lower(bytes: &[u8]) -> String {
 
 pub(crate) fn generate_csrf_token() -> String {
     let mut bytes = [0u8; CSRF_TOKEN_BYTES];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }

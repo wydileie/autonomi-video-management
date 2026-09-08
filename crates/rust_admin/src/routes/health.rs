@@ -99,17 +99,23 @@ async fn load_job_metrics_uncached(state: &AppState) -> Option<JobMetricsSnapsho
 }
 
 pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let autonomi = match state.antd.health().await {
-        Ok(status) => AutonomiHealth {
-            ok: status.status.eq_ignore_ascii_case("ok"),
-            network: status.network,
-            error: None,
-        },
-        Err(err) => AutonomiHealth {
-            ok: false,
-            network: None,
-            error: Some(err.to_string()),
-        },
+    let (autonomi, gateway_write_ready) = match state.antd.health().await {
+        Ok(status) => (
+            AutonomiHealth {
+                ok: status.status.eq_ignore_ascii_case("ok") && status.read_ready == Some(true),
+                network: status.network,
+                error: None,
+            },
+            status.write_ready == Some(true),
+        ),
+        Err(err) => (
+            AutonomiHealth {
+                ok: false,
+                network: None,
+                error: Some(err.to_string()),
+            },
+            false,
+        ),
     };
     let database = match sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.pool)
@@ -124,15 +130,16 @@ pub(super) async fn health(State(state): State<AppState>) -> impl IntoResponse {
             error: Some(err.to_string()),
         },
     };
-    let write_ready = if state.config.antd_require_cost_ready {
-        state
-            .antd
-            .data_cost_for_size(MIN_ANTD_SELF_ENCRYPTION_BYTES)
-            .await
-            .is_ok()
-    } else {
-        autonomi.ok
-    };
+    let write_ready = gateway_write_ready
+        && if state.config.antd_require_cost_ready {
+            state
+                .antd
+                .data_cost_for_size(MIN_ANTD_SELF_ENCRYPTION_BYTES)
+                .await
+                .is_ok()
+        } else {
+            autonomi.ok
+        };
     let ok = autonomi.ok && database.ok && write_ready;
     let status = if ok {
         StatusCode::OK

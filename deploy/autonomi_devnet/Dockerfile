@@ -1,9 +1,12 @@
+# syntax=docker/dockerfile:1
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
-FROM rust:1.98-slim-bookworm AS builder
+FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS builder
+# Official Docker images lag the patch release; install the pinned toolchain explicitly.
+RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1 && rustup toolchain uninstall 1.98.0
 
-ARG AUTONOMI_ANT_NODE_REF=v0.17.0
+ARG AUTONOMI_ANT_NODE_REF=v0.18.1
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     libssl-dev \
@@ -18,38 +21,23 @@ WORKDIR /build
 RUN git clone https://github.com/WithAutonomi/ant-node.git ant-node && \
     cd ant-node && \
     git checkout "$AUTONOMI_ANT_NODE_REF" && \
-    cargo build --release --bin ant-devnet && \
+    cargo build --locked --release --bin ant-devnet && \
     cp target/release/ant-devnet /usr/local/bin/ant-devnet
 
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates/common/Cargo.toml crates/common/Cargo.toml
-COPY crates/rust_admin/Cargo.toml crates/rust_admin/Cargo.toml
-COPY crates/rust_stream/Cargo.toml crates/rust_stream/Cargo.toml
-COPY crates/antd_service/Cargo.toml crates/antd_service/Cargo.toml
-COPY crates/launcher_core/Cargo.toml crates/launcher_core/Cargo.toml
-COPY crates/standalone_launcher/Cargo.toml crates/standalone_launcher/Cargo.toml
-RUN mkdir -p crates/common/src crates/rust_admin/src crates/rust_stream/src crates/antd_service/src crates/launcher_core/src crates/standalone_launcher/src && \
-    echo "" > crates/common/src/lib.rs && \
-    echo "fn main(){}" > crates/rust_admin/src/main.rs && \
-    echo "fn main(){}" > crates/rust_stream/src/main.rs && \
-    echo "fn main(){}" > crates/antd_service/src/main.rs && \
-    echo "" > crates/launcher_core/src/lib.rs && \
-    echo "fn main(){}" > crates/standalone_launcher/src/main.rs && \
-    cargo build --release -p antd
-
-COPY crates/common/src crates/common/src
-COPY crates/antd_service/src crates/antd_service/src
-COPY crates/launcher_core/src crates/launcher_core/src
-RUN touch crates/common/src/lib.rs crates/antd_service/src/main.rs crates/launcher_core/src/lib.rs && \
-    cargo build --release -p antd && \
-    cp target/release/antd /usr/local/bin/autvid-antd-gateway
+COPY crates/ crates/
+COPY vendor/ vendor/
+ARG TARGETARCH
+RUN --mount=type=cache,id=autvid-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=autvid-rust-${TARGETARCH},target=/app/target,sharing=locked \
+    cargo build --locked --release -p antd && cp target/release/antd /usr/local/bin/autvid-antd-gateway
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
     curl \
@@ -60,16 +48,17 @@ RUN apt-get update && apt-get install -y \
 
 # Pinned: a live "latest release" lookup made builds unreproducible and
 # subject to GitHub API rate limits. Bump deliberately.
-ARG FOUNDRY_TAG=v1.4.1
+ARG FOUNDRY_TAG=v1.8.1
 
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in \
-      amd64) FOUNDRY_ARCH="amd64" ;; \
-      arm64) FOUNDRY_ARCH="arm64" ;; \
+      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10" ;; \
+      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c" ;; \
       *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac && \
     curl -fsSLo /tmp/foundry.tar.gz \
       "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_TAG}/foundry_${FOUNDRY_TAG}_linux_${FOUNDRY_ARCH}.tar.gz" && \
+    echo "${FOUNDRY_SHA256}  /tmp/foundry.tar.gz" | sha256sum -c - && \
     tar -xzf /tmp/foundry.tar.gz -C /usr/local/bin anvil forge cast chisel && \
     rm -f /tmp/foundry.tar.gz
 
@@ -85,6 +74,6 @@ RUN mkdir -p /data && \
 USER appuser
 
 VOLUME ["/data"]
-EXPOSE 8082 50051
+EXPOSE 8082
 
 ENTRYPOINT ["/usr/local/bin/start-local-devnet.sh"]

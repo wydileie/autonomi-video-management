@@ -7,7 +7,8 @@ pub(crate) use cleanup::{approval_cleanup_loop, cleanup_expired_approvals};
 pub(crate) use lease_worker::start_job_workers;
 pub(crate) use recovery::recover_interrupted_jobs;
 pub(crate) use scheduling::{
-    fetch_job_dir, schedule_catalog_publish, schedule_processing_job, schedule_upload_job,
+    fetch_job_dir, schedule_catalog_publish, schedule_processing_job, schedule_quote_job,
+    schedule_upload_job,
 };
 
 #[cfg(all(test, feature = "db-tests"))]
@@ -212,6 +213,10 @@ mod db_tests {
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+            active_job: None,
+            quote_semaphore: Arc::new(Semaphore::new(1)),
+            upload_semaphore: Arc::new(Semaphore::new(1)),
+            transcode_semaphore: Arc::new(Semaphore::new(1)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
             job_notify_tx: tokio::sync::watch::channel(0).0,
@@ -240,6 +245,69 @@ mod db_tests {
         .await
         .unwrap();
         video_id
+    }
+
+    #[tokio::test]
+    async fn db_admin_limits_login_and_authenticates_before_body_extraction() {
+        let db = TestDb::new().await;
+        let root = std::env::temp_dir().join(format!("autvid_route_limits_{}", Uuid::new_v4()));
+        let mut state = test_state(db.pool.clone(), &root);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        Arc::make_mut(&mut state.config).bind_addr = address;
+        let app = crate::routes::router(&state.config, state.clone()).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let base = format!("http://{address}");
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .header("content-type", "application/json")
+            .body(vec![b' '; 65 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        let response = client
+            .post(format!("{base}/videos/upload/quote"))
+            .header("content-type", "application/json")
+            .body(vec![b'!'; 65 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .header("host", "rebind.example")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        for _ in 0..19 {
+            let response = client
+                .post(format!("{base}/auth/login"))
+                .header("content-type", "application/json")
+                .body("invalid")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        }
+        let delayed_at = std::time::Instant::now();
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .json(&json!({"username":"admin","password":"password"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(delayed_at.elapsed() >= std::time::Duration::from_secs(2));
+        server.abort();
+        let _ = server.await;
+        let _ = fs::remove_dir_all(root);
+        db.cleanup().await;
     }
 
     #[tokio::test]
@@ -346,6 +414,32 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(owner, "worker-b");
+        assert!(!super::lease_worker::renew_lease(&state, &first)
+            .await
+            .unwrap());
+        super::lease_worker::mark_job_succeeded(&state, &first)
+            .await
+            .unwrap();
+        super::lease_worker::mark_job_failed(&state, &first, "stale failure")
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT status, lease_owner, attempts FROM video_jobs WHERE id=$1")
+            .bind(first.id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<String, _>("lease_owner").unwrap(), "worker-b");
+        assert_eq!(
+            row.try_get::<String, _>("status").unwrap(),
+            JOB_STATUS_RUNNING
+        );
+        assert_eq!(
+            row.try_get::<i32, _>("attempts").unwrap(),
+            reclaimed.attempts
+        );
+        assert!(super::lease_worker::renew_lease(&state, &reclaimed)
+            .await
+            .unwrap());
 
         let _ = fs::remove_dir_all(root_dir);
         db.cleanup().await;
@@ -467,6 +561,184 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn db_requote_requires_gateway_confirmation_of_unpaid_revocation() {
+        for unpaid in [Some(true), Some(false), None] {
+            let db = TestDb::new().await;
+            let root = std::env::temp_dir().join(format!("autvid_db_requote_{}", Uuid::new_v4()));
+            let mut state = test_state(db.pool.clone(), &root);
+            let video = insert_video(&state.pool, "uploading", &root).await;
+            sqlx::query("UPDATE videos SET approved_quote_id='original-quote' WHERE id=$1")
+                .bind(video)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+            schedule_upload_job(&state, &video.to_string())
+                .await
+                .unwrap();
+            let job = acquire_next_job(&state, "worker").await.unwrap().unwrap();
+            let expected = format!("{}:worker:1", job.id);
+            let app = axum::Router::new().route(
+                "/v1/payments/approvals/original-quote/cancel-unpaid",
+                axum::routing::post(move |headers: axum::http::HeaderMap| async move {
+                    assert_eq!(headers["x-payment-lease"].to_str().unwrap(), expected);
+                    if unpaid.is_none() {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                    axum::Json(json!({"cancelled_unpaid": unpaid}))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            state.antd = AntdRestClient::new(&url, 1.0, state.metrics.clone(), None).unwrap();
+            mark_job_failed(&state, &job, "payment_recovery_required: approved storage started; approval_required: price increased").await.unwrap();
+            let status: String = sqlx::query_scalar("SELECT status FROM videos WHERE id=$1")
+                .bind(video)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                if unpaid == Some(true) {
+                    "approval_required"
+                } else {
+                    "payment_recovery_required"
+                }
+            );
+            server.abort();
+            let _ = fs::remove_dir_all(root);
+            db.cleanup().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn db_exhausted_approved_upload_keeps_recovery_identity() {
+        let db = TestDb::new().await;
+        let root = std::env::temp_dir().join(format!("autvid_db_paid_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root);
+        let video = insert_video(&state.pool, "uploading", &root).await;
+        sqlx::query("UPDATE videos SET approved_quote_id='original-quote' WHERE id=$1")
+            .bind(video)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        schedule_upload_job(&state, &video.to_string())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE video_jobs SET max_attempts=1 WHERE video_id=$1")
+            .bind(video)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let job = acquire_next_job(&state, "worker").await.unwrap().unwrap();
+        mark_job_failed(&state, &job, "database busy after storing segment")
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM videos WHERE id=$1")
+                .bind(video)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            "payment_recovery_required"
+        );
+        let error = crate::pipeline::paid_phase(async {
+            Err(crate::pipeline::payment_api(
+                "approval_required: catalog changed",
+            ))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.detail.starts_with("payment_recovery_required:"));
+        let _ = fs::remove_dir_all(root);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_catalog_file_only_exposes_committed_snapshots() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_catalog_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(&state.config.catalog_state_path, "old snapshot").unwrap();
+        let snapshot = json!({"published_address":"committed-address", "all_address":"all-address",
+            "published":{"videos":[]}, "all":{"videos":[]}})
+        .to_string();
+        let mut tx = crate::db::begin_immediate(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1)")
+            .bind(&snapshot)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        // Deferred foreign keys permit writes but reject the COMMIT itself.
+        sqlx::raw_sql("CREATE TABLE commit_guard (parent TEXT REFERENCES application_state(key) DEFERRABLE INITIALLY DEFERRED); INSERT INTO commit_guard VALUES('missing');")
+            .execute(&mut *tx).await.unwrap();
+        assert!(crate::catalog::payments::commit_snapshot(&state, tx)
+            .await
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(&state.config.catalog_state_path).unwrap(),
+            "old snapshot"
+        );
+        let mut tx = crate::db::begin_immediate(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1)")
+            .bind(&snapshot)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::catalog::payments::commit_snapshot(&state, tx)
+            .await
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(file["published_catalog_address"], "committed-address");
+        // A lagging file must not replace the newer database address during refresh.
+        fs::write(
+            &state.config.catalog_state_path,
+            json!({"catalog_address":"stale-address"}).to_string(),
+        )
+        .unwrap();
+        crate::catalog::refresh_local_catalog_from_db(&state, "test")
+            .await
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(file["published_catalog_address"], "committed-address");
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_catalog_recovery_takes_precedence_over_nested_approval_error() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        sqlx::query("INSERT INTO catalog_approvals(id,plan,state,created_at) VALUES('quote','{}','uploading',$1)")
+            .bind(Utc::now()).execute(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO video_jobs(id,job_kind,status,max_attempts,run_after,payment_quote_id) VALUES($1,'finalize_catalog','queued',2,$2,'quote')")
+            .bind(Uuid::new_v4()).bind(Utc::now()).execute(&state.pool).await.unwrap();
+        let job = acquire_next_job(&state, "worker-a").await.unwrap().unwrap();
+        mark_job_failed(&state, &job,
+            "payment_recovery_required: budget changed after storage payment intent; approval_required: aggregate spending cap exceeded")
+            .await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT state FROM catalog_approvals WHERE id='quote'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            "payment_recovery_required"
+        );
+        // A new quote must not replace the original potentially paid operation.
+        let error = crate::catalog::payments::prepare(&state).await.unwrap_err();
+        assert!(error.detail.contains("resume or reconcile"));
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn db_recovery_requeues_running_jobs_and_pending_catalog_publish() {
         let db = TestDb::new().await;
         let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
@@ -494,7 +766,7 @@ mod db_tests {
         .bind(Uuid::new_v4())
         .bind(JOB_KIND_PUBLISH_CATALOG)
         .bind(JOB_STATUS_RUNNING)
-        .bind(Utc::now() + Duration::hours(1))
+        .bind(Utc::now() - Duration::seconds(1))
         .bind(Utc::now())
         .execute(&state.pool)
         .await

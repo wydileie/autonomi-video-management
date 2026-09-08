@@ -1,9 +1,21 @@
 # Observability
 
 The Compose stack can run optional Prometheus, Grafana, Alertmanager, Loki, and
-Promtail overlays. The metrics overlay scrapes the Rust services and `antd`
+Alloy overlays. The metrics overlay scrapes the Rust services and `antd`
 gateway. The logging overlay tails Docker container logs into Loki for browsing
 from Grafana.
+
+`/livez` checks process liveness. Admin `/health` includes payment write readiness
+and returns 503 while the gateway has a reserved/signed transaction awaiting a
+receipt, or requires payment reconciliation. Container healthchecks use `/livez`
+so this expected readiness pause cannot restart paid work.
+
+Catalog and manifest metadata each have a 16 MiB cache budget (32 MiB combined),
+using a conservative four-times-wire-size estimate for parsed allocations. The
+estimate is a heuristic; one maximum-size document can occupy its entire cache.
+Catalog materialization failures are logged after the authoritative DB commit.
+The file can lag until the next catalog update or startup repair; a file-write
+failure must not roll back completed paid storage.
 
 ## Metrics Endpoints
 
@@ -135,13 +147,19 @@ docker compose --env-file .env.production \
 ```
 
 For internet-facing deployments, keep Grafana, Prometheus, Alertmanager, Loki,
-and Promtail behind a private network, VPN, or authenticated reverse proxy.
+and Alloy behind a private network, VPN, or authenticated reverse proxy.
 The overlays publish only to localhost by default; set host firewall rules and
 bind overrides that match your deployment model.
 
-Promtail uses the Docker socket to discover containers and read their logs.
-Treat access to `autvid_promtail` and the mounted socket as operationally
-privileged.
+Alloy reads a read-only mount of Docker JSON log files and drops entries from
+other Compose projects. It has no Docker socket mount. Set
+`AUTVID_DOCKER_LOG_ROOT` to the Docker engine's containers directory when it is
+not `/var/lib/docker/containers`. Log rotation stays capped at three 10 MB files
+per application container. Keep the log directory private; logs can contain
+operational metadata. The default collector stores positions in `alloy_data`.
+
+Loki uses TSDB schema v13. Preserve `loki_data` when upgrading; existing Loki
+installations need their historical schema periods retained in the Loki config.
 
 ## Grafana Dashboards
 
@@ -215,3 +233,9 @@ for file in deploy/monitoring/grafana/dashboards/*.json; do
   jq empty "$file"
 done
 ```
+
+Alloy's default read-only mount covers the host's Docker JSON log directory.
+It can read other containers' logs; project filtering happens after reading and
+parsing, before forwarding to Loki. Use a dedicated restricted log directory
+through `AUTVID_DOCKER_LOG_ROOT` if host-wide read access is unsuitable. Its
+administration listener stays on loopback. The collector has no Docker socket.

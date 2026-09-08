@@ -41,10 +41,14 @@ test("logs in with cookie-only auth and sends no bearer headers on admin request
   expect(text()).toContain("Upload");
   expect(text()).toContain("Logout");
   expect(axios.get).toHaveBeenCalledWith("/auth/me");
-  expect(axios.get).toHaveBeenCalledWith("/admin/videos");
+  expect(axios.get).toHaveBeenCalledWith(
+    "/admin/videos",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
 });
 
-test("restores an admin session from the refresh cookie", async () => {
+test("restores an admin session without discarding a requested admin route", async () => {
+  window.history.replaceState({}, "", "/manage/preserved-video");
   setAuthenticatedCookies();
   setupGetRoutes();
   axios.post.mockImplementation((url, body, config) => {
@@ -69,6 +73,7 @@ test("restores an admin session from the refresh cookie", async () => {
     expect(text()).toContain("Upload");
   });
   expect(axios.get).toHaveBeenCalledWith("/auth/me");
+  expect(window.location.pathname).toBe("/manage/preserved-video");
 });
 
 test("logs out through the backend and clears local admin auth", async () => {

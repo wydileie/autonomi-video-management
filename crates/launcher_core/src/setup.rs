@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use rand::{rngs::OsRng, RngCore};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -52,6 +52,7 @@ pub fn setup_status(data_dir: &Path) -> SetupStatus {
 pub fn save_first_run_config(data_dir: &Path, setup: FirstRunSetup) -> anyhow::Result<SetupStatus> {
     validate_setup(&setup)?;
     fs::create_dir_all(data_dir)?;
+    set_private_dir_permissions(data_dir)?;
     let secrets_dir = data_dir.join("secrets");
     fs::create_dir_all(&secrets_dir)?;
     set_private_dir_permissions(&secrets_dir)?;
@@ -128,7 +129,7 @@ pub(crate) fn validate_setup(setup: &FirstRunSetup) -> anyhow::Result<()> {
 
 pub(crate) fn random_hex_secret() -> String {
     let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    rand::rng().fill(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

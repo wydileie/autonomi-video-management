@@ -7,8 +7,10 @@ pub(crate) use autvid_common::non_empty_env;
 
 pub(crate) struct Config {
     pub(crate) bind_addr: SocketAddr,
+    pub(crate) payment_db_path: PathBuf,
     pub(crate) network: String,
     pub(crate) internal_token: Option<String>,
+    pub(crate) read_token: Option<String>,
     pub(crate) cors_allowed_origins: Vec<HeaderValue>,
     pub(crate) request_timeout: Duration,
     pub(crate) file_upload_request_timeout: Duration,
@@ -21,11 +23,16 @@ pub(crate) struct Config {
 
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Self> {
-        let rest_addr = env::var("ANTD_REST_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".to_string());
+        let rest_addr = env::var("ANTD_REST_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string());
         Ok(Self {
             bind_addr: rest_addr.parse()?,
+            payment_db_path: PathBuf::from(
+                env::var("ANTD_PAYMENT_DB_PATH")
+                    .unwrap_or_else(|_| ".autvid/antd-payments.sqlite3".into()),
+            ),
             network: env::var("ANTD_NETWORK").unwrap_or_else(|_| "default".to_string()),
             internal_token: secret_env("ANTD_INTERNAL_TOKEN", "ANTD_INTERNAL_TOKEN_FILE")?,
+            read_token: secret_env("ANTD_READ_TOKEN", "ANTD_READ_TOKEN_FILE")?,
             cors_allowed_origins: cors_allowed_origins_from_env("ANTD_CORS_ALLOWED_ORIGINS")?,
             request_timeout: duration_from_env("ANTD_REQUEST_TIMEOUT_SECONDS", 150)?,
             file_upload_request_timeout: duration_from_env(

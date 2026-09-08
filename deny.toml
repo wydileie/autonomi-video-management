@@ -7,12 +7,18 @@ yanked = "deny"
 # Every ignore must state why it cannot be fixed locally. Revisit whenever the
 # pinned ant-* / jsonwebtoken dependencies are bumped.
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "rsa timing sidechannel via jsonwebtoken's rust_crypto backend; no patched rsa release exists yet" },
     { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill unmaintained; transitive via pinned ant-* crates" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; transitive via pinned ant-* crates" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; transitive via ant-node -> saorsa-transport" },
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained; transitive via pinned ant-* crates" },
-    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; transitive via pinned ant-* crates" },
+    # Current Tauri 2.11.5 still requires GTK 3 macros and urlpattern's UNIC tree.
+    # These notices report maintenance status, not a known exploitable vulnerability.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1 required by Tauri GTK 3/glib-macros; no compatible maintained upgrade" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property required by Tauri urlpattern; revisit on every Tauri update" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range required by Tauri urlpattern; revisit on every Tauri update" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common required by Tauri urlpattern; revisit on every Tauri update" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident required by Tauri urlpattern; revisit on every Tauri update" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version required by Tauri urlpattern; revisit on every Tauri update" },
 ]
 
 [licenses]

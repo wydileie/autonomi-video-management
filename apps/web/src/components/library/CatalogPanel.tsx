@@ -1,3 +1,4 @@
+import { formatAttoTokens, formatWei, formatDateTime } from "../../utils/format";
 import type { AdminCatalogs } from "../../types";
 
 interface CatalogPanelProps {
@@ -6,6 +7,8 @@ interface CatalogPanelProps {
   catalogs: AdminCatalogs | null;
   onCopy: (label: string, address?: string | null) => void;
   onRepublish: () => void;
+  onApprove: () => void;
+  onResume: () => void;
 }
 
 export default function CatalogPanel({
@@ -14,6 +17,8 @@ export default function CatalogPanel({
   catalogCopied,
   onCopy,
   onRepublish,
+  onApprove,
+  onResume,
 }: CatalogPanelProps) {
   return (
     <div className="catalog-address-panel">
@@ -28,12 +33,45 @@ export default function CatalogPanel({
         <button
           type="button"
           className="secondary-action"
-          disabled={catalogPublishing}
+          disabled={
+            catalogPublishing ||
+            catalogs?.preparing ||
+            ["approved", "uploading", "payment_recovery_required"].includes(
+              catalogs?.publication?.state || "",
+            )
+          }
           onClick={onRepublish}
         >
-          {catalogPublishing ? "Publishing..." : "Republish"}
+          {catalogPublishing || catalogs?.preparing ? "Preparing..." : "Quote catalog publication"}
         </button>
       </div>
+      {catalogs?.publication?.state === "draft" && (
+        <div className="quote-panel">
+          <strong>
+            Storage cap: {formatAttoTokens(catalogs.publication.approval.max_storage_atto)}
+          </strong>
+          <span>Gas cap: {formatWei(catalogs.publication.approval.max_gas_wei)}</span>
+          <p>
+            Approval expires{" "}
+            {formatDateTime(
+              new Date(catalogs.publication.approval.expires_at * 1000).toISOString(),
+            )}
+            . Changes to the catalog require a new quote.
+          </p>
+          <button type="button" disabled={catalogPublishing} onClick={onApprove}>
+            Approve catalog storage and gas caps
+          </button>
+        </div>
+      )}
+      {catalogs?.publication && ["approved", "uploading"].includes(catalogs.publication.state) && (
+        <p>Publishing the approved catalog snapshot...</p>
+      )}
+      {catalogs?.publication?.state === "payment_recovery_required" && (
+        <button type="button" disabled={catalogPublishing} onClick={onResume}>
+          Resume approved catalog publication
+        </button>
+      )}
+      {catalogs?.publication?.error && <p role="alert">{catalogs.publication.error}</p>}
       <div className="catalog-address-grid">
         <CatalogAddress
           label="Published"

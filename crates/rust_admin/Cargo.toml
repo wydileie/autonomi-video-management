@@ -12,19 +12,20 @@ workspace = true
 db-tests = []
 
 [dependencies]
+futures-util = "0.3.32"
 anyhow.workspace = true
 autvid_common = { path = "../common" }
 axum = { workspace = true, features = ["macros", "multipart"] }
 base64.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 fs2 = "0.4"
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-rand = "0.8"
-reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+rand = "0.10.2"
+reqwest = { workspace = true, features = ["json", "rustls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "uuid", "chrono", "json", "migrate", "macros"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "uuid", "chrono", "json", "migrate", "macros"] }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 tower-http = { workspace = true, features = ["cors", "request-id", "timeout", "trace", "util"] }

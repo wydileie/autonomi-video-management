@@ -69,9 +69,19 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
     tokio::fs::create_dir_all(&catalog_dir).await?;
     tokio::fs::create_dir_all(&logs_dir).await?;
     tokio::fs::create_dir_all(&run_dir).await?;
+    set_private_dir_permissions(&data_dir)?;
     set_private_dir_permissions(&run_dir)?;
     let lock_file = acquire_instance_lock(&run_dir)?;
     cleanup_stale_children(&run_dir)?;
+
+    write_secret_file(
+        &run_dir.join("gateway-write-token"),
+        random_hex_secret().as_bytes(),
+    )?;
+    write_secret_file(
+        &run_dir.join("gateway-read-token"),
+        random_hex_secret().as_bytes(),
+    )?;
 
     let admin_port = env_port_or_available("RUST_ADMIN_PORT", 8000)?;
     let stream_port = env_port_or_available("RUST_STREAM_PORT", 8081)?;
@@ -138,7 +148,11 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
     let frontend_dir = cleanup_try!(resolve_frontend_dir(options.frontend_dir.as_deref()));
     let state = ProxyState {
         admin_base,
-        client: Client::new(),
+        client: Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?,
+        origin: launcher_url.clone(),
         runtime_config_js:
             "window.__AUTONOMI_VIDEO_CONFIG__ = { apiBaseUrl: '/api', streamBaseUrl: '/stream' };\n"
                 .to_string(),
@@ -152,6 +166,10 @@ pub async fn launch_stack(options: LaunchOptions) -> anyhow::Result<RunningStack
             ServeDir::new(&frontend_dir)
                 .not_found_service(ServeFile::new(frontend_dir.join("index.html"))),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            validate_native_request,
+        ))
         .with_state(state);
 
     let listener = cleanup_try!(TcpListener::bind(("127.0.0.1", launcher_port)).await);
@@ -186,7 +204,17 @@ pub(crate) fn start_antd(
             let mut command = child_command("AUTVID_ANTD_BIN", "antd", binary_dir);
             command
                 .env("ANTD_REST_ADDR", format!("127.0.0.1:{antd_port}"))
-                .env("ANTD_UPLOAD_TEMP_DIR", data_dir.join("antd-temp"));
+                .env("ANTD_UPLOAD_TEMP_DIR", data_dir.join("antd-temp"))
+                .env(
+                    "ANTD_PAYMENT_DB_PATH",
+                    data_dir.join("antd-payments.sqlite3"),
+                )
+                .env("ANTD_PEER_CACHE_PATH", data_dir.join("peer-cache.json"))
+                .env(
+                    "ANTD_INTERNAL_TOKEN_FILE",
+                    run_dir.join("gateway-write-token"),
+                )
+                .env("ANTD_READ_TOKEN_FILE", run_dir.join("gateway-read-token"));
             if let Some(wallet_key_file) =
                 desktop_config.and_then(|config| config.wallet_key_file.as_ref())
             {
@@ -199,13 +227,33 @@ pub(crate) fn start_antd(
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| {
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("../autonomi_devnet/start-local-devnet.sh")
+                        .join("../../deploy/autonomi_devnet/start-local-devnet.sh")
                 });
+            let gateway = child_command("AUTVID_ANTD_BIN", "antd", binary_dir)
+                .as_std()
+                .get_program()
+                .to_owned();
             let mut command = Command::new(script);
             command
                 .env("ANTD_REST_ADDR", format!("127.0.0.1:{antd_port}"))
                 .env("ANT_DEVNET_DATA_DIR", data_dir.join("devnet").join("nodes"))
-                .env("LOG_DIR", data_dir.join("devnet").join("logs"));
+                .env(
+                    "ANT_DEVNET_MANIFEST",
+                    data_dir.join("devnet").join("manifest.json"),
+                )
+                .env("AUTVID_GATEWAY_BIN", gateway)
+                .env(
+                    "ANTD_PAYMENT_DB_PATH",
+                    data_dir.join("antd-payments.sqlite3"),
+                )
+                .env("ANTD_PEER_CACHE_PATH", data_dir.join("peer-cache.json"))
+                .env("ANTD_UPLOAD_TEMP_DIR", data_dir.join("antd-temp"))
+                .env("LOG_DIR", data_dir.join("devnet").join("logs"))
+                .env(
+                    "ANTD_INTERNAL_TOKEN_FILE",
+                    run_dir.join("gateway-write-token"),
+                )
+                .env("ANTD_READ_TOKEN_FILE", run_dir.join("gateway-read-token"));
             spawn("local-devnet", command, logs_dir, run_dir)
         }
     }
@@ -236,6 +284,11 @@ pub(crate) fn start_rust_admin(
         .env("TEMP", processing_dir)
         .env("ANTD_URL", antd_url)
         .env("RUST_ADMIN_PORT", admin_port.to_string())
+        .env("RUST_ADMIN_BIND_ADDRESS", "127.0.0.1")
+        .env(
+            "ANTD_INTERNAL_TOKEN_FILE",
+            run_dir.join("gateway-write-token"),
+        )
         .env("CORS_ALLOWED_ORIGINS", launcher_url);
     // The desktop launcher serves the production-built app over loopback HTTP.
     // Keep strict auth enabled, but do not mark cookies Secure unless the
@@ -293,6 +346,11 @@ pub(crate) fn start_rust_stream(
         .env("ANTD_URL", antd_url)
         .env("CATALOG_STATE_PATH", catalog_dir.join("catalog.json"))
         .env("RUST_STREAM_PORT", stream_port.to_string())
+        .env("RUST_STREAM_BIND_ADDRESS", "127.0.0.1")
+        .env(
+            "ANTD_INTERNAL_TOKEN_FILE",
+            run_dir.join("gateway-read-token"),
+        )
         .env("CORS_ALLOWED_ORIGINS", launcher_url);
     spawn("rust_stream", command, logs_dir, run_dir)
 }

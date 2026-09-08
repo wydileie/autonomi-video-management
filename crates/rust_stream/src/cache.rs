@@ -3,15 +3,18 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use linked_hash_map::LinkedHashMap;
-use tokio::sync::{watch, Mutex};
+use std::sync::Arc;
+use tokio::sync::{watch, Mutex, Semaphore};
 
 use crate::config::CacheConfig;
 use crate::models::{Catalog, VideoManifest};
 
 pub(crate) struct AppCache {
-    pub(crate) catalogs: Mutex<HashMap<String, CachedValue<Catalog>>>,
-    pub(crate) manifests: Mutex<HashMap<String, CachedValue<VideoManifest>>>,
+    pub(crate) catalogs: Mutex<HashMap<String, CachedValue<Arc<Catalog>>>>,
+    pub(crate) manifests: Mutex<HashMap<String, CachedValue<Arc<VideoManifest>>>>,
     pub(crate) segments: Mutex<SegmentCache>,
+    pub(crate) fetch_slots: Arc<Semaphore>,
+    pub(crate) local_catalog: Mutex<Option<CachedValue<Arc<crate::models::CatalogState>>>>,
     pub(crate) segment_fetches: Mutex<HashMap<String, SegmentFetchReceiver>>,
 }
 
@@ -21,6 +24,7 @@ pub(crate) type SegmentFetchReceiver = watch::Receiver<SegmentFetchResult>;
 pub(crate) struct CachedValue<T> {
     pub(crate) value: T,
     pub(crate) expires_at: Instant,
+    pub(crate) size_bytes: usize,
 }
 
 pub(crate) struct SegmentCache {
@@ -47,6 +51,8 @@ impl AppCache {
     pub(crate) fn new(config: &CacheConfig) -> Self {
         Self {
             catalogs: Mutex::new(HashMap::new()),
+            fetch_slots: Arc::new(Semaphore::new(16)),
+            local_catalog: Mutex::new(None),
             manifests: Mutex::new(HashMap::new()),
             segments: Mutex::new(SegmentCache::new(
                 config.segment_max_bytes,
@@ -88,6 +94,7 @@ impl SegmentCache {
     }
 
     pub(crate) fn insert(&mut self, address: String, data: Bytes) {
+        self.prune_expired();
         if self.disabled() || data.len() > self.max_bytes {
             return;
         }
@@ -102,7 +109,7 @@ impl SegmentCache {
                 expires_at: now + self.ttl,
             },
         );
-        self.evict_expired(now);
+
         self.evict_to_limit();
     }
 
@@ -123,19 +130,6 @@ impl SegmentCache {
         }
     }
 
-    fn evict_expired(&mut self, now: Instant) {
-        let expired_addresses = self
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.expires_at <= now)
-            .map(|(address, _)| address.to_string())
-            .collect::<Vec<_>>();
-
-        for address in expired_addresses {
-            self.evict_address(&address);
-        }
-    }
-
     fn evict_to_limit(&mut self) {
         while self.total_bytes > self.max_bytes {
             let Some(address) = self.entries.front().map(|(address, _)| address.clone()) else {
@@ -145,11 +139,58 @@ impl SegmentCache {
         }
     }
 
-    pub(crate) fn snapshot(&self) -> SegmentCacheSnapshot {
+    fn prune_expired(&mut self) {
+        let now = Instant::now();
+        // Keep cleanup bounded even when a cache contains many tiny segments.
+        for _ in 0..64 {
+            let Some(address) = self
+                .entries
+                .front()
+                .filter(|(_, entry)| entry.expires_at <= now)
+                .map(|(address, _)| address.clone())
+            else {
+                break;
+            };
+            self.evict_address(&address);
+        }
+    }
+
+    pub(crate) fn snapshot(&mut self) -> SegmentCacheSnapshot {
+        self.prune_expired();
         SegmentCacheSnapshot {
             evictions_total: self.evictions_total,
             bytes_resident: self.total_bytes,
             entries: self.entries.len(),
         }
     }
+}
+
+/// Bound both metadata bytes and entry overhead; expire lazily on insertion/access.
+pub(crate) fn insert_metadata<T>(
+    cache: &mut HashMap<String, CachedValue<T>>,
+    key: String,
+    value: CachedValue<T>,
+) {
+    // A maximum 4 MiB wire document must fit after the conservative 4x
+    // parsed-allocation estimate used by the fetcher.
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    if value.size_bytes > MAX_BYTES {
+        return;
+    }
+    let now = Instant::now();
+    cache.retain(|_, entry| entry.expires_at > now);
+    cache.remove(&key);
+    while cache.len() >= 128
+        || cache.values().map(|e| e.size_bytes).sum::<usize>() + value.size_bytes > MAX_BYTES
+    {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, e)| e.expires_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+    cache.insert(key, value);
 }

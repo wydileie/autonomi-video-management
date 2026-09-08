@@ -28,6 +28,15 @@ test("approves an awaiting upload and deletes the video through admin controls",
     ...adminVideo,
     approval_expires_at: "2026-04-29T12:00:00Z",
     final_quote: {
+      quote_id: "reviewed-quote",
+      approval: {
+        quote_id: "reviewed-quote",
+        max_storage_atto: "1500000000000000000",
+        max_gas_wei: "7000",
+        network: "test:1",
+        expires_at: 2000000000,
+        content_digest: "digest",
+      },
       actual_media_bytes: 2048,
       estimated_gas_cost_wei: "7000",
       metadata_bytes: 512,
@@ -51,7 +60,11 @@ test("approves an awaiting upload and deletes the video through admin controls",
       return Promise.resolve({ data: { username: "admin" } });
     }
     if (url === "/admin/videos/vid-approval/approve") {
-      expect(body).toBeNull();
+      expect(body).toEqual({
+        quote_id: "reviewed-quote",
+        max_storage_atto: "1500000000000000000",
+        max_gas_wei: "7000",
+      });
       return new Promise((resolve) => {
         resolveApproval = resolve;
       });
@@ -65,11 +78,13 @@ test("approves an awaiting upload and deletes the video through admin controls",
   await waitFor(() => expect(text()).toContain("Needs approval"));
   await click(findButton("Needs approval"));
 
-  expect(text()).toContain("Final Autonomi quote");
-  expect(text()).toContain("Approve upload");
+  expect(text()).toContain("Approved spending limits");
+  expect(text()).toContain("Approve storage and gas caps");
 
   await act(async () => {
-    findButton("Approve upload").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    findButton("Approve storage and gas caps").dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
   });
   expect(text()).toContain("Approving...");
 

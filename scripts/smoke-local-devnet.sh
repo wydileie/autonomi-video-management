@@ -93,6 +93,30 @@ PY
   return "$status"
 }
 
+approval_caps() {
+  python3 -c 'import json,sys; a=json.load(sys.stdin); print(json.dumps({k:a[k] for k in ("quote_id","max_storage_atto","max_gas_wei")}))'
+}
+
+approve_pending_catalog() {
+  local deadline=$((SECONDS + MAX_WAIT_SECONDS))
+  while (( SECONDS < deadline )); do
+    local catalogs status preparing caps
+    catalogs="$(request GET "${API_URL}/admin/catalogs")"
+    preparing="$(printf '%s' "$catalogs" | json_get preparing || echo false)"
+    status="$(printf '%s' "$catalogs" | json_get publication.state || true)"
+    if [[ "$preparing" == "false" && "$status" == "draft" ]]; then
+      caps="$(printf '%s' "$catalogs" | json_get publication.approval | approval_caps)"
+      request POST "${API_URL}/admin/catalogs/approve" "$caps" >/dev/null
+    elif [[ "$preparing" == "false" && "$status" == "complete" ]]; then
+      return 0
+    elif [[ "$status" == "payment_recovery_required" || "$status" == "approval_required" ]]; then
+      fail "Catalog publication paused: $(printf '%s' "$catalogs" | json_get publication.error || true)"
+    fi
+    sleep "$POLL_SECONDS"
+  done
+  fail "Timed out waiting for approved catalog publication"
+}
+
 json_public_video_status() {
   local video_id="$1"
   local payload_file
@@ -206,7 +230,7 @@ wait_for_ready() {
     log "Video ${video_id} status: ${status:-unknown}"
 
     case "$status" in
-      pending|processing)
+      pending|processing|quoting)
         if bool "$RESTART_ADMIN" && [[ "$restarted" == "false" ]]; then
           need docker
           log "Restarting rust_admin to exercise durable job recovery"
@@ -218,7 +242,9 @@ wait_for_ready() {
       awaiting_approval)
         if [[ "$approved" == "false" ]]; then
           log "Approving final quote"
-          request POST "${API_URL}/admin/videos/${video_id}/approve" >/dev/null
+          local caps
+          caps="$(printf '%s' "$video" | json_get final_quote.approval | approval_caps)"
+          request POST "${API_URL}/admin/videos/${video_id}/approve" "$caps" >/dev/null
           approved="true"
         fi
         ;;
@@ -234,10 +260,11 @@ wait_for_ready() {
         if ! bool "$is_public"; then
           log "Publishing ready video"
           request PATCH "${API_URL}/admin/videos/${video_id}/publication" '{"is_public":true}' >/dev/null
+          approve_pending_catalog
         fi
         return 0
         ;;
-      error|expired)
+      error|expired|approval_required|payment_recovery_required)
         fail "Video entered terminal status ${status}: ${error_message:-no error detail}"
         ;;
     esac

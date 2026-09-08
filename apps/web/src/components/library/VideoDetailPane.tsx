@@ -9,6 +9,8 @@ interface VideoDetailPaneProps {
   approving: boolean;
   detail: VideoDetail;
   onApprove: () => void;
+  onRequote: () => void;
+  onResume: () => void;
   onDelete: (event: MouseEvent<HTMLButtonElement>) => void;
   onResolutionChange: (resolution: string) => void;
   onUpdatePublication: (isPublic: boolean) => void;
@@ -24,6 +26,8 @@ export default function VideoDetailPane({
   publishing,
   selectedResolution,
   onApprove,
+  onRequote,
+  onResume,
   onDelete,
   onResolutionChange,
   onUpdatePublication,
@@ -44,8 +48,25 @@ export default function VideoDetailPane({
         />
       ) : admin && detail.status === "uploading" ? (
         <p className="muted">Uploading approved segments and publishing the network manifest...</p>
-      ) : admin && (detail.status === "processing" || detail.status === "pending") ? (
+      ) : admin && ["processing", "pending", "quoting"].includes(detail.status) ? (
         <p className="muted">Processing renditions and preparing the final quote...</p>
+      ) : admin && detail.status === "approval_required" ? (
+        <div>
+          <p>{detail.error_message || "The quote needs to be regenerated."}</p>
+          <button type="button" onClick={onRequote}>
+            Regenerate quote
+          </button>
+        </div>
+      ) : admin && detail.status === "payment_recovery_required" ? (
+        <div>
+          <p role="alert">
+            {detail.error_message} Recovery reuses completed uploads and retained payment material.
+            Uncertain payments remain paused.
+          </p>
+          <button type="button" onClick={onResume}>
+            Resume approved upload
+          </button>
+        </div>
       ) : admin && (detail.status === "error" || detail.status === "expired") ? (
         <p className="muted">{detail.error_message || "This video could not be completed."}</p>
       ) : detail.variants.length === 0 ? (

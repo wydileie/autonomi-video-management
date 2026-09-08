@@ -21,14 +21,6 @@ pub(super) fn parse_payment_mode(mode: &str) -> Result<PaymentMode, ApiError> {
     }
 }
 
-pub(super) fn format_payment_mode(mode: PaymentMode) -> String {
-    match mode {
-        PaymentMode::Auto => "auto".to_string(),
-        PaymentMode::Merkle => "merkle".to_string(),
-        PaymentMode::Single => "single".to_string(),
-    }
-}
-
 pub(super) fn hex_to_address(value: &str) -> Result<[u8; 32], ApiError> {
     let bytes = hex::decode(value.trim())
         .map_err(|err| ApiError::bad_request(format!("invalid hex address: {err}")))?;

@@ -41,7 +41,7 @@ function AppRoutes() {
         ? "login"
         : "library";
   const handleAuthInvalid = useCallback(() => navigate("/library", { replace: true }), [navigate]);
-  const { auth, login, logout: clearAuth } = useAuth(handleAuthInvalid);
+  const { auth, authLoading, login, logout: clearAuth } = useAuth(handleAuthInvalid);
 
   const handleLogin = async (nextAuth: AuthState) => {
     await login(nextAuth);
@@ -57,6 +57,8 @@ function AppRoutes() {
     setRefreshKey((value) => value + 1);
     navigate("/manage");
   };
+
+  if (authLoading) return <p role="status">Restoring session...</p>;
 
   return (
     <div className="app-shell">

@@ -1,12 +1,14 @@
-use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
+use tokio::io::AsyncReadExt;
 
 use axum::http::{header, HeaderMap, HeaderValue};
 use bytes::Bytes;
 use tokio::sync::watch;
 use tracing::{debug, instrument};
 
-use crate::cache::CachedValue;
+use crate::cache::{insert_metadata, CachedValue};
 use crate::models::{Catalog, CatalogState, VideoManifest};
 use crate::state::AppState;
 
@@ -157,35 +159,60 @@ pub(crate) async fn fetch_segment_from_address(
     fetch_segment_data(state, &segment_address).await
 }
 
-fn read_catalog_address(state: &AppState) -> Option<String> {
-    if let Ok(raw) = fs::read_to_string(&state.catalog_state_path) {
-        if let Ok(catalog_state) = serde_json::from_str::<CatalogState>(&raw) {
-            if let Some(address) = catalog_state
-                .published_catalog_address
-                .or(catalog_state.catalog_address)
-                .map(|address| address.trim().to_string())
-                .filter(|address| !address.is_empty())
-            {
-                return Some(address);
-            }
-        }
+async fn local_catalog(state: &AppState) -> Option<Arc<CatalogState>> {
+    let mut cached = state.cache.local_catalog.lock().await;
+    if let Some(entry) = cached.as_ref().filter(|e| e.expires_at > Instant::now()) {
+        return Some(entry.value.clone());
     }
-
-    state.catalog_bootstrap_address.clone()
+    let file = tokio::fs::File::open(&state.catalog_state_path)
+        .await
+        .ok()?;
+    let mut raw = Vec::new();
+    file.take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut raw)
+        .await
+        .ok()?;
+    if raw.len() > 4 * 1024 * 1024 {
+        return None;
+    }
+    let value = Arc::new(serde_json::from_slice::<CatalogState>(&raw).ok()?);
+    *cached = Some(CachedValue {
+        value: value.clone(),
+        expires_at: Instant::now() + state.cache_config.catalog_ttl,
+        size_bytes: raw.len(),
+    });
+    Some(value)
 }
 
-fn read_catalog_snapshot(state: &AppState) -> Option<Catalog> {
-    fs::read_to_string(&state.catalog_state_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<CatalogState>(&raw).ok())
-        .and_then(|catalog_state| catalog_state.published_catalog.or(catalog_state.catalog))
+pub(crate) async fn read_catalog_address(state: &AppState) -> Option<String> {
+    local_catalog(state)
+        .await
+        .and_then(|c| {
+            c.published_catalog_address
+                .clone()
+                .or_else(|| c.catalog_address.clone())
+        })
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| state.catalog_bootstrap_address.clone())
 }
 
-async fn load_video_manifest(state: &AppState, video_id: &str) -> Result<VideoManifest, String> {
-    let catalog = if let Some(catalog) = read_catalog_snapshot(state) {
-        catalog
+async fn load_video_manifest(
+    state: &AppState,
+    video_id: &str,
+) -> Result<Arc<VideoManifest>, String> {
+    let catalog = if let Some(snapshot) = local_catalog(state)
+        .await
+        .filter(|c| c.published_catalog.is_some() || c.catalog.is_some())
+    {
+        snapshot
+            .published_catalog
+            .as_ref()
+            .or(snapshot.catalog.as_ref())
+            .cloned()
+            .ok_or("catalog missing")?
     } else {
         let catalog_address = read_catalog_address(state)
+            .await
             .ok_or_else(|| "catalog address not configured".to_string())?;
         load_catalog(state, &catalog_address).await?
     };
@@ -207,7 +234,7 @@ async fn load_video_manifest(state: &AppState, video_id: &str) -> Result<VideoMa
 }
 
 #[instrument(skip(state), fields(catalog_address = %catalog_address))]
-async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Catalog, String> {
+async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Arc<Catalog>, String> {
     if !state.cache_config.catalog_ttl.is_zero() {
         let now = Instant::now();
         let mut catalogs = state.cache.catalogs.lock().await;
@@ -231,21 +258,33 @@ async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Catalog
         }
     }
 
+    let _permit = state
+        .cache
+        .fetch_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "network fetch capacity exhausted")?;
     let catalog_bytes = state
         .antd
         .data_get_public(catalog_address)
         .await
         .map_err(|e| format!("Autonomi catalog fetch failed: {e}"))?;
+    if catalog_bytes.len() > 4 * 1024 * 1024 {
+        return Err("catalog exceeds byte limit".into());
+    }
     let catalog: Catalog =
         serde_json::from_slice(&catalog_bytes).map_err(|e| format!("invalid catalog JSON: {e}"))?;
 
+    let catalog = Arc::new(catalog);
     if !state.cache_config.catalog_ttl.is_zero() {
         let mut catalogs = state.cache.catalogs.lock().await;
-        catalogs.insert(
+        insert_metadata(
+            &mut catalogs,
             catalog_address.to_string(),
             CachedValue {
                 value: catalog.clone(),
                 expires_at: Instant::now() + state.cache_config.catalog_ttl,
+                size_bytes: catalog_bytes.len().saturating_mul(4),
             },
         );
     }
@@ -254,7 +293,10 @@ async fn load_catalog(state: &AppState, catalog_address: &str) -> Result<Catalog
 }
 
 #[instrument(skip(state), fields(manifest_address = %manifest_address))]
-async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<VideoManifest, String> {
+async fn load_manifest(
+    state: &AppState,
+    manifest_address: &str,
+) -> Result<Arc<VideoManifest>, String> {
     if !state.cache_config.manifest_ttl.is_zero() {
         let now = Instant::now();
         let mut manifests = state.cache.manifests.lock().await;
@@ -278,22 +320,34 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
         }
     }
 
+    let _permit = state
+        .cache
+        .fetch_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "network fetch capacity exhausted")?;
     let manifest_bytes = state
         .antd
         .data_get_public(manifest_address)
         .await
         .map_err(|e| format!("Autonomi manifest fetch failed: {e}"))?;
+    if manifest_bytes.len() > 4 * 1024 * 1024 {
+        return Err("manifest exceeds byte limit".into());
+    }
     let mut manifest: VideoManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("invalid video manifest JSON: {e}"))?;
-    manifest.index_segments();
+    manifest.index_segments()?;
+    let manifest = Arc::new(manifest);
 
     if !state.cache_config.manifest_ttl.is_zero() {
         let mut manifests = state.cache.manifests.lock().await;
-        manifests.insert(
+        insert_metadata(
+            &mut manifests,
             manifest_address.to_string(),
             CachedValue {
                 value: manifest.clone(),
                 expires_at: Instant::now() + state.cache_config.manifest_ttl,
+                size_bytes: manifest_bytes.len().saturating_mul(4),
             },
         );
     }
@@ -304,71 +358,66 @@ async fn load_manifest(state: &AppState, manifest_address: &str) -> Result<Video
 #[instrument(skip(state), fields(segment_address = %segment_address))]
 async fn fetch_segment_data(state: &AppState, segment_address: &str) -> Result<Bytes, String> {
     let started = Instant::now();
-    loop {
-        {
-            let mut segments = state.cache.segments.lock().await;
-            if let Some(data) = segments.get(segment_address) {
-                state.metrics.record_segment_cache_hit();
-                state
-                    .metrics
-                    .record_segment_fetch_latency("cache_hit", started.elapsed());
-                debug!(cache = "segment", hit = true, "segment cache hit");
-                return Ok(data);
-            }
-        }
-
-        let maybe_receiver = {
+    if let Some(data) = state.cache.segments.lock().await.get(segment_address) {
+        state.metrics.record_segment_cache_hit();
+        state
+            .metrics
+            .record_segment_fetch_latency("cache_hit", started.elapsed());
+        return Ok(data);
+    }
+    let mut fetches = state.cache.segment_fetches.lock().await;
+    let mut receiver = if let Some(receiver) = fetches.get(segment_address) {
+        state.metrics.record_segment_fetch_coalesced();
+        receiver.clone()
+    } else {
+        let permit = state
+            .cache
+            .fetch_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| "network fetch capacity exhausted")?;
+        state.metrics.record_segment_cache_miss();
+        let (sender, receiver) = watch::channel(None);
+        fetches.insert(segment_address.to_owned(), receiver.clone());
+        let state = state.clone();
+        let address = segment_address.to_owned();
+        // This task owns the fetch, so dropping any HTTP waiter cannot poison the entry.
+        tokio::spawn(async move {
+            let _permit = permit;
+            let result = tokio::time::timeout(
+                Duration::from_secs(60),
+                fetch_segment_data_uncached(&state, &address),
+            )
+            .await
+            .unwrap_or_else(|_| Err("shared segment fetch timed out".into()));
+            sender.send_replace(Some(result));
             let mut fetches = state.cache.segment_fetches.lock().await;
-            if let Some(receiver) = fetches.get(segment_address) {
-                state.metrics.record_segment_fetch_coalesced();
-                debug!(
-                    cache = "segment",
-                    hit = false,
-                    coalesced = true,
-                    "joining in-flight segment fetch"
-                );
-                Some(receiver.clone())
-            } else {
-                state.metrics.record_segment_cache_miss();
-                debug!(
-                    cache = "segment",
-                    hit = false,
-                    coalesced = false,
-                    "segment cache miss"
-                );
-                let (sender, receiver) = watch::channel(None);
-                fetches.insert(segment_address.to_string(), receiver);
-                drop(fetches);
-
-                let result = fetch_segment_data_uncached(state, segment_address).await;
-                let _ = sender.send(Some(result.clone()));
-                state
-                    .cache
-                    .segment_fetches
-                    .lock()
-                    .await
-                    .remove(segment_address);
-                state
-                    .metrics
-                    .record_segment_fetch_latency("cache_miss", started.elapsed());
-                return result;
+            if fetches
+                .get(&address)
+                .is_some_and(|r| r.same_channel(&sender.subscribe()))
+            {
+                fetches.remove(&address);
             }
-        };
-
-        let Some(mut receiver) = maybe_receiver else {
-            continue;
-        };
-        loop {
-            let result = receiver.borrow().clone();
-            if let Some(result) = result {
-                state
-                    .metrics
-                    .record_segment_fetch_latency("cache_miss", started.elapsed());
-                return result;
+        });
+        receiver
+    };
+    drop(fetches);
+    loop {
+        if let Some(result) = receiver.borrow().clone() {
+            state
+                .metrics
+                .record_segment_fetch_latency("cache_miss", started.elapsed());
+            return result;
+        }
+        if receiver.changed().await.is_err() {
+            let mut fetches = state.cache.segment_fetches.lock().await;
+            if fetches
+                .get(segment_address)
+                .is_some_and(|r| r.same_channel(&receiver))
+            {
+                fetches.remove(segment_address);
             }
-            if receiver.changed().await.is_err() {
-                break;
-            }
+            return Err("shared segment fetch stopped".into());
         }
     }
 }

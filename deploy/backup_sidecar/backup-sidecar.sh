@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 log() {
   printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -105,6 +106,8 @@ BACKUP_CREATED_UTC=${timestamp}
 BACKUP_PREFIX=${BACKUP_PREFIX}
 SQLITE_DB_PATH=${SQLITE_DB_PATH}
 SQLITE_DB_FILE=autvid.sqlite3
+PAYMENT_DB_FILE=antd-payments.sqlite3
+PAYMENT_DB_PATH=${ANTD_PAYMENT_DB_PATH}
 CATALOG_PATH=${CATALOG_PATH}
 CATALOG_STATUS=${catalog_status}
 CATALOG_FILE=catalog.json
@@ -120,9 +123,9 @@ write_checksums() {
   (
     cd "${backup_dir}" || exit 1
     if [[ -f catalog.json ]]; then
-      sha256sum autvid.sqlite3 catalog.json manifest.env > SHA256SUMS || exit 1
+      sha256sum autvid.sqlite3 antd-payments.sqlite3 catalog.json manifest.env > SHA256SUMS || exit 1
     else
-      sha256sum autvid.sqlite3 manifest.env > SHA256SUMS || exit 1
+      sha256sum autvid.sqlite3 antd-payments.sqlite3 manifest.env > SHA256SUMS || exit 1
     fi
   )
 }
@@ -153,6 +156,12 @@ run_backup() {
 
   log "Writing SQLite backup to ${backup_dir}/autvid.sqlite3"
   sqlite3 "${SQLITE_DB_PATH}" ".backup '${tmp_dir}/autvid.sqlite3'" || return 1
+
+  if [[ ! -r "${ANTD_PAYMENT_DB_PATH}" ]]; then
+    log "Payment journal is unavailable: ${ANTD_PAYMENT_DB_PATH}; refusing an incomplete backup"
+    return 1
+  fi
+  sqlite3 "${ANTD_PAYMENT_DB_PATH}" ".backup '${tmp_dir}/antd-payments.sqlite3'" || return 1
 
   catalog_status="disabled"
   if is_true "${BACKUP_CATALOG}"; then
@@ -407,6 +416,7 @@ schedule_loop() {
 }
 
 main() {
+  export ANTD_PAYMENT_DB_PATH="${ANTD_PAYMENT_DB_PATH:-/var/lib/antd/antd-payments.sqlite3}"
   export SQLITE_DB_PATH="${SQLITE_DB_PATH:-/var/lib/autvid/autvid.sqlite3}"
   export BACKUP_DIR="${BACKUP_DIR:-/backups}"
   export BACKUP_PREFIX="${BACKUP_PREFIX:-autvid}"

@@ -30,6 +30,8 @@ export default function Library({ admin = false }: LibraryProps) {
     catalogError,
     loadCatalogs,
     republishCatalogs,
+    approveCatalogs,
+    resumeCatalogs,
     copyAddress,
   } = useCatalogs(admin);
 
@@ -51,6 +53,8 @@ export default function Library({ admin = false }: LibraryProps) {
     setActionError,
     deleteVideo,
     approveVideo,
+    requoteVideo,
+    resumeVideo,
     updateVisibility,
     updatePublication,
   } = useVideoActions({ load, loadCatalogs, onDeleted, setDetail, setVideos });
@@ -85,7 +89,7 @@ export default function Library({ admin = false }: LibraryProps) {
       </div>
     );
   }
-  if (loadError && !videos.length) {
+  if (loadError && !videos.length && !admin) {
     return (
       <div className="empty-state error-state">
         <span className="empty-icon" aria-hidden="true" />
@@ -93,15 +97,11 @@ export default function Library({ admin = false }: LibraryProps) {
       </div>
     );
   }
-  if (!videos.length) {
+  if (!videos.length && !admin) {
     return (
       <div className="empty-state">
         <span className="empty-icon" aria-hidden="true" />
-        <strong>
-          {admin
-            ? "No videos yet. Upload one to build your first stream."
-            : "No videos are available yet."}
-        </strong>
+        <strong>No videos are available yet.</strong>
       </div>
     );
   }
@@ -134,10 +134,18 @@ export default function Library({ admin = false }: LibraryProps) {
           catalogCopied={catalogCopied}
           onCopy={copyAddress}
           onRepublish={republishCatalogs}
+          onApprove={approveCatalogs}
+          onResume={resumeCatalogs}
         />
       )}
 
       <div className="video-list">
+        {!videos.length && (
+          <p>
+            No videos yet. Upload one to build your first stream. You can also publish the empty
+            catalog.
+          </p>
+        )}
         {videos.map((video) => (
           <article className="video-row" key={video.id}>
             <button type="button" className="video-summary" onClick={() => openDetail(video.id)}>
@@ -168,7 +176,12 @@ export default function Library({ admin = false }: LibraryProps) {
                 approving={approving === video.id}
                 publishing={publishing === video.id}
                 selectedResolution={playing?.videoId === video.id ? playing.resolution : null}
-                onApprove={() => approveVideo(video.id)}
+                onApprove={() => {
+                  if (detail?.id === video.id && detail.final_quote?.approval)
+                    void approveVideo(video.id, detail.final_quote.approval);
+                }}
+                onRequote={() => requoteVideo(video.id)}
+                onResume={() => resumeVideo(video.id)}
                 onDelete={handleDelete(video.id)}
                 onResolutionChange={(nextResolution) =>
                   setPlaying({ videoId: video.id, resolution: nextResolution })

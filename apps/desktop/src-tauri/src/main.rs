@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 struct DesktopState {
     data_dir: PathBuf,
     closing: AtomicBool,
+    shutdown_complete: AtomicBool,
     running: Mutex<Option<launcher_core::RunningStack>>,
 }
 
@@ -152,12 +153,29 @@ fn validate_launcher_url(value: &str) -> Result<(), String> {
     }
 }
 
+fn request_shutdown<R: Runtime>(app: tauri::AppHandle<R>) {
+    let state = app.state::<Arc<DesktopState>>();
+    if state.closing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<Arc<DesktopState>>();
+        let mut running = state.running.lock().await;
+        if let Some(stack) = running.take() {
+            stack.shutdown().await;
+        }
+        state.shutdown_complete.store(true, Ordering::SeqCst);
+        app.exit(0);
+    });
+}
+
 fn main() {
     let data_dir = resolve_data_dir("Autonomi Video Management")
         .expect("could not resolve Autonomi Video Management data directory");
     let state = Arc::new(DesktopState {
         data_dir,
         closing: AtomicBool::new(false),
+        shutdown_complete: AtomicBool::new(false),
         running: Mutex::new(None),
     });
 
@@ -172,27 +190,21 @@ fn main() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle().clone();
-                let state = app.state::<Arc<DesktopState>>();
-                if state.closing.swap(true, Ordering::SeqCst) {
-                    return;
-                }
                 api.prevent_close();
-                let window = window.clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = app.state::<Arc<DesktopState>>();
-                    let mut running = state.running.lock().await;
-                    if let Some(stack) = running.take() {
-                        stack.shutdown().await;
-                    }
-                    if let Err(err) = window.close() {
-                        eprintln!("error closing window after sidecar shutdown: {err}");
-                    }
-                });
+                request_shutdown(window.app_handle().clone());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Autonomi Video Management");
+        .build(tauri::generate_context!())
+        .expect("error while building Autonomi Video Management")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let state = app.state::<Arc<DesktopState>>();
+                if !state.shutdown_complete.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    request_shutdown(app.clone());
+                }
+            }
+        });
 }
 
 #[cfg(test)]

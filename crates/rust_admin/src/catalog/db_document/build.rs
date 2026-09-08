@@ -11,8 +11,6 @@ use crate::{
     CATALOG_CONTENT_TYPE, CATALOG_SCHEMA_VERSION, STATUS_READY,
 };
 
-use super::*;
-
 pub(crate) async fn build_catalog_entry_from_db(
     state: &AppState,
     video_id: &str,
@@ -46,7 +44,21 @@ pub(crate) async fn build_catalog_entry_from_db(
     .await
     .map_err(db_error)?;
 
-    Ok(PublicCatalogVideo {
+    Ok(catalog_entry(
+        video_id,
+        manifest_address,
+        &video_row,
+        &variant_rows,
+    ))
+}
+
+fn catalog_entry(
+    video_id: &str,
+    manifest_address: String,
+    video_row: &sqlx::sqlite::SqliteRow,
+    variant_rows: &[sqlx::sqlite::SqliteRow],
+) -> PublicCatalogVideo {
+    PublicCatalogVideo {
         id: video_id.to_string(),
         title: video_row.try_get("title").unwrap_or_default(),
         original_filename: None,
@@ -85,44 +97,34 @@ pub(crate) async fn build_catalog_entry_from_db(
                     .flatten(),
             })
             .collect(),
-    })
-}
-
-pub(crate) async fn build_public_catalog_from_db(
-    state: &AppState,
-) -> Result<PublicCatalogDocument, ApiError> {
-    build_catalog_from_db(state, CatalogKind::Published).await
+    }
 }
 
 pub(crate) async fn build_all_catalog_from_db(
     state: &AppState,
 ) -> Result<PublicCatalogDocument, ApiError> {
-    build_catalog_from_db(state, CatalogKind::All).await
+    let mut tx = state.pool.begin().await.map_err(db_error)?;
+    let catalog = build_catalog_on_connection(&mut tx).await?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(catalog)
 }
 
-pub(crate) async fn build_catalog_from_db(
-    state: &AppState,
-    kind: CatalogKind,
+pub(crate) async fn build_catalog_on_connection(
+    connection: &mut sqlx::SqliteConnection,
 ) -> Result<PublicCatalogDocument, ApiError> {
-    let visibility_filter = match kind {
-        CatalogKind::Published => "AND is_public=1",
-        CatalogKind::All => "",
-    };
-    let sql = format!(
-        r#"
-        SELECT id, manifest_address
-        FROM videos
-        WHERE status=$1
-          {visibility_filter}
-          AND manifest_address IS NOT NULL
-        ORDER BY updated_at DESC, created_at DESC
-        "#
-    );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query("SELECT * FROM videos WHERE status=$1 AND manifest_address IS NOT NULL ORDER BY updated_at DESC, created_at DESC, id")
         .bind(STATUS_READY)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_error)?;
+        .fetch_all(&mut *connection).await.map_err(db_error)?;
+    let variants = sqlx::query("SELECT vv.* FROM video_variants vv JOIN videos v ON v.id=vv.video_id WHERE v.status=$1 AND v.manifest_address IS NOT NULL ORDER BY vv.height DESC, vv.resolution, vv.id")
+        .bind(STATUS_READY)
+        .fetch_all(&mut *connection).await.map_err(db_error)?;
+    let mut by_video = std::collections::HashMap::<Uuid, Vec<sqlx::sqlite::SqliteRow>>::new();
+    for row in variants {
+        by_video
+            .entry(row.try_get("video_id").map_err(db_error)?)
+            .or_default()
+            .push(row);
+    }
 
     let mut videos = Vec::with_capacity(rows.len());
     for row in rows {
@@ -134,16 +136,19 @@ pub(crate) async fn build_catalog_from_db(
         else {
             continue;
         };
-        videos.push(
-            build_catalog_entry_from_db(state, &video_id.to_string(), manifest_address).await?,
-        );
+        videos.push(catalog_entry(
+            &video_id.to_string(),
+            manifest_address,
+            &row,
+            &by_video.remove(&video_id).unwrap_or_default(),
+        ));
     }
 
     let generated_at = Utc::now().to_rfc3339();
     Ok(PublicCatalogDocument {
         schema_version: CATALOG_SCHEMA_VERSION,
         content_type: CATALOG_CONTENT_TYPE.to_string(),
-        catalog_kind: kind.as_str().to_string(),
+        catalog_kind: "all".to_string(),
         generated_at: generated_at.clone(),
         updated_at: generated_at,
         videos,

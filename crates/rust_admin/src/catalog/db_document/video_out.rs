@@ -39,21 +39,6 @@ pub(crate) async fn get_db_video(
     db_video_to_out(state, &row, include_segments).await
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum CatalogKind {
-    Published,
-    All,
-}
-
-impl CatalogKind {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Published => "published",
-            Self::All => "all",
-        }
-    }
-}
-
 pub(crate) async fn db_video_to_out(
     state: &AppState,
     row: &SqliteRow,
@@ -143,7 +128,22 @@ pub(crate) async fn db_video_to_out(
         original_file_byte_size: row.try_get("original_file_byte_size").ok().flatten(),
         publish_when_ready: row.try_get("publish_when_ready").unwrap_or(false),
         error_message: row.try_get("error_message").ok().flatten(),
-        final_quote: row.try_get("final_quote").ok().flatten(),
+        final_quote: row
+            .try_get::<Option<serde_json::Value>, _>("final_quote")
+            .ok()
+            .flatten()
+            .map(|mut quote| {
+                if let Some(object) = quote.as_object_mut() {
+                    object.remove("plan");
+                }
+                if let Some(approval) = quote
+                    .get_mut("approval")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    approval.remove("contents");
+                }
+                quote
+            }),
         final_quote_created_at: final_quote_created_at.map(|value| value.to_rfc3339()),
         approval_expires_at: approval_expires_at.map(|value| value.to_rfc3339()),
         variants,

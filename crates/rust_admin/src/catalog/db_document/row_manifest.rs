@@ -33,9 +33,10 @@ pub(crate) fn original_file_manifest_from_row(row: &SqliteRow) -> Option<Manifes
     })
 }
 
-pub(crate) async fn build_ready_manifest_from_db(
+pub(crate) async fn build_manifest_from_db(
     state: &AppState,
     video_id: &str,
+    preparing: bool,
 ) -> Result<VideoManifestDocument, ApiError> {
     let video_uuid = parse_video_uuid(video_id)?;
     let video_row = sqlx::query(
@@ -82,13 +83,15 @@ pub(crate) async fn build_ready_manifest_from_db(
         .fetch_all(&state.pool)
         .await
         .map_err(db_error)?;
-        if uploaded_segments.iter().any(|segment| {
-            segment
-                .try_get::<Option<String>, _>("autonomi_address")
-                .ok()
-                .flatten()
-                .is_none()
-        }) {
+        if !preparing
+            && uploaded_segments.iter().any(|segment| {
+                segment
+                    .try_get::<Option<String>, _>("autonomi_address")
+                    .ok()
+                    .flatten()
+                    .is_none()
+            })
+        {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "Video has not finished uploading all segment addresses",

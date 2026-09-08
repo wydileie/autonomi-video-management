@@ -25,11 +25,17 @@ pub(crate) async fn schedule_upload_job(state: &AppState, video_id: &str) -> Res
     enqueue_video_job(state, JobKind::UploadVideo, video_uuid).await
 }
 
+pub(crate) async fn schedule_quote_job(state: &AppState, video_id: &str) -> Result<(), ApiError> {
+    enqueue_video_job(state, JobKind::QuoteVideo, parse_video_uuid(video_id)?).await
+}
+
 async fn enqueue_video_job(
     state: &AppState,
     kind: JobKind,
     video_id: Uuid,
 ) -> Result<(), ApiError> {
+    // Recovery of an approved upload must requeue its original job instead:
+    // gateway payment leases bind the approval permanently to that job identity.
     let job_id = Uuid::new_v4();
     let now = Utc::now();
     let result = sqlx::query(

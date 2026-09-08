@@ -30,8 +30,24 @@ pub(crate) fn init_logging() {
 }
 
 pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
-    let peers = bootstrap_peers()?;
+    let evm_network = evm_network()?;
+    let key = wallet_key()?;
+    let configured_peers = bootstrap_peers()?;
     let local_network = is_local_network();
+    let peer_cache_path = if local_network {
+        None
+    } else {
+        non_empty_env("ANTD_PEER_CACHE_PATH").map(std::path::PathBuf::from)
+    };
+    let cached = if let Some(path) = peer_cache_path.clone() {
+        tokio::task::spawn_blocking(move || {
+            ant_core::data::peer_cache::cached_bootstrap_peers(&path, 20)
+        })
+        .await?
+    } else {
+        Vec::new()
+    };
+    let peers = ant_core::data::peer_cache::select_bootstrap_peers(cached, configured_peers);
     info!(
         local_network,
         "connecting to Autonomi 2.0 with {} bootstrap peers",
@@ -50,7 +66,9 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
     }
 
     let mut config = builder.build()?;
-    config.diversity_config = Some(IPDiversityConfig::permissive());
+    if local_network {
+        config.diversity_config = Some(IPDiversityConfig::permissive());
+    }
     let node = Arc::new(P2PNode::new(config).await?);
     start_node_with_warmup(node.clone()).await?;
 
@@ -62,10 +80,9 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
         ..ClientConfig::default()
     };
 
-    let client = CoreClient::from_node(node, client_config);
-    let evm_network = evm_network();
+    let client = CoreClient::from_node_with_peer_cache(node, client_config, peer_cache_path);
 
-    let Some(mut private_key) = wallet_key() else {
+    let Some(mut private_key) = key else {
         warn!("AUTONOMI_WALLET_KEY is not configured; write operations will fail");
         return Ok(client.with_evm_network(evm_network));
     };
@@ -88,32 +105,23 @@ pub(crate) async fn connect_client() -> anyhow::Result<CoreClient> {
     Ok(client.with_wallet(wallet))
 }
 
-fn wallet_key() -> Option<String> {
-    non_empty_env("AUTONOMI_WALLET_KEY_FILE")
-        .and_then(|path| read_wallet_key_file(&path))
-        .or_else(|| non_empty_env("AUTONOMI_WALLET_KEY"))
-}
-
-fn read_wallet_key_file(path: &str) -> Option<String> {
-    match fs::read_to_string(path) {
-        Ok(mut value) => {
-            let key = value.trim().to_string();
-            value.zeroize();
-            if key.is_empty() {
-                None
-            } else {
-                Some(key)
-            }
-        }
-        Err(err) => {
-            warn!("Could not read AUTONOMI_WALLET_KEY_FILE at {path}: {err}");
-            None
-        }
+pub(crate) fn wallet_key() -> anyhow::Result<Option<String>> {
+    if let Some(path) = non_empty_env("AUTONOMI_WALLET_KEY_FILE") {
+        return Ok(Some(read_wallet_key_file(&path)?));
     }
+    Ok(non_empty_env("AUTONOMI_WALLET_KEY"))
 }
 
-fn evm_network() -> EvmNetwork {
-    let rpc_url = first_env(&["EVM_RPC_URL", "PROD_EVM_RPC_URL"]);
+fn read_wallet_key_file(path: &str) -> anyhow::Result<String> {
+    let mut value = fs::read_to_string(path)?;
+    let key = value.trim().to_string();
+    value.zeroize();
+    anyhow::ensure!(!key.is_empty(), "AUTONOMI_WALLET_KEY_FILE is empty");
+    Ok(key)
+}
+
+pub(crate) fn evm_network() -> anyhow::Result<EvmNetwork> {
+    let rpc = first_env(&["EVM_RPC_URL", "PROD_EVM_RPC_URL"]);
     let token = first_env(&[
         "EVM_PAYMENT_TOKEN_ADDRESS",
         "PROD_EVM_PAYMENT_TOKEN_ADDRESS",
@@ -122,18 +130,62 @@ fn evm_network() -> EvmNetwork {
         "EVM_PAYMENT_VAULT_ADDRESS",
         "PROD_EVM_PAYMENT_VAULT_ADDRESS",
     ]);
-    if let (Some(rpc_url), Some(token), Some(vault)) = (rpc_url, token, vault) {
-        return EvmNetwork::new_custom(&rpc_url, &token, &vault);
-    }
+    parse_evm_network(
+        non_empty_env("EVM_NETWORK")
+            .as_deref()
+            .unwrap_or("arbitrum-one"),
+        rpc.as_deref(),
+        token.as_deref(),
+        vault.as_deref(),
+    )
+}
 
-    match env::var("EVM_NETWORK")
-        .unwrap_or_else(|_| "arbitrum-one".to_string())
-        .as_str()
-    {
-        "arbitrum-sepolia" | "arbitrum-sepolia-test" | "evm-arbitrum-sepolia-test" => {
-            EvmNetwork::ArbitrumSepoliaTest
+fn parse_evm_network(
+    name: &str,
+    rpc: Option<&str>,
+    token: Option<&str>,
+    vault: Option<&str>,
+) -> anyhow::Result<EvmNetwork> {
+    anyhow::ensure!(
+        matches!(
+            name,
+            "custom"
+                | "local"
+                | "arbitrum-one"
+                | "arbitrum-sepolia"
+                | "arbitrum-sepolia-test"
+                | "evm-arbitrum-sepolia-test"
+        ),
+        "unsupported EVM_NETWORK: {name}"
+    );
+    if rpc.is_some() || token.is_some() || vault.is_some() {
+        let (Some(rpc), Some(token), Some(vault)) = (rpc, token, vault) else {
+            anyhow::bail!("custom EVM settings require RPC URL, token and vault together");
+        };
+        let url = url::Url::parse(rpc)?;
+        anyhow::ensure!(
+            matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "EVM RPC URL must use HTTP(S) with a valid host and no embedded credentials"
+        );
+        for address in [token, vault] {
+            anyhow::ensure!(
+                address.len() == 42
+                    && address.starts_with("0x")
+                    && address[2..].bytes().all(|b| b.is_ascii_hexdigit()),
+                "invalid EVM contract address"
+            );
         }
-        _ => EvmNetwork::ArbitrumOne,
+        return Ok(EvmNetwork::new_custom(rpc, token, vault));
+    }
+    match name {
+        "arbitrum-one" => Ok(EvmNetwork::ArbitrumOne),
+        "arbitrum-sepolia" | "arbitrum-sepolia-test" | "evm-arbitrum-sepolia-test" => {
+            Ok(EvmNetwork::ArbitrumSepoliaTest)
+        }
+        _ => anyhow::bail!("unsupported EVM_NETWORK: {name}"),
     }
 }
 
@@ -241,8 +293,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            read_wallet_key_file(file.path().to_str().unwrap()).as_deref(),
-            Some("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            read_wallet_key_file(file.path().to_str().unwrap())
+                .unwrap()
+                .as_str(),
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
     }
 
@@ -267,5 +321,17 @@ mod tests {
         assert!(is_local_network_name("development"));
         assert!(!is_local_network_name("arbitrum-one"));
         assert!(!is_local_network_name(""));
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn rejects_unknown_network_and_incomplete_custom_settings() {
+        assert!(parse_evm_network("arbitrum-typo", None, None, None).is_err());
+        assert!(parse_evm_network("local", Some("http://localhost:8545"), None, None).is_err());
+        assert!(parse_evm_network("arbitrum-one", None, None, None).is_ok());
+        assert!(read_wallet_key_file("/definitely/missing/autvid-wallet").is_err());
     }
 }

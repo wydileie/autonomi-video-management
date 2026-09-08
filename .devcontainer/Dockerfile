@@ -7,9 +7,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/opt/venv/bin:${PATH}:/opt/mssql-tools18/bin:${CARGO_HOME}/bin"
 
 # Keep the Autonomi toolchain on a single ant-node/protocol line.
-ARG AUTONOMI_ANT_SDK_REF=v0.9.2
-ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.2.7
-ARG AUTONOMI_ANT_NODE_REF=v0.12.0
+ARG AUTONOMI_ANT_SDK_REF=v0.12.1
+ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.3.6
+ARG AUTONOMI_ANT_NODE_REF=v0.18.1
 
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
@@ -55,7 +55,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
   > /etc/apt/sources.list.d/docker.list \
 && apt-get update \
-&& apt-get install -y --no-install-recommends docker-ce-cli \
+&& apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin \
 && apt-get clean \
 && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
@@ -77,7 +77,7 @@ RUN mkdir -p /etc/apt/keyrings \
 && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
 && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
 && apt-get update \
-&& apt-get install -y --no-install-recommends nodejs \
+&& apt-get install -y --no-install-recommends nodejs=24.20.0-1nodesource1 \
 && pip install --no-cache-dir uv \
 && ln -s /usr/bin/fdfind /usr/local/bin/fd \
 && ln -s /usr/bin/batcat /usr/local/bin/bat \
@@ -87,24 +87,9 @@ RUN mkdir -p /etc/apt/keyrings \
 # Install Rust and Rust development tools
 RUN mkdir -p "${CARGO_HOME}" "${RUSTUP_HOME}" \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
-&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.1 \
 && rustup component add rustfmt clippy \
 && cargo install cargo-edit cargo-outdated \
-&& PW_ARCH="$(dpkg --print-architecture)" \
-&& case "$PW_ARCH" in \
-amd64) PS_ARCH="x64" ;; \
-arm64) PS_ARCH="arm64" ;; \
-*) echo "Unsupported PowerShell architecture: $PW_ARCH" >&2; exit 1 ;; \
-esac \
-&& PS_VERSION="$(curl -fsSL https://api.github.com/repos/PowerShell/PowerShell/releases/latest | grep -m1 '\"tag_name\":' | sed -E 's/.*\"v?([^\"]+)\".*/\1/')" \
-&& { [ -n "$PS_VERSION" ] || { echo "ERROR: Failed to determine PowerShell version from GitHub API" >&2; exit 1; }; } \
-&& curl -fsSLo /tmp/powershell.tar.gz "https://github.com/PowerShell/PowerShell/releases/download/v${PS_VERSION}/powershell-${PS_VERSION}-linux-${PS_ARCH}.tar.gz" \
-&& mkdir -p /opt/microsoft/powershell/7 \
-&& tar -xzf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7 \
-&& chmod +x /opt/microsoft/powershell/7/pwsh \
-&& ln -sf /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh \
-&& rm -f /tmp/powershell.tar.gz \
-&& pwsh --version \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
 && rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
@@ -114,8 +99,8 @@ RUN git clone https://github.com/WithAutonomi/ant-sdk.git && \
     cd ant-sdk && \
     git checkout "$AUTONOMI_ANT_SDK_REF" && \
     cd antd && \
-    cargo build --release && \
-    cp target/release/antd /usr/local/bin/ && \
+    cargo build --locked --release && \
+    cp target/release/antd /usr/local/bin/antd-upstream && \
     cd ../antd-py && \
     pip install --no-cache-dir ".[rest]" && \
     cd ../antd-mcp && \
@@ -127,7 +112,7 @@ RUN git clone https://github.com/WithAutonomi/ant-sdk.git && \
 RUN git clone https://github.com/WithAutonomi/ant-client.git && \
     cd ant-client && \
     git checkout "$AUTONOMI_ANT_CLIENT_REF" && \
-    cargo build --release --bin ant && \
+    cargo build --locked --release --bin ant && \
     cp target/release/ant /usr/local/bin/ && \
     cd .. && \
     rm -rf ant-client "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
@@ -138,24 +123,24 @@ RUN git clone https://github.com/WithAutonomi/ant-client.git && \
 RUN git clone https://github.com/WithAutonomi/ant-node.git && \
     cd ant-node && \
     git checkout "$AUTONOMI_ANT_NODE_REF" && \
-    cargo build --release --bin ant-devnet && \
+    cargo build --locked --release --bin ant-devnet && \
     cp target/release/ant-devnet /usr/local/bin/ && \
     cd .. && \
     rm -rf ant-node "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
+ARG FOUNDRY_TAG=v1.8.1
 # Install Foundry (anvil) — required by ant-devnet to run the local EVM chain.
 # Downloads pre-built binaries directly from GitHub releases (more reliable in Docker
 # than the foundryup installer script which can fail on rate limits or interactive prompts).
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
-      amd64) FOUNDRY_ARCH="amd64" ;; \
-      arm64) FOUNDRY_ARCH="arm64" ;; \
+      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10" ;; \
+      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c" ;; \
       *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac && \
-    FOUNDRY_TAG=$(curl -fsSL https://api.github.com/repos/foundry-rs/foundry/releases/latest | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/') && \
-    { [ -n "$FOUNDRY_TAG" ] || { echo "ERROR: could not determine Foundry release tag" >&2; exit 1; }; } && \
     curl -fsSLo /tmp/foundry.tar.gz \
       "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_TAG}/foundry_${FOUNDRY_TAG}_linux_${FOUNDRY_ARCH}.tar.gz" && \
+    echo "${FOUNDRY_SHA256}  /tmp/foundry.tar.gz" | sha256sum -c - && \
     tar -xzf /tmp/foundry.tar.gz -C /tmp anvil && \
     install -m 0755 /tmp/anvil /usr/local/bin/anvil && \
     rm -f /tmp/foundry.tar.gz /tmp/anvil && \
@@ -165,40 +150,24 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # at runtime as root:root 0660) becomes accessible after postStartCommand chgrps it.
 RUN groupadd -f docker && usermod -aG docker vscode
 
-# Install kubectl and Helm for the current architecture.
-RUN ARCH="$(dpkg --print-architecture)" \
-&& case "$ARCH" in \
-amd64) K8S_ARCH="amd64" ;; \
-arm64) K8S_ARCH="arm64" ;; \
-*) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
-esac \
-&& KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)" \
-&& curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${K8S_ARCH}/kubectl" \
-&& chmod +x /usr/local/bin/kubectl \
-&& curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-# Install Docker buildx for multi-platform image builds
-RUN mkdir -p /usr/libexec/docker/cli-plugins && \
-BUILDX_VERSION=$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep tag_name | head -1 | awk -F'"' '{print $4}' | sed 's/^v//') && \
-ARCH=$(dpkg --print-architecture | sed 's/arm64/arm64/; s/amd64/amd64/') && \
-curl -fsSL "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${ARCH}" -o /usr/libexec/docker/cli-plugins/docker-buildx && \
-chmod +x /usr/libexec/docker/cli-plugins/docker-buildx
-
-# Install Docker Compose v2 as a Docker CLI plugin.
-RUN mkdir -p /usr/libexec/docker/cli-plugins && \
-    curl -fsSLo /tmp/docker-compose-release.json https://api.github.com/repos/docker/compose/releases/latest && \
-    COMPOSE_VERSION="$(grep -m1 '"tag_name":' /tmp/docker-compose-release.json | sed -E 's/.*"v?([^"]+)".*/\1/')" && \
-    { [ -n "$COMPOSE_VERSION" ] || { echo "ERROR: could not determine Docker Compose version" >&2; exit 1; }; } && \
-    ARCH="$(dpkg --print-architecture)" && \
-    case "$ARCH" in \
-      amd64) COMPOSE_ARCH="x86_64" ;; \
-      arm64) COMPOSE_ARCH="aarch64" ;; \
-      *) echo "Unsupported Docker Compose architecture: $ARCH" >&2; exit 1 ;; \
-    esac && \
-    curl -fsSLo /usr/libexec/docker/cli-plugins/docker-compose \
-      "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" && \
-    chmod +x /usr/libexec/docker/cli-plugins/docker-compose && \
-    rm -f /tmp/docker-compose-release.json
+# Optional infrastructure tools are outside the application toolchain.
+# Enable explicitly and provide release pins; the core image does not need them.
+ARG INSTALL_EXTRA_TOOLS=false
+ARG KUBECTL_VERSION
+ARG HELM_VERSION
+ARG POWERSHELL_VERSION
+RUN if [ "$INSTALL_EXTRA_TOOLS" = true ]; then \
+      test -n "$KUBECTL_VERSION" && test -n "$HELM_VERSION" && test -n "$POWERSHELL_VERSION" && \
+      ARCH="$(dpkg --print-architecture)" && \
+      curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
+      curl -fsSLo /tmp/helm.tgz "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" && \
+      tar -xzf /tmp/helm.tgz -C /tmp && install /tmp/linux-${ARCH}/helm /usr/local/bin/helm && \
+      case "$ARCH" in amd64) PS_ARCH=x64 ;; arm64) PS_ARCH=arm64 ;; *) exit 1 ;; esac && \
+      curl -fsSLo /tmp/powershell.tgz "https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-${PS_ARCH}.tar.gz" && \
+      mkdir -p /opt/powershell && tar -xzf /tmp/powershell.tgz -C /opt/powershell && \
+      chmod +x /opt/powershell/pwsh /usr/local/bin/kubectl && ln -s /opt/powershell/pwsh /usr/local/bin/pwsh && \
+      rm -rf /tmp/helm.tgz /tmp/powershell.tgz /tmp/linux-${ARCH}; \
+    fi
 
 # Keep the shared Rust toolchain/cache discoverable from login shells.
 RUN printf '%s\n' 'export PATH="/opt/venv/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:/usr/local/jupyter:/usr/local/share/nvm/current/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/mssql-tools18/bin:/usr/local/cargo/bin:$PATH"' \
@@ -206,3 +175,28 @@ RUN printf '%s\n' 'export PATH="/opt/venv/bin:/usr/local/python/current/bin:/usr
 
 # Set working directory
 WORKDIR /workspace
+
+# Refresh inherited development utilities as well as application dependencies.
+# The Python devcontainer base includes optional formatter/tool virtualenvs.
+RUN apt-get update && apt-get upgrade -y \
+ && npm install -g npm@12.0.2 \
+ && python3 -m pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0 GitPython==3.1.62 \
+ && for python in /usr/local/py-utils/venvs/*/bin/python; do \
+      [ ! -x "$python" ] || python3 -m pip --python "$python" install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0; \
+    done \
+ && python3 -m pip --python /usr/local/py-utils/venvs/black/bin/python install --no-cache-dir --upgrade black==26.5.1 \
+ && npm cache clean --force \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /root/.cache
+
+# Patch npm's bundled dependency ranges without resolving its unpublished dev tools.
+RUN node -e 'const fs=require("fs"); const p="/usr/lib/node_modules/npm/package.json"; const j=JSON.parse(fs.readFileSync(p)); delete j.devDependencies; fs.writeFileSync(p,JSON.stringify(j));' \
+ && npm install --prefix /usr/lib/node_modules/npm --no-save --ignore-scripts --omit=dev \
+      brace-expansion@5.0.9 ip-address@10.3.1 tar@7.5.21 \
+ && npm cache clean --force
+
+# The repository audit target must also work inside the headless bench.
+RUN cargo install cargo-deny --version 0.20.2 --locked \
+ && rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache
+
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \
+ && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/*

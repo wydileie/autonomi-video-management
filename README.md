@@ -644,3 +644,13 @@ let bytes = client.data_get_public(&address).await?;
 ## License
 
 GNU General Public License v3. See [LICENSE](LICENSE).
+
+## Reviewed runtime and payment upgrades
+
+Runtime versions are recorded in [`deploy/versions.json`](deploy/versions.json)
+and checked with `make check-runtime`. The application keeps its custom Autonomi
+gateway and stored public addresses. Final upload and catalog publication require
+approval of separate storage and gas caps, bound to the prepared content.
+See [`docs/PAYMENT_RECOVERY.md`](docs/PAYMENT_RECOVERY.md) for recovery behavior
+and [`docs/MODERNIZATION_STATUS.md`](docs/MODERNIZATION_STATUS.md) for validation
+results and remaining release checks.

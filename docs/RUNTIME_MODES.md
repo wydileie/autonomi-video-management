@@ -1,6 +1,6 @@
 # Runtime Modes
 
-This repository now supports two launch paths over the same service roles:
+This repository now supports three launch paths over the same service roles:
 
 - Docker Compose for local and production deployment.
 - `autvid_launcher`, a Linux/macOS local web launcher that starts native child
@@ -8,7 +8,7 @@ This repository now supports two launch paths over the same service roles:
 - The Tauri desktop app, which uses the same launcher/runtime contract inside a
   native installable shell.
 
-Both paths use the same Rust admin service, Rust streaming service, `antd`
+All paths use the same Rust admin service, Rust streaming service, `antd`
 gateway, SQLite database, catalog state file, `/api`, and `/stream` contracts.
 
 ## Containerized Compose
@@ -82,3 +82,38 @@ Through Compose/Nginx or the standalone launcher:
 curl http://localhost/api/health
 curl http://localhost/stream/health
 ```
+
+## Shared security and payment contract
+
+Native admin, streaming, and gateway listeners default to `127.0.0.1`.
+`RUST_ADMIN_BIND_ADDRESS`, `RUST_STREAM_BIND_ADDRESS`, and `ANTD_REST_ADDR`
+make container-facing binds explicit. Native launchers generate separate private
+read/write token files in `run/`, check Host/Origin, and sanitize proxy headers.
+The stream service receives only the read credential. SQLite, processing files,
+secrets, payment journals, and peer caches live under the private app-data directory.
+
+The native payment journal is `antd-payments.sqlite3`. Both native modes and
+Compose use actual-content quotes and the same approval/recovery API; see
+`PAYMENT_RECOVERY.md`. Health reports `read_ready`, `write_ready`, peer count,
+and protocol `autvid-gateway-v2`. Liveness alone does not mean uploads are ready.
+Admin `/health` returns 503 while any transaction is reserved or awaiting a
+receipt, and continues to do so if payment status is uncertain. Use `/livez` for
+process health; readiness failures must not trigger restarts of paid work.
+
+Native login allows at most 32 concurrent authentication attempts. After 20
+failures in a minute, each admitted attempt waits two seconds, giving an
+aggregate ceiling of roughly 16 attempts per second during that failure burst.
+Valid credentials still work after the delay. Compose additionally applies
+Nginx's per-client login limit.
+
+The headless bench and VS Code share `.devcontainer/Dockerfile`. Optional
+upstream SDK/CLI/MCP startup requires `AUTVID_START_UPSTREAM_TOOLING=true` or
+`AUTVID_CONFIGURE_AGENT_MCP=true`; the app gateway remains on 8082, upstream SDK
+on 8182. See `.devcontainer/README.md`.
+
+The upstream 0.18.1 development network creates new node identities each time it
+starts. `--no-cleanup` retains its files, but restarting the whole devnet does
+not automatically reattach those old identities or preserve its ephemeral EVM
+chain. Restart smoke tests restart the application worker while retaining the
+network. Use the persistent public network for durable published addresses;
+local devnet data is a test fixture, not a production backup.
