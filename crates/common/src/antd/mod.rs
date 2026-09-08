@@ -35,6 +35,8 @@ pub struct AntdClient {
     base_url: String,
     client: reqwest::Client,
     internal_token: Option<String>,
+    payment_approval: Option<String>,
+    payment_lease: Option<String>,
     circuit: Arc<CircuitBreaker>,
     recorder: Arc<dyn AntdMetricsRecorder>,
 }
@@ -50,13 +52,38 @@ impl AntdClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(timeout)
                 .build()?,
             internal_token,
+            payment_approval: None,
+            payment_lease: None,
             circuit: Arc::new(CircuitBreaker::default()),
             recorder,
         })
+    }
+
+    pub fn with_lease(&self, key: &str) -> Self {
+        let mut client = self.clone();
+        client.payment_lease = Some(key.into());
+        client
+    }
+
+    pub fn with_approval(&self, quote_id: &str) -> Self {
+        let mut client = self.clone();
+        client.payment_approval = Some(quote_id.to_string());
+        client
+    }
+
+    pub async fn file_cost(
+        &self,
+        path: &FsPath,
+        payment_mode: &str,
+    ) -> anyhow::Result<crate::payments::ContentQuote> {
+        let (_, sha256) = sha256_file_async(path).await?;
+        self.send_file(path, payment_mode, false, &sha256, "/v1/file/cost")
+            .await
     }
 
     pub fn record_upload_retry(&self) {
@@ -85,7 +112,11 @@ impl AntdClient {
             }
             let response = request.send().await?;
             let status = response.status();
-            let text = response.text().await?;
+            let text = String::from_utf8(
+                read_response_limited(response, 32 * 1024 * 1024)
+                    .await?
+                    .to_vec(),
+            )?;
             if !status.is_success() {
                 return Err(AutonomiHttpStatusError {
                     method: method.clone(),
@@ -182,7 +213,9 @@ impl AntdClient {
                 .await?;
             let status = response.status();
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_else(|_| "".to_string());
+                let body =
+                    String::from_utf8_lossy(&read_response_limited(response, 64 * 1024).await?)
+                        .into_owned();
                 return Err(AutonomiHttpStatusError {
                     method: reqwest::Method::GET,
                     path: path.to_string(),
@@ -191,7 +224,7 @@ impl AntdClient {
                 }
                 .into());
             }
-            Ok(response.bytes().await?)
+            read_response_limited(response, 32 * 1024 * 1024).await
         }
         .await;
         self.circuit.record_result(&result);
@@ -214,7 +247,7 @@ impl AntdClient {
         let mut last_error = None;
         for attempt in 1..=attempts {
             match self
-                .file_put_public_once(path, payment_mode, verify, &sha256)
+                .send_file(path, payment_mode, verify, &sha256, "/v1/file/public")
                 .await
             {
                 Ok(result) => return Ok(result),
@@ -248,18 +281,19 @@ impl AntdClient {
             }))
     }
 
-    async fn file_put_public_once(
+    async fn send_file<T: for<'de> Deserialize<'de>>(
         &self,
         path: &FsPath,
         payment_mode: &str,
         verify: bool,
         sha256: &str,
-    ) -> anyhow::Result<AntdFilePutResponse> {
+        endpoint: &str,
+    ) -> anyhow::Result<T> {
         self.circuit.check()?;
         let file = tokio_fs::File::open(path).await?;
         let stream = ReaderStream::new(file);
         let url = format!(
-            "{}/v1/file/public?payment_mode={payment_mode}&verify={}",
+            "{}{endpoint}?payment_mode={payment_mode}&verify={}",
             self.base_url, verify
         );
         let started = std::time::Instant::now();
@@ -271,28 +305,39 @@ impl AntdClient {
                 .body(reqwest::Body::wrap_stream(stream));
             let response = request.send().await?;
             let status = response.status();
-            let text = response.text().await?;
+            let text = String::from_utf8(
+                read_response_limited(response, 32 * 1024 * 1024)
+                    .await?
+                    .to_vec(),
+            )?;
             if !status.is_success() {
                 return Err(AutonomiHttpStatusError {
                     method: reqwest::Method::POST,
-                    path: "/v1/file/public".to_string(),
+                    path: endpoint.to_string(),
                     status,
                     body: text,
                 }
                 .into());
             }
-            serde_json::from_str(&text).map_err(|err| {
-                anyhow::anyhow!("POST /v1/file/public returned invalid JSON: {}", err)
-            })
+            serde_json::from_str(&text)
+                .map_err(|err| anyhow::anyhow!("POST {endpoint} returned invalid JSON: {}", err))
         }
         .await;
         self.circuit.record_result(&result);
         self.recorder
-            .record_request("/v1/file/public", started.elapsed(), result.is_ok());
+            .record_request(endpoint, started.elapsed(), result.is_ok());
         result
     }
 
     fn apply_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let request = match &self.payment_lease {
+            Some(key) => request.header("x-payment-lease", key),
+            None => request,
+        };
+        let request = match &self.payment_approval {
+            Some(id) => request.header("x-payment-approval", id),
+            None => request,
+        };
         match self.internal_token.as_deref() {
             Some(token) => request.bearer_auth(token),
             None => request,
@@ -345,7 +390,7 @@ pub fn is_missing_file_upload_endpoint(err: &anyhow::Error) -> bool {
         && (message.contains(" 404 ") || message.contains(" 405 ") || message.contains(" 501 "))
 }
 
-async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
+pub async fn sha256_file_async(path: &FsPath) -> anyhow::Result<(u64, String)> {
     let mut file = tokio_fs::File::open(path).await?;
     let mut hasher = Sha256::new();
     let mut byte_size = 0_u64;
@@ -370,4 +415,64 @@ pub fn hex_lower(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+/// Checks advertised length and every received chunk, including chunked responses.
+pub async fn read_response_limited(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<Bytes> {
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        anyhow::bail!("gateway response exceeds {limit} byte limit");
+    }
+    let mut bytes = bytes::BytesMut::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            anyhow::bail!("gateway response exceeds {limit} byte limit");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes.freeze())
+}
+
+#[cfg(test)]
+mod response_limit_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn response(raw: &'static [u8]) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await;
+            stream.write_all(raw).await.expect("response");
+        });
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client")
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .expect("request")
+    }
+    #[tokio::test]
+    async fn rejects_advertised_and_chunked_overruns() {
+        let advertised =
+            response(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000000\r\nConnection: close\r\n\r\n")
+                .await;
+        assert!(read_response_limited(advertised, 4).await.is_err());
+        let chunked=response(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n").await;
+        assert!(read_response_limited(chunked, 4).await.is_err());
+        let exact =
+            response(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd")
+                .await;
+        assert_eq!(
+            &read_response_limited(exact, 4).await.expect("exact limit")[..],
+            b"abcd"
+        );
+    }
 }

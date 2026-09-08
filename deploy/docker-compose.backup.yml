@@ -6,6 +6,7 @@ services:
     container_name: autvid_backup_sidecar
     environment:
       SQLITE_DB_PATH: /var/lib/autvid/autvid.sqlite3
+      ANTD_PAYMENT_DB_PATH: /var/lib/antd/antd-payments.sqlite3
       BACKUP_DIR: /backups
       BACKUP_PREFIX: "${BACKUP_PREFIX:-autvid}"
       BACKUP_SCHEDULE: "${BACKUP_SCHEDULE:-daily@02:00}"
@@ -21,6 +22,7 @@ services:
     networks:
       - appnet
     volumes:
+      - ${ANTD_BACKUP_VOLUME:-antd_payment_state}:/var/lib/antd:ro
       - ${BACKUP_HOST_PATH:-../backups}:/backups
       - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid:ro
       - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/var/lib/node_exporter/textfile_collector
@@ -36,3 +38,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
+
+volumes:
+  antd_payment_state:
+  autonomi_devnet_data:

@@ -275,21 +275,24 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   return res.data;
 }
 
-export async function listVideos({ admin = false }: { admin?: boolean } = {}): Promise<
-  VideoSummary[]
-> {
-  const res = await api.get<VideoSummary[]>(`${admin ? "/admin" : ""}/videos`);
+export async function listVideos({
+  admin = false,
+  signal,
+}: { admin?: boolean; signal?: AbortSignal } = {}): Promise<VideoSummary[]> {
+  const res = await api.get<VideoSummary[]>(`${admin ? "/admin" : ""}/videos`, { signal });
   return res.data;
 }
 
 export async function getVideoDetails({
   admin = false,
   videoId,
+  signal,
 }: {
   admin?: boolean;
   videoId: string;
+  signal?: AbortSignal;
 }): Promise<VideoDetail> {
-  const res = await api.get<VideoDetail>(`${admin ? "/admin" : ""}/videos/${videoId}`);
+  const res = await api.get<VideoDetail>(`${admin ? "/admin" : ""}/videos/${videoId}`, { signal });
   return res.data;
 }
 
@@ -312,8 +315,15 @@ export async function uploadVideo(
   return res.data;
 }
 
-export async function approveVideoUpload(videoId: string): Promise<VideoDetail> {
-  const res = await api.post<VideoDetail>(`/admin/videos/${videoId}/approve`, null);
+export async function approveVideoUpload(
+  videoId: string,
+  approval: { quote_id: string; max_storage_atto: string; max_gas_wei: string },
+): Promise<VideoDetail> {
+  const res = await api.post<VideoDetail>(`/admin/videos/${videoId}/approve`, {
+    quote_id: approval.quote_id,
+    max_storage_atto: approval.max_storage_atto,
+    max_gas_wei: approval.max_gas_wei,
+  });
   return res.data;
 }
 
@@ -339,12 +349,37 @@ export async function updateVideoPublication(
   return res.data;
 }
 
-export async function getAdminCatalogs(): Promise<AdminCatalogs> {
-  const res = await api.get<AdminCatalogs>("/admin/catalogs");
+export async function getAdminCatalogs(signal?: AbortSignal): Promise<AdminCatalogs> {
+  const res = await api.get<AdminCatalogs>("/admin/catalogs", { signal });
   return res.data;
 }
 
 export async function publishAdminCatalogs(): Promise<AdminCatalogs> {
   const res = await api.post<AdminCatalogs>("/admin/catalogs/publish", null);
   return res.data;
+}
+
+export async function approveAdminCatalogs(approval: {
+  quote_id: string;
+  max_storage_atto: string;
+  max_gas_wei: string;
+}): Promise<AdminCatalogs> {
+  return (
+    await api.post<AdminCatalogs>("/admin/catalogs/approve", {
+      quote_id: approval.quote_id,
+      max_storage_atto: approval.max_storage_atto,
+      max_gas_wei: approval.max_gas_wei,
+    })
+  ).data;
+}
+export async function requoteVideoUpload(videoId: string): Promise<VideoDetail> {
+  return (await api.post<VideoDetail>(`/admin/videos/${videoId}/requote`, null)).data;
+}
+
+export async function resumeVideoUpload(videoId: string): Promise<VideoDetail> {
+  return (await api.post<VideoDetail>(`/admin/videos/${videoId}/resume`, null)).data;
+}
+
+export async function resumeAdminCatalogs(): Promise<AdminCatalogs> {
+  return (await api.post<AdminCatalogs>("/admin/catalogs/resume", null)).data;
 }

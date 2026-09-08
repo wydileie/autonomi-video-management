@@ -151,7 +151,7 @@ ADMIN_AUTH_COOKIE_SAME_SITE=Lax
 PROD_ANTD_NETWORK=default
 PROD_EVM_NETWORK=arbitrum-one
 ANTD_PAYMENT_MODE=auto
-ANTD_APPROVE_ON_STARTUP=true
+ANTD_APPROVE_ON_STARTUP=false
 AUTVID_DATA_HOST_PATH=/srv/autonomi-video-management/app-data
 ```
 
@@ -168,7 +168,8 @@ Create the files referenced by `.env.production` before starting production:
 install -d -m 0700 secrets
 printf '%s\n' '<admin login password>' > secrets/admin_login_password
 printf '%s\n' '<long auth signing secret>' > secrets/admin_auth_secret
-printf '%s\n' '<internal bearer token>' > secrets/antd_internal_token
+printf '%s\n' '<write/payment bearer token>' > secrets/antd_internal_token
+printf '%s\n' '<different read-only bearer token>' > secrets/antd_read_token
 printf '%s\n' '0x<your_wallet_private_key>' > secrets/autonomi_wallet_key
 chmod 0600 secrets/*
 ```
@@ -365,3 +366,28 @@ normal host directory, so Compose will not delete it.
 Ready video manifests and catalogs are stored on Autonomi. If you move to
 another host, set `PUBLISHED_CATALOG_ADDRESS` and `ALL_CATALOG_ADDRESS` to the
 last known addresses to bootstrap video discovery from the network.
+
+## Modernization rollout
+
+Reviewed runtime pins live in `deploy/versions.json`; `make check-runtime`
+checks build files and lockfiles against them. Use `--locked` Rust builds and
+`npm ci`. The application gateway requires protocol `autvid-gateway-v2`;
+the upstream SDK daemon is optional developer tooling on port 8182.
+
+Drain active paid jobs before upgrading. Back up both `autvid.sqlite3` and the
+gateway's `antd-payments.sqlite3`, catalog state, and pending processing files.
+Rehearse migration and restore on copies first. Migration 0003 preserves
+published addresses and adds approval/recovery states, lease ownership, and
+catalog revisions. Legacy pending approvals must be quoted again.
+
+Storage writes now require a content-bound approval with an expiry and separate
+storage and gas caps. Startup does not grant unlimited token allowances.
+Catalog-only publication also requires approval. See `PAYMENT_RECOVERY.md` for
+partial uploads and uncertain broadcasts. Production uses separate gateway read
+and write secret files and a persistent `antd_payment_state` volume; never
+replace that volume with an empty journal while retaining the wallet.
+
+Promote only the tested image digests and bundles. The native listeners bind to
+loopback; Compose explicitly binds internal services to container interfaces.
+No public admin/debug ports are needed. Keep existing application and network
+volumes during rollback; do not run `down -v` as an upgrade step.

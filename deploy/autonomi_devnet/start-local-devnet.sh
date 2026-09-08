@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 LOG_DIR="${LOG_DIR:-/data/logs}"
 MANIFEST="${ANT_DEVNET_MANIFEST:-/data/ant-devnet-manifest.json}"
@@ -7,25 +8,30 @@ DATA_DIR="${ANT_DEVNET_DATA_DIR:-/data/nodes}"
 PRESET="${ANT_DEVNET_PRESET:-default}"
 QUOTE_TIMEOUT_SECS="${ANTD_QUOTE_TIMEOUT_SECS:-60}"
 STORE_TIMEOUT_SECS="${ANTD_STORE_TIMEOUT_SECS:-120}"
-RESET_ON_START="${ANT_DEVNET_RESET_ON_START:-true}"
+RESET_ON_START="${ANT_DEVNET_RESET_ON_START:-false}"
+REST_ADDR="${ANTD_REST_ADDR:-127.0.0.1:8082}"
+GATEWAY_BIN="${AUTVID_GATEWAY_BIN:-autvid-antd-gateway}"
+HEALTH_PORT="${REST_ADDR##*:}"
 
 mkdir -p "$LOG_DIR" "$DATA_DIR"
 rm -f "$MANIFEST"
 
 cleanup() {
-  jobs -pr | xargs -r kill 2>/dev/null || true
+  for pid in $(jobs -pr); do kill "$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT INT TERM
 
-if [[ "$RESET_ON_START" != "0" && "${RESET_ON_START,,}" != "false" && "${RESET_ON_START,,}" != "no" ]]; then
+case "$RESET_ON_START" in
+  1|true|TRUE|yes|YES)
   echo "[autonomi-devnet] resetting active node data dir ${DATA_DIR}"
-  rm -rf "${DATA_DIR:?}/"*
-fi
+  rm -rf "${DATA_DIR:?}/"* ;;
+esac
 
 echo "[autonomi-devnet] starting ant-devnet preset=${PRESET}"
 ant-devnet \
   --preset "$PRESET" \
   --enable-evm \
+  --no-cleanup \
   --enable-logging \
   --log-level "${ANT_DEVNET_LOG_LEVEL:-info}" \
   --data-dir "$DATA_DIR" \
@@ -60,20 +66,21 @@ EVM_RPC_URL="$EVM_RPC" \
 EVM_PAYMENT_TOKEN_ADDRESS="$EVM_TOKEN" \
 EVM_PAYMENT_VAULT_ADDRESS="$EVM_VAULT" \
 ANTD_NETWORK=local \
-ANTD_REST_ADDR="${ANTD_REST_ADDR:-0.0.0.0:8082}" \
+ANTD_REST_ADDR="$REST_ADDR" \
 ANTD_QUOTE_TIMEOUT_SECS="$QUOTE_TIMEOUT_SECS" \
 ANTD_STORE_TIMEOUT_SECS="$STORE_TIMEOUT_SECS" \
-autvid-antd-gateway \
+"$GATEWAY_BIN" \
   > "$LOG_DIR/antd.log" 2>&1 &
 ANTD_PID=$!
 
 echo "[autonomi-devnet] waiting for antd gateway health"
 for _ in $(seq 1 60); do
-  if curl -sf --max-time 2 http://localhost:8082/health >/dev/null 2>&1; then
+  if curl -sf --max-time 2 "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null 2>&1; then
     echo "[autonomi-devnet] ready"
     echo "[autonomi-devnet] manifest: $MANIFEST"
     echo "[autonomi-devnet] logs: $LOG_DIR"
-    wait -n "$DEVNET_PID" "$ANTD_PID"
+    while kill -0 "$DEVNET_PID" 2>/dev/null && kill -0 "$ANTD_PID" 2>/dev/null; do sleep 1; done
+    if ! kill -0 "$DEVNET_PID" 2>/dev/null; then wait "$DEVNET_PID"; else wait "$ANTD_PID"; fi
     exit $?
   fi
   sleep 2

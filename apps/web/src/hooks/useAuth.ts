@@ -12,6 +12,7 @@ import type { AuthState } from "../types";
 export default function useAuth(onInvalid?: () => void) {
   const onInvalidRef = useRef(onInvalid);
   const authRef = useRef<AuthState | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [auth, setAuth] = useState<AuthState | null>(null);
 
   useEffect(() => {
@@ -49,6 +50,7 @@ export default function useAuth(onInvalid?: () => void) {
       if (!hasCsrfCookie()) {
         authRef.current = null;
         setAuth(null);
+        setAuthLoading(false);
         return;
       }
       try {
@@ -59,6 +61,8 @@ export default function useAuth(onInvalid?: () => void) {
         if (!active) return;
         authRef.current = null;
         setAuth(null);
+      } finally {
+        if (active) setAuthLoading(false);
       }
     }
 
@@ -82,5 +86,5 @@ export default function useAuth(onInvalid?: () => void) {
     setAuth(null);
   }, []);
 
-  return { auth, login, logout };
+  return { auth, authLoading, login, logout };
 }

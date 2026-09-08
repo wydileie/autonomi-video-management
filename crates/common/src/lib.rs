@@ -3,6 +3,7 @@ pub mod env;
 pub mod error;
 pub mod health;
 pub mod metrics;
+pub mod payments;
 pub mod resilience;
 pub mod security;
 pub mod shutdown;
@@ -25,3 +26,5 @@ pub use security::{
     parse_cors_allowed_origins,
 };
 pub use shutdown::shutdown_signal;
+
+pub mod native;

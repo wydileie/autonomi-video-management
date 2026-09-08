@@ -2,6 +2,7 @@ use std::path::Path as FsPath;
 
 use axum::http::StatusCode;
 use serde_json::Value;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::{
@@ -17,7 +18,7 @@ pub(crate) async fn run_command_output(
     mut command: Command,
     timeout_seconds: Option<f64>,
 ) -> Result<CommandOutput, ApiError> {
-    let child = command
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -29,31 +30,65 @@ pub(crate) async fn run_command_output(
             )
         })?;
 
-    let wait = child.wait_with_output();
-    let output = if let Some(seconds) = timeout_seconds {
-        tokio::time::timeout(duration_from_secs_f64(seconds), wait)
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "Media tool exceeded the configured runtime limit",
-                )
-            })?
-    } else {
-        wait.await
-    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "media stdout missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "media stderr missing"))?;
+    let wait = async {
+        tokio::try_join!(
+            child.wait(),
+            capture_output(stdout, false),
+            capture_output(stderr, true)
+        )
+    };
+    let (status, stdout, stderr) = tokio::time::timeout(
+        duration_from_secs_f64(timeout_seconds.unwrap_or(300.0)),
+        wait,
+    )
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Media tool exceeded the configured runtime limit",
+        )
+    })?
     .map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Media tool failed to run: {err}"),
+            format!("Media tool failed: {err}"),
         )
     })?;
-
     Ok(CommandOutput {
-        status_code: output.status.code(),
-        stdout: output.stdout,
-        stderr: output.stderr,
+        status_code: status.code(),
+        stdout,
+        stderr,
     })
+}
+
+async fn capture_output(
+    mut reader: impl AsyncRead + Unpin,
+    tail: bool,
+) -> std::io::Result<Vec<u8>> {
+    let limit = if tail { 64 * 1024 } else { 1024 * 1024 };
+    let mut result = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut buffer).await?;
+        if n == 0 {
+            return Ok(result);
+        }
+        if result.len() + n > limit {
+            if !tail {
+                return Err(std::io::Error::other("media output exceeds limit"));
+            }
+            result.drain(..result.len() + n - limit);
+        }
+        result.extend_from_slice(&buffer[..n]);
+    }
 }
 
 pub(crate) async fn probe_upload_media(
@@ -63,6 +98,12 @@ pub(crate) async fn probe_upload_media(
     let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new(&state.config.ffprobe_bin);
     command
+        .args([
+            "-protocol_whitelist",
+            "file,pipe",
+            "-format_whitelist",
+            "mov,matroska,webm,avi,mpegts,mpegvideo,flv,ogg,asf",
+        ])
         .arg("-v")
         .arg("error")
         .arg("-show_streams")
@@ -150,6 +191,12 @@ pub(crate) async fn probe_duration(
     let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new(&state.config.ffprobe_bin);
     command
+        .args([
+            "-protocol_whitelist",
+            "file,pipe",
+            "-format_whitelist",
+            "mov,matroska,webm,avi,mpegts,mpegvideo,flv,ogg,asf",
+        ])
         .arg("-v")
         .arg("quiet")
         .arg("-show_entries")
@@ -157,7 +204,8 @@ pub(crate) async fn probe_duration(
         .arg("-of")
         .arg("default=noprint_wrappers=1:nokey=1")
         .arg(&src);
-    let output = run_command_output(command, None).await?;
+    let output =
+        run_command_output(command, Some(state.config.upload_ffprobe_timeout_seconds)).await?;
     if output.status_code != Some(0) {
         return Ok(None);
     }
@@ -176,6 +224,12 @@ pub(crate) async fn probe_video_dimensions(
     let src = assert_under(src, &state.config.upload_temp_dir)?;
     let mut command = Command::new(&state.config.ffprobe_bin);
     command
+        .args([
+            "-protocol_whitelist",
+            "file,pipe",
+            "-format_whitelist",
+            "mov,matroska,webm,avi,mpegts,mpegvideo,flv,ogg,asf",
+        ])
         .arg("-v")
         .arg("quiet")
         .arg("-select_streams")
@@ -184,7 +238,8 @@ pub(crate) async fn probe_video_dimensions(
         .arg("-of")
         .arg("json")
         .arg(&src);
-    let output = run_command_output(command, None).await?;
+    let output =
+        run_command_output(command, Some(state.config.upload_ffprobe_timeout_seconds)).await?;
     if output.status_code != Some(0) {
         return Ok(None);
     }

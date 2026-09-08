@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 usage() {
   cat <<'EOF'
@@ -7,6 +8,7 @@ Usage: scripts/backup-production.sh [--output-dir DIR] [--timestamp TIMESTAMP]
 
 Creates a timestamped production backup directory containing:
   - autvid.sqlite3     Consistent online SQLite database backup
+  - antd-payments.sqlite3  Durable payment approvals, signed transactions and receipts
   - catalog.json       Latest catalog state, when present
   - manifest.env       Backup metadata
 
@@ -16,6 +18,7 @@ Environment overrides:
   BACKUP_OUTPUT_DIR    Backup parent directory (default: ./backups)
   BACKUP_PREFIX        Backup directory prefix (default: autvid)
   AUTVID_DATA_HOST_PATH Host app-data path (default: ./.autvid/app_data)
+  ANTD_PAYMENT_DB_PATH Gateway journal path (required; use backup sidecar for Docker volumes)
   SQLITE_DB_NAME       SQLite database filename (default: autvid.sqlite3)
   CATALOG_PATH         Catalog state path (default: AUTVID_DATA_HOST_PATH/catalog/catalog.json)
 EOF
@@ -86,10 +89,19 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
   exit 2
 fi
 
+payment_db="${ANTD_PAYMENT_DB_PATH:-}"
+if [[ -z "$payment_db" || ! -r "$payment_db" ]]; then
+  echo "ANTD_PAYMENT_DB_PATH must identify the readable payment journal. Docker deployments should use the backup sidecar." >&2
+  exit 1
+fi
 echo "Writing SQLite backup to ${backup_dir}/${sqlite_db_name}"
 sqlite_backup_path="${backup_dir}/${sqlite_db_name}"
 sqlite_backup_path_escaped="${sqlite_backup_path//\"/\"\"}"
 sqlite3 "${db_path}" ".backup main \"${sqlite_backup_path_escaped}\""
+
+payment_backup_path="${backup_dir}/antd-payments.sqlite3"
+payment_backup_escaped="${payment_backup_path//\"/\"\"}"
+sqlite3 "$payment_db" ".backup main \"${payment_backup_escaped}\""
 
 echo "Writing catalog state to ${backup_dir}/catalog.json when present"
 if [[ -r "${catalog_path}" ]]; then
@@ -110,6 +122,8 @@ CATALOG_PATH=${catalog_path}
 CATALOG_STATUS=${catalog_status}
 SQLITE_DB_FILE=${sqlite_db_name}
 CATALOG_FILE=catalog.json
+PAYMENT_DB_FILE=antd-payments.sqlite3
+PAYMENT_DB_PATH=${payment_db}
 EOF
 
 echo "Backup complete: ${backup_dir}"

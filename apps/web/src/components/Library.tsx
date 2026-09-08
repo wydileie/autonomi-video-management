@@ -30,6 +30,8 @@ export default function Library({ admin = false }: LibraryProps) {
     catalogError,
     loadCatalogs,
     republishCatalogs,
+    approveCatalogs,
+    resumeCatalogs,
     copyAddress,
   } = useCatalogs(admin);
 
@@ -51,6 +53,8 @@ export default function Library({ admin = false }: LibraryProps) {
     setActionError,
     deleteVideo,
     approveVideo,
+    requoteVideo,
+    resumeVideo,
     updateVisibility,
     updatePublication,
   } = useVideoActions({ load, loadCatalogs, onDeleted, setDetail, setVideos });
@@ -134,6 +138,8 @@ export default function Library({ admin = false }: LibraryProps) {
           catalogCopied={catalogCopied}
           onCopy={copyAddress}
           onRepublish={republishCatalogs}
+          onApprove={approveCatalogs}
+          onResume={resumeCatalogs}
         />
       )}
 
@@ -168,7 +174,12 @@ export default function Library({ admin = false }: LibraryProps) {
                 approving={approving === video.id}
                 publishing={publishing === video.id}
                 selectedResolution={playing?.videoId === video.id ? playing.resolution : null}
-                onApprove={() => approveVideo(video.id)}
+                onApprove={() => {
+                  if (detail?.id === video.id && detail.final_quote?.approval)
+                    void approveVideo(video.id, detail.final_quote.approval);
+                }}
+                onRequote={() => requoteVideo(video.id)}
+                onResume={() => resumeVideo(video.id)}
                 onDelete={handleDelete(video.id)}
                 onResolutionChange={(nextResolution) =>
                   setPlaying({ videoId: video.id, resolution: nextResolution })

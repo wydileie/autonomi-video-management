@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "rust": "1.98.1",
+  "node": "24.20.0",
+  "autonomi": {
+    "ant-core": "0.8.1",
+    "ant-protocol": "2.3.5",
+    "saorsa-core": "0.27.3",
+    "saorsa-transport": "0.36.3",
+    "evmlib": "0.9.1",
+    "self_encryption": "0.36.0",
+    "node": "0.18.1",
+    "sdk": "0.12.1",
+    "cli": "0.3.6"
+  },
+  "desktop": {
+    "tauri": "2.11.5",
+    "tauri-build": "2.6.3",
+    "tauri-plugin-opener": "2.5.5"
+  },
+  "images": {
+    "PROMETHEUS_IMAGE": "prom/prometheus:v3.14.0",
+    "ALERTMANAGER_IMAGE": "prom/alertmanager:v0.34.0",
+    "NODE_EXPORTER_IMAGE": "prom/node-exporter:v1.12.1",
+    "GRAFANA_IMAGE": "grafana/grafana:13.2.1",
+    "LOKI_IMAGE": "grafana/loki:3.7.7",
+    "ALLOY_IMAGE": "grafana/alloy:v1.19.2"
+  },
+  "gateway_protocol": "autvid-gateway-v2"
+}

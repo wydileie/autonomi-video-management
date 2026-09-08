@@ -1,19 +1,17 @@
 use axum::extract::{Path, State};
-use axum::http::header;
+use axum::http::{header, HeaderMap};
 use axum::response::IntoResponse;
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Write;
 use tempfile::NamedTempFile;
 
 use crate::error::ApiError;
 use crate::state::{AppState, CostCacheKey};
 
-use super::shared::{decode_base64, format_payment_mode, hex_to_address, parse_payment_mode};
+use super::shared::{decode_base64, parse_payment_mode};
 
 #[derive(Deserialize)]
 pub(super) struct DataRequest {
@@ -22,21 +20,7 @@ pub(super) struct DataRequest {
     payment_mode: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct DataCostResponse {
-    pub(crate) cost: String,
-    pub(crate) file_size: u64,
-    pub(crate) chunk_count: usize,
-    pub(crate) estimated_gas_cost_wei: String,
-    pub(crate) payment_mode: String,
-}
-
-#[derive(Serialize)]
-pub(super) struct DataPutResponse {
-    address: String,
-    chunks_stored: usize,
-    payment_mode_used: String,
-}
+pub(crate) type DataCostResponse = crate::payments::ContentQuote;
 
 #[derive(Serialize)]
 pub(super) struct DataGetResponse {
@@ -56,49 +40,47 @@ pub(super) async fn data_cost(
         return Ok(Json(cached));
     }
 
-    let mut file = NamedTempFile::new()?;
-    file.write_all(&data)?;
-
-    let estimate = state
-        .client
-        .estimate_upload_cost(file.path(), mode, None)
+    let file = NamedTempFile::new_in(&state.upload_temp_dir)?;
+    tokio::fs::write(file.path(), data).await?;
+    let response = state
+        .payments
+        .quote(&state.client, file.path(), mode)
         .await
-        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
-
-    let response = DataCostResponse {
-        cost: estimate.storage_cost_atto,
-        file_size: estimate.file_size,
-        chunk_count: estimate.chunk_count,
-        estimated_gas_cost_wei: estimate.estimated_gas_cost_wei,
-        payment_mode: format_payment_mode(estimate.payment_mode),
-    };
+        .map_err(|e| ApiError::from_autonomi_message(e.to_string()))?;
     state.cost_cache.insert(cache_key, response.clone());
     Ok(Json(response))
 }
 
 pub(super) async fn data_put_public(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<DataRequest>,
-) -> Result<Json<DataPutResponse>, ApiError> {
+) -> Result<Json<crate::payments::UploadReceipt>, ApiError> {
+    let approval = crate::payments::approval_header(&headers)?;
+    let lease = crate::payments::lease_header(&headers)?;
     let data = decode_base64(&request.data)?;
+    let size = data.len() as u64;
+    let sha256 = hex::encode(Sha256::digest(&data));
     let mode = parse_payment_mode(request.payment_mode.as_deref().unwrap_or("auto"))?;
-
-    let result = state
-        .client
-        .data_upload_with_mode(Bytes::from(data), mode)
+    let file = NamedTempFile::new_in(&state.upload_temp_dir)?;
+    tokio::fs::write(file.path(), data).await?;
+    state
+        .payments
+        .upload(
+            state.client.clone(),
+            crate::payments::UploadRequest {
+                file,
+                approval,
+                lease_key: lease,
+                sha256,
+                size,
+                mode,
+                verify: true,
+            },
+        )
         .await
-        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
-    let address = state
-        .client
-        .data_map_store(&result.data_map)
-        .await
-        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
-
-    Ok(Json(DataPutResponse {
-        address: hex::encode(address),
-        chunks_stored: result.chunks_stored,
-        payment_mode_used: format_payment_mode(result.payment_mode_used),
-    }))
+        .map(Json)
+        .map_err(crate::payments::payment_error)
 }
 
 pub(super) async fn data_get_public(
@@ -118,12 +100,17 @@ pub(super) async fn data_get_public_raw(
 }
 
 async fn fetch_public_bytes(state: &AppState, address: &str) -> Result<Vec<u8>, ApiError> {
-    let address = hex_to_address(address)?;
-    let data_map = state
-        .client
-        .data_map_fetch(&address)
-        .await
-        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
+    let _permit = state
+        .download_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "download capacity exhausted",
+            )
+        })?;
+    let (data_map, _) = super::download::root_map(state, address, 32 * 1024 * 1024).await?;
     state
         .client
         .data_download(&data_map)

@@ -52,14 +52,6 @@
             "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
           }
         },
-        "postgres": {
-          "command": "/usr/local/bin/uvx",
-          "args": [
-            "--native-tls",
-            "mcp-server-postgres",
-            "${env:DATABASE_URL}"
-          ]
-        },
         "docker": {
           "command": "/usr/local/bin/uvx",
           "args": [
@@ -81,13 +73,6 @@
             "@modelcontextprotocol/server-sequential-thinking"
           ]
         },
-        "kubernetes": {
-          "command": "/usr/local/bin/uvx",
-          "args": [
-            "--native-tls",
-            "mcp-server-kubernetes"
-          ]
-        },
         "brave-search": {
           "command": "npx",
           "args": [
@@ -101,7 +86,7 @@
         "antd-autonomi": {
           "command": "antd-mcp",
           "env": {
-            "ANTD_BASE_URL": "http://127.0.0.1:8082",
+            "ANTD_BASE_URL": "http://127.0.0.1:8182",
             "ALL_PROXY": "",
             "all_proxy": "",
             "HTTP_PROXY": "",
@@ -133,17 +118,10 @@
             "@modelcontextprotocol/server-memory"
           ]
         },
-        "postgres": {
-          "command": "/bin/bash",
-          "args": [
-            "-lc",
-            "exec npx -y @modelcontextprotocol/server-postgres \"${DATABASE_URL:-postgresql://postgres:RootPassword@127.0.0.1:5432/postgres}\""
-          ]
-        },
         "antd-autonomi": {
           "command": "antd-mcp",
           "env": {
-            "ANTD_BASE_URL": "http://127.0.0.1:8082",
+            "ANTD_BASE_URL": "http://127.0.0.1:8182",
             "ALL_PROXY": "",
             "all_proxy": "",
             "HTTP_PROXY": "",
@@ -181,53 +159,64 @@
           "fetch": {
             "type": "stdio",
             "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-fetch"]
+            "args": [
+              "--native-tls",
+              "mcp-server-fetch"
+            ]
           },
           "filesystem": {
             "type": "stdio",
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "${containerWorkspaceFolder}"]
+            "args": [
+              "-y",
+              "@modelcontextprotocol/server-filesystem",
+              "${containerWorkspaceFolder}"
+            ]
           },
           "git": {
             "type": "stdio",
             "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-git", "--repository", "${containerWorkspaceFolder}"]
+            "args": [
+              "--native-tls",
+              "mcp-server-git",
+              "--repository",
+              "${containerWorkspaceFolder}"
+            ]
           },
           "github": {
             "url": "https://api.githubcopilot.com/mcp/"
           },
-          "postgres": {
-            "type": "stdio",
-            "command": "/bin/bash",
-            "args": [
-              "-lc",
-              "exec npx -y @modelcontextprotocol/server-postgres \"${DATABASE_URL:-postgresql://postgres:RootPassword@127.0.0.1:5432/postgres}\""
-            ]
-          },
           "docker": {
             "type": "stdio",
             "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-docker"]
+            "args": [
+              "--native-tls",
+              "mcp-server-docker"
+            ]
           },
           "memory": {
             "type": "stdio",
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-memory"]
+            "args": [
+              "-y",
+              "@modelcontextprotocol/server-memory"
+            ]
           },
           "sequential-thinking": {
             "type": "stdio",
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
-          },
-          "kubernetes": {
-            "type": "stdio",
-            "command": "/usr/local/bin/uvx",
-            "args": ["--native-tls", "mcp-server-kubernetes"]
+            "args": [
+              "-y",
+              "@modelcontextprotocol/server-sequential-thinking"
+            ]
           },
           "brave-search": {
             "type": "stdio",
             "command": "npx",
-            "args": ["-y", "@brave/brave-search-mcp-server"],
+            "args": [
+              "-y",
+              "@brave/brave-search-mcp-server"
+            ],
             "env": {
               "BRAVE_API_KEY": "${env:BRAVE_API_KEY}"
             }
@@ -239,7 +228,7 @@
             "type": "stdio",
             "command": "antd-mcp",
             "env": {
-              "ANTD_BASE_URL": "http://127.0.0.1:8082",
+              "ANTD_BASE_URL": "http://127.0.0.1:8182",
               "ALL_PROXY": "",
               "all_proxy": "",
               "HTTP_PROXY": "",
@@ -254,8 +243,16 @@
       }
     }
   },
-  "forwardPorts": [80, 3000, 5000, 5432, 8000, 8080, 8081, 8082, 50051],
-  "postCreateCommand": "python3 .devcontainer/setup_claude.py",
+  "forwardPorts": [
+    80,
+    3000,
+    8000,
+    8080,
+    8081,
+    8082,
+    8182
+  ],
+  "postCreateCommand": "bash .devcontainer/post_create.sh",
   "postStartCommand": "bash .devcontainer/post_start.sh",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",

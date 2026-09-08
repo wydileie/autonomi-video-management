@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -34,10 +34,10 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run cargo tests
-        run: cargo test --workspace
+        run: make test-rust
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: make clippy-rust
 
   cargo-deny:
     name: Cargo deny (advisories, licenses, bans, sources)
@@ -69,7 +69,7 @@ jobs:
             protobuf-compiler
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.2
@@ -87,8 +87,11 @@ jobs:
           done
           mkdir -p apps/web/build
 
+      - name: Check desktop formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
       - name: Check desktop app
-        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+        run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   rust-admin-db:
     name: Rust admin SQLite integration tests
@@ -98,13 +101,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.2
 
       - name: Run rust_admin DB integration tests
-        run: cargo test -p rust_admin --features db-tests db_tests -- --test-threads=1
+        run: cargo test --locked -p rust_admin --features db-tests db_tests -- --test-threads=1
 
   react-frontend:
     name: React frontend build and tests
@@ -116,7 +119,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -163,7 +166,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -175,7 +178,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate Rust coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --workspace --lcov --output-path lcov.info
 
       - name: Upload Rust coverage
         uses: codecov/codecov-action@v7
@@ -191,14 +194,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Render local Compose config
-        run: docker compose --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/tmp/autvid-compose-local.yml
+      - name: Validate every Compose deployment mode
+        run: make compose-config
 
-      - name: Render public local-devnet Compose config
-        run: docker compose --env-file .env.local-public.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
-
-      - name: Render production Compose config
-        run: docker compose --env-file .env.production.example -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml config >/tmp/autvid-compose-prod.yml
+      - name: Check runtime pins and security tooling
+        run: |
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          make check-runtime
 
   security-audit:
     name: Security audits (blocking)
@@ -210,7 +212,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -218,9 +220,20 @@ jobs:
         run: npm ci
         working-directory: apps/web
 
-      - name: Run npm production audit
-        run: npm run audit:prod
+      - name: Audit all web dependencies
+        run: npm audit
         working-directory: apps/web
+
+      - name: Audit desktop dependencies
+        run: npm ci && npm audit
+        working-directory: apps/desktop
+
+      - name: Audit desktop Rust dependencies
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: apps/desktop/src-tauri/Cargo.toml
+          command: check
+          command-arguments: advisories
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -278,19 +291,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Prepare env file
         run: cp .env.local.example .env.local
 
-      - name: Boot stack with prebuilt devnet image
-        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml up -d --build --wait
-        timeout-minutes: 30
+      - name: Boot the reviewed gateway and devnet sources
+        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up -d --build --wait
+        timeout-minutes: 90
 
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -327,4 +340,8 @@ jobs:
 
       - name: Dump compose logs
         if: failure()
-        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml logs --tail 200
+        run: docker compose --env-file .env.local -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml logs --tail 200
+
+      - name: Stop test stack and remove temporary containers
+        if: always()
+        run: make down-local

@@ -1,5 +1,6 @@
-mod db_document;
-mod state_file;
+pub(crate) mod db_document;
+pub(crate) mod payments;
+pub(crate) mod state_file;
 mod sync;
 
 pub(crate) use db_document::{
@@ -113,6 +114,10 @@ mod tests {
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+            active_job: None,
+            quote_semaphore: Arc::new(Semaphore::new(1)),
+            upload_semaphore: Arc::new(Semaphore::new(1)),
+            transcode_semaphore: Arc::new(Semaphore::new(1)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
             job_notify_tx: tokio::sync::watch::channel(0).0,

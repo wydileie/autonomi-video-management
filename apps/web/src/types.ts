@@ -62,6 +62,15 @@ export interface QuoteOriginalFile {
 }
 
 export interface UploadQuote {
+  quote_id?: string;
+  approval?: {
+    quote_id: string;
+    content_digest: string;
+    network: string;
+    expires_at: number;
+    max_storage_atto: string;
+    max_gas_wei: string;
+  };
   actual_media_bytes?: number;
   actual_transcoded_bytes?: number;
   approval_expires_at?: string | null;
@@ -116,6 +125,12 @@ export interface PortableCatalogDocument {
 }
 
 export interface AdminCatalogs {
+  preparing?: boolean;
+  publication?: {
+    state: string;
+    approval: NonNullable<UploadQuote["approval"]>;
+    error?: string | null;
+  } | null;
   all_catalog: PortableCatalogDocument | null;
   all_catalog_address: string | null;
   published_catalog: PortableCatalogDocument | null;

@@ -198,9 +198,16 @@ autonomi-video-management.code-workspace
 .env.local
 .env.production
 
-*.devcontainer
-.devcontainer/**
+# Track reproducible devcontainer setup, but keep local credentials/config private.
 .devcontainer/*
+!.devcontainer/Dockerfile
+!.devcontainer/devcontainer.json
+!.devcontainer/README.md
+!.devcontainer/post_create.sh
+!.devcontainer/post_start.sh
+!.devcontainer/start_autonomi.sh
+!.devcontainer/setup_codex.py
+!.devcontainer/setup_claude.py
 
 testvids/
 testvids/**

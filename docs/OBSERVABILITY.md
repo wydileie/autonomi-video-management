@@ -1,7 +1,7 @@
 # Observability
 
 The Compose stack can run optional Prometheus, Grafana, Alertmanager, Loki, and
-Promtail overlays. The metrics overlay scrapes the Rust services and `antd`
+Alloy overlays. The metrics overlay scrapes the Rust services and `antd`
 gateway. The logging overlay tails Docker container logs into Loki for browsing
 from Grafana.
 
@@ -135,13 +135,19 @@ docker compose --env-file .env.production \
 ```
 
 For internet-facing deployments, keep Grafana, Prometheus, Alertmanager, Loki,
-and Promtail behind a private network, VPN, or authenticated reverse proxy.
+and Alloy behind a private network, VPN, or authenticated reverse proxy.
 The overlays publish only to localhost by default; set host firewall rules and
 bind overrides that match your deployment model.
 
-Promtail uses the Docker socket to discover containers and read their logs.
-Treat access to `autvid_promtail` and the mounted socket as operationally
-privileged.
+Alloy reads a read-only mount of Docker JSON log files and drops entries from
+other Compose projects. It has no Docker socket mount. Set
+`AUTVID_DOCKER_LOG_ROOT` to the Docker engine's containers directory when it is
+not `/var/lib/docker/containers`. Log rotation stays capped at three 10 MB files
+per application container. Keep the log directory private; logs can contain
+operational metadata. The default collector stores positions in `alloy_data`.
+
+Loki uses TSDB schema v13. Preserve `loki_data` when upgrading; existing Loki
+installations need their historical schema periods retained in the Loki config.
 
 ## Grafana Dashboards
 

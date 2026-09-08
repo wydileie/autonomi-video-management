@@ -27,11 +27,53 @@ pub(crate) struct VideoManifest {
 }
 
 impl VideoManifest {
-    pub(crate) fn index_segments(&mut self) {
-        for variant in &mut self.variants {
-            variant.index_segments();
+    pub(crate) fn index_segments(&mut self) -> Result<(), String> {
+        if self.id.len() > 128 || self.variants.len() > 16 {
+            return Err("manifest exceeds structural limits".into());
         }
+        let mut count = 0usize;
+        let mut resolutions = std::collections::HashSet::new();
+        for variant in &mut self.variants {
+            count = count.saturating_add(variant.segments.len());
+            if count > 65_536
+                || !resolutions.insert(variant.resolution.clone())
+                || variant.resolution.is_empty()
+                || variant.resolution.len() > 32
+                || !variant
+                    .resolution
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric())
+                || !valid_duration(variant.segment_duration)
+            {
+                return Err("invalid manifest variant".into());
+            }
+            variant
+                .segments
+                .sort_by_key(|segment| segment.segment_index);
+            let mut previous = None;
+            for segment in &variant.segments {
+                if segment.segment_index < 0
+                    || segment.segment_index >= 65_536
+                    || previous == Some(segment.segment_index)
+                    || !valid_duration(segment.duration)
+                    || segment.autonomi_address.is_empty()
+                    || segment.autonomi_address.len() > 128
+                    || !segment
+                        .autonomi_address
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err("invalid manifest segment".into());
+                }
+                previous = Some(segment.segment_index);
+            }
+        }
+        Ok(())
     }
+}
+
+fn valid_duration(value: f64) -> bool {
+    value.is_finite() && value > 0.0 && value <= 3600.0
 }
 
 #[derive(Clone, Deserialize)]
@@ -39,43 +81,14 @@ pub(crate) struct VideoVariant {
     pub(crate) resolution: String,
     pub(crate) segment_duration: f64,
     pub(crate) segments: Vec<VideoSegment>,
-    #[serde(default, skip)]
-    pub(crate) segments_by_index: Vec<Option<String>>,
 }
 
 impl VideoVariant {
-    pub(crate) fn index_segments(&mut self) {
-        self.segments.sort_by_key(|segment| segment.segment_index);
-        let Some(max_index) = self
-            .segments
-            .iter()
-            .filter_map(|segment| usize::try_from(segment.segment_index).ok())
-            .max()
-        else {
-            self.segments_by_index.clear();
-            return;
-        };
-
-        let mut segments_by_index = vec![None; max_index.saturating_add(1)];
-        for segment in &self.segments {
-            if let Ok(index) = usize::try_from(segment.segment_index) {
-                if let Some(slot) = segments_by_index.get_mut(index) {
-                    *slot = Some(segment.autonomi_address.clone());
-                }
-            }
-        }
-        self.segments_by_index = segments_by_index;
-    }
-
     pub(crate) fn segment_address(&self, segment_index: i32) -> Option<&str> {
-        let index = usize::try_from(segment_index).ok()?;
-        if !self.segments_by_index.is_empty() {
-            return self.segments_by_index.get(index).and_then(Option::as_deref);
-        }
         self.segments
-            .iter()
-            .find(|segment| segment.segment_index == segment_index)
-            .map(|segment| segment.autonomi_address.as_str())
+            .binary_search_by_key(&segment_index, |s| s.segment_index)
+            .ok()
+            .map(|index| self.segments[index].autonomi_address.as_str())
     }
 }
 

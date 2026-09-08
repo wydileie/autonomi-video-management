@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   approveVideoUpload,
+  approveAdminCatalogs,
+  resumeAdminCatalogs,
+  requoteVideoUpload,
+  resumeVideoUpload,
   deleteVideoRecord,
   getAdminCatalogs,
   getVideoDetails,
@@ -20,29 +24,45 @@ export function useLibraryData(admin: boolean) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
+  const pending = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
+    pending.current?.abort();
+    const request = new AbortController();
+    pending.current = request;
     try {
-      const data = await listVideos({ admin });
+      const data = await listVideos({ admin, signal: request.signal });
+      if (request.signal.aborted) return;
       setVideos(data);
       setLoadError("");
     } catch (err) {
-      setLoadError(requestErrorMessage(err, "Could not load the video catalog."));
+      if (!request.signal.aborted)
+        setLoadError(requestErrorMessage(err, "Could not load the video catalog."));
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
+      if (pending.current === request) pending.current = null;
     }
   }, [admin]);
 
   useEffect(() => {
-    load();
+    setVideos([]);
+    setLoading(true);
+    void load();
+    return () => pending.current?.abort();
   }, [load]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (videos.some((video) => isActiveStatus(video.status))) {
-        load();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
+    if (!videos.some((video) => isActiveStatus(video.status))) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!pending.current) await load();
+      if (active) timer = setTimeout(poll, 5000);
+    };
+    timer = setTimeout(poll, 5000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [videos, load]);
 
   return { videos, setVideos, loading, loadError, load };
@@ -52,61 +72,70 @@ export function useLibraryData(admin: boolean) {
 export function useVideoDetail(admin: boolean, routeVideoId: string | undefined) {
   const [detail, setDetail] = useState<VideoDetail | null>(null);
   const [detailError, setDetailError] = useState("");
-  const activeDetailId = detail?.id;
-  const activeDetailStatus = detail?.status;
-
+  const pending = useRef<AbortController | null>(null);
+  const selection = useRef({ admin, routeVideoId });
+  useEffect(() => {
+    selection.current = { admin, routeVideoId };
+  }, [admin, routeVideoId]);
   const loadDetail = useCallback(
     async (videoId: string) => {
-      setDetailError("");
+      if (videoId !== selection.current.routeVideoId || admin !== selection.current.admin) return;
+      pending.current?.abort();
+      const request = new AbortController();
+      pending.current = request;
       try {
-        const data = await getVideoDetails({ admin, videoId });
+        const data = await getVideoDetails({ admin, videoId, signal: request.signal });
+        if (
+          request.signal.aborted ||
+          videoId !== selection.current.routeVideoId ||
+          admin !== selection.current.admin
+        )
+          return;
         setDetail(data);
+        setDetailError("");
       } catch (err) {
-        setDetailError(requestErrorMessage(err, "Could not load video details."));
+        if (!request.signal.aborted)
+          setDetailError(requestErrorMessage(err, "Could not load video details."));
+      } finally {
+        if (pending.current === request) pending.current = null;
       }
     },
     [admin],
   );
 
   useEffect(() => {
-    if (!routeVideoId) {
-      setDetail(null);
-      return;
-    }
-
-    let active = true;
+    setDetail(null);
     setDetailError("");
-    getVideoDetails({ admin, videoId: routeVideoId })
-      .then((data) => {
-        if (active) setDetail(data);
-      })
-      .catch((err) => {
-        if (active) {
-          setDetail(null);
-          setDetailError(requestErrorMessage(err, "Could not load video details."));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [admin, routeVideoId]);
+    if (routeVideoId) void loadDetail(routeVideoId);
+    return () => pending.current?.abort();
+  }, [loadDetail, routeVideoId]);
 
   useEffect(() => {
-    if (!activeDetailId || !isActiveStatus(activeDetailStatus)) return undefined;
-    const interval = setInterval(async () => {
-      try {
-        const data = await getVideoDetails({ admin, videoId: activeDetailId });
-        setDetail(data);
-        setDetailError("");
-      } catch (err) {
-        setDetailError(requestErrorMessage(err, "Could not refresh video details."));
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [activeDetailId, activeDetailStatus, admin]);
+    if (!detail || detail.id !== routeVideoId || !isActiveStatus(detail.status)) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!pending.current) await loadDetail(detail.id);
+      if (active) timer = setTimeout(poll, 5000);
+    };
+    timer = setTimeout(poll, 5000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [detail, routeVideoId, loadDetail]);
 
-  return { detail, setDetail, detailError, loadDetail };
+  const setSelectedDetail = useCallback(
+    (next: VideoDetail | null) => {
+      if (
+        !next ||
+        (selection.current.admin === admin && selection.current.routeVideoId === next.id)
+      )
+        setDetail(next);
+    },
+    [admin],
+  );
+  return { detail, setDetail: setSelectedDetail, detailError, loadDetail };
 }
 
 /** Admin portable-catalog addresses: load, republish, and copy-to-clipboard. */
@@ -116,34 +145,83 @@ export function useCatalogs(admin: boolean) {
   const [catalogCopied, setCatalogCopied] = useState("");
   const [catalogError, setCatalogError] = useState("");
 
+  const pending = useRef<AbortController | null>(null);
   const loadCatalogs = useCallback(async () => {
     if (!admin) return;
+    pending.current?.abort();
+    const request = new AbortController();
+    pending.current = request;
     try {
-      const data = await getAdminCatalogs();
-      setCatalogs(data);
-      setCatalogError("");
+      const data = await getAdminCatalogs(request.signal);
+      if (!request.signal.aborted) {
+        setCatalogs(data);
+        setCatalogError("");
+      }
     } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Could not load catalog addresses."));
+      if (!request.signal.aborted)
+        setCatalogError(requestErrorMessage(err, "Could not load catalog addresses."));
+    } finally {
+      if (pending.current === request) pending.current = null;
     }
   }, [admin]);
 
   useEffect(() => {
-    loadCatalogs();
-  }, [loadCatalogs]);
+    setCatalogs(null);
+    if (!admin) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!pending.current) await loadCatalogs();
+      if (active) timer = setTimeout(poll, 5000);
+    };
+    void poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      pending.current?.abort();
+    };
+  }, [admin, loadCatalogs]);
 
   const republishCatalogs = useCallback(async () => {
     setCatalogPublishing(true);
     setCatalogError("");
     setCatalogCopied("");
     try {
-      const data = await publishAdminCatalogs();
-      setCatalogs(data);
+      await publishAdminCatalogs();
+      await loadCatalogs();
     } catch (err) {
-      setCatalogError(requestErrorMessage(err, "Catalog publish failed."));
+      setCatalogError(requestErrorMessage(err, "Catalog quote failed."));
     } finally {
       setCatalogPublishing(false);
     }
-  }, []);
+  }, [loadCatalogs]);
+
+  const approveCatalogs = useCallback(async () => {
+    if (catalogs?.publication?.state !== "draft") return;
+    setCatalogPublishing(true);
+    setCatalogError("");
+    try {
+      await approveAdminCatalogs(catalogs.publication.approval);
+      await loadCatalogs();
+    } catch (err) {
+      setCatalogError(requestErrorMessage(err, "Catalog approval failed."));
+    } finally {
+      setCatalogPublishing(false);
+    }
+  }, [catalogs, loadCatalogs]);
+
+  const resumeCatalogs = useCallback(async () => {
+    setCatalogPublishing(true);
+    setCatalogError("");
+    try {
+      await resumeAdminCatalogs();
+      await loadCatalogs();
+    } catch (err) {
+      setCatalogError(requestErrorMessage(err, "Catalog recovery remains paused."));
+    } finally {
+      setCatalogPublishing(false);
+    }
+  }, [loadCatalogs]);
 
   const copyAddress = useCallback(async (label: string, address?: string | null) => {
     if (!address) return;
@@ -162,6 +240,8 @@ export function useCatalogs(admin: boolean) {
     catalogError,
     loadCatalogs,
     republishCatalogs,
+    approveCatalogs,
+    resumeCatalogs,
     copyAddress,
   };
 }
@@ -204,11 +284,14 @@ export function useVideoActions({
   );
 
   const approveVideo = useCallback(
-    async (videoId: string) => {
+    async (
+      videoId: string,
+      approval: { quote_id: string; max_storage_atto: string; max_gas_wei: string },
+    ) => {
       setApproving(videoId);
       setActionError("");
       try {
-        const data = await approveVideoUpload(videoId);
+        const data = await approveVideoUpload(videoId, approval);
         setDetail(data);
         await load();
         await loadCatalogs();
@@ -221,6 +304,32 @@ export function useVideoActions({
       }
     },
     [load, loadCatalogs, setDetail],
+  );
+
+  const requoteVideo = useCallback(
+    async (videoId: string) => {
+      setActionError("");
+      try {
+        setDetail(await requoteVideoUpload(videoId));
+        await load();
+      } catch (err) {
+        setActionError(requestErrorMessage(err, "Could not regenerate quote."));
+      }
+    },
+    [load, setDetail],
+  );
+
+  const resumeVideo = useCallback(
+    async (videoId: string) => {
+      setActionError("");
+      try {
+        setDetail(await resumeVideoUpload(videoId));
+        await load();
+      } catch (err) {
+        setActionError(requestErrorMessage(err, "Could not resume the approved upload."));
+      }
+    },
+    [load, setDetail],
   );
 
   const updateVisibility = useCallback(
@@ -269,6 +378,8 @@ export function useVideoActions({
     setActionError,
     deleteVideo,
     approveVideo,
+    requoteVideo,
+    resumeVideo,
     updateVisibility,
     updatePublication,
   };

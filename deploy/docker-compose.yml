@@ -14,7 +14,11 @@ services:
       - |
         mkdir -p /var/lib/autvid/processing /var/lib/autvid/catalog
         chown -R 1000:1000 /var/lib/autvid
-        chmod -R u+rwX,g+rwX,o+rX /var/lib/autvid
+        chmod 700 /var/lib/autvid /var/lib/autvid/processing
+        chmod 755 /var/lib/autvid/catalog
+        for file in /var/lib/autvid/autvid.sqlite3 /var/lib/autvid/autvid.sqlite3-wal /var/lib/autvid/autvid.sqlite3-shm; do
+          if [ -f "$$file" ]; then chmod 600 "$$file"; fi
+        done
     volumes:
       - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid
     security_opt:
@@ -55,12 +59,12 @@ services:
       ANTD_UPLOAD_TIMEOUT_SECONDS: "${ANTD_UPLOAD_TIMEOUT_SECONDS:-120}"
       ANTD_QUOTE_CONCURRENCY: "${ANTD_QUOTE_CONCURRENCY:-2}"
       ANTD_UPLOAD_CONCURRENCY: "${ANTD_UPLOAD_CONCURRENCY:-4}"
-      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-true}"
+      ANTD_APPROVE_ON_STARTUP: "${ANTD_APPROVE_ON_STARTUP:-false}"
       ANTD_REQUIRE_COST_READY: "${ANTD_REQUIRE_COST_READY:-false}"
       ANTD_DIRECT_UPLOAD_MAX_BYTES: "${ANTD_DIRECT_UPLOAD_MAX_BYTES:-16777216}"
       ADMIN_JOB_WORKERS: "${ADMIN_JOB_WORKERS:-1}"
       ADMIN_JOB_POLL_INTERVAL_SECONDS: "${ADMIN_JOB_POLL_INTERVAL_SECONDS:-2}"
-      ADMIN_JOB_LEASE_SECONDS: "${ADMIN_JOB_LEASE_SECONDS:-43200}"
+      ADMIN_JOB_LEASE_SECONDS: "${ADMIN_JOB_LEASE_SECONDS:-120}"
       ADMIN_JOB_MAX_ATTEMPTS: "${ADMIN_JOB_MAX_ATTEMPTS:-3}"
       CATALOG_PUBLISH_JOB_MAX_ATTEMPTS: "${CATALOG_PUBLISH_JOB_MAX_ATTEMPTS:-12}"
       UPLOAD_MAX_FILE_BYTES: "${UPLOAD_MAX_FILE_BYTES:-21474836480}"
@@ -86,6 +90,7 @@ services:
       CATALOG_STATE_PATH: "/var/lib/autvid/catalog/catalog.json"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_ADMIN_PORT: "8000"
+      RUST_ADMIN_BIND_ADDRESS: "0.0.0.0"
       RUST_LOG: "info,sqlx=warn,hyper=warn,tower_http=info"
       UPLOAD_TEMP_DIR: "/var/lib/autvid/processing"
       TMPDIR: "/var/lib/autvid/processing"
@@ -122,8 +127,8 @@ services:
     container_name: rust_stream
     environment:
       ANTD_URL: "${ANTD_URL:-http://antd:8082}"
-      ANTD_INTERNAL_TOKEN: "${ANTD_INTERNAL_TOKEN:-}"
-      ANTD_INTERNAL_TOKEN_FILE: "${ANTD_INTERNAL_TOKEN_FILE:-}"
+      ANTD_INTERNAL_TOKEN: "${ANTD_READ_TOKEN:-dev-read-token}"
+      ANTD_INTERNAL_TOKEN_FILE: "${ANTD_READ_TOKEN_FILE:-}"
       PUBLISHED_CATALOG_ADDRESS: "${PUBLISHED_CATALOG_ADDRESS:-}"
       CATALOG_ADDRESS: "${CATALOG_ADDRESS:-}"
       CATALOG_STATE_PATH: "/var/lib/autvid/catalog/catalog.json"
@@ -133,6 +138,7 @@ services:
       STREAM_SEGMENT_CACHE_MAX_BYTES: "${STREAM_SEGMENT_CACHE_MAX_BYTES:-67108864}"
       STREAM_REQUEST_TIMEOUT_SECONDS: "${STREAM_REQUEST_TIMEOUT_SECONDS:-60}"
       RUST_STREAM_PORT: "8081"
+      RUST_STREAM_BIND_ADDRESS: "0.0.0.0"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}"
       RUST_LOG: "info,sqlx=warn,hyper=warn,tower_http=info"
     depends_on:
@@ -143,7 +149,7 @@ services:
     expose:
       - "8081"
     volumes:
-      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid:ro
+      - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}/catalog:/var/lib/autvid/catalog:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/rust_stream", "--healthcheck", "127.0.0.1:8081", "/livez"]
       interval: 10s

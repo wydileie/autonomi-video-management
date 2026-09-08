@@ -54,13 +54,10 @@ pub(super) async fn wallet_balance(
     }))
 }
 
-pub(super) async fn wallet_approve(
-    State(state): State<AppState>,
-) -> Result<Json<WalletApproveResponse>, ApiError> {
-    state
-        .client
-        .approve_token_spend()
-        .await
-        .map_err(|err| ApiError::from_autonomi_message(err.to_string()))?;
-    Ok(Json(WalletApproveResponse { approved: true }))
+pub(super) async fn wallet_approve() -> Result<Json<WalletApproveResponse>, ApiError> {
+    Err(ApiError::with_code(
+        axum::http::StatusCode::CONFLICT,
+        "APPROVAL_REQUIRED",
+        "Unlimited token allowances are disabled. Approve a content-bound storage and gas budget.",
+    ))
 }

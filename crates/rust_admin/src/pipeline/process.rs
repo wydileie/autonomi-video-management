@@ -3,7 +3,7 @@ use std::{fs, path::Path as FsPath};
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 use serde_json::json;
-use sqlx::{QueryBuilder, Row, Sqlite};
+use sqlx::{QueryBuilder, Sqlite};
 use tracing::{info, instrument};
 use uuid::Uuid;
 
@@ -33,11 +33,11 @@ pub(crate) async fn process_video_inner(
 ) -> Result<(), ApiError> {
     let video_uuid = parse_video_uuid(video_id)?;
     if reset_existing {
-        sqlx::query("DELETE FROM video_variants WHERE video_id=$1")
-            .bind(video_uuid)
-            .execute(&state.pool)
-            .await
-            .map_err(db_error)?;
+        crate::db::execute_fenced(
+            state,
+            sqlx::query("DELETE FROM video_variants WHERE video_id=$1").bind(video_uuid),
+        )
+        .await?;
         for resolution in resolutions {
             let _ = fs::remove_dir_all(job_dir.join(resolution));
         }
@@ -72,13 +72,13 @@ pub(crate) async fn process_video_inner(
 
     for rendition in renditions {
         let variant_id = Uuid::new_v4();
-        let variant_row = sqlx::query(
+        let mut tx = crate::db::begin_fenced(state).await?;
+        sqlx::query(
             r#"
             INSERT INTO video_variants
                 (id, video_id, resolution, width, height, video_bitrate, audio_bitrate,
                  video_codec, segment_container, segment_duration, total_duration, segment_count)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            RETURNING id
         "#,
         )
         .bind(variant_id)
@@ -93,38 +93,36 @@ pub(crate) async fn process_video_inner(
         .bind(state.config.hls_segment_duration)
         .bind(total_duration)
         .bind(rendition.segments.len() as i32)
-        .fetch_one(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_error)?;
-        let variant_id: Uuid = variant_row.try_get("id").map_err(db_error)?;
 
-        let mut builder = QueryBuilder::<Sqlite>::new(
-            r#"
+        for segments in rendition.segments.chunks(500) {
+            let mut builder = QueryBuilder::<Sqlite>::new(
+                r#"
             INSERT INTO video_segments
                 (id, variant_id, segment_index, duration, byte_size, local_path)
             "#,
-        );
-        builder.push_values(rendition.segments.iter(), |mut row, segment| {
-            row.push_bind(Uuid::new_v4())
-                .push_bind(variant_id)
-                .push_bind(segment.segment_index)
-                .push_bind(segment.duration)
-                .push_bind(segment.byte_size)
-                .push_bind(segment.local_path.to_string_lossy().to_string());
-        });
-        builder.push(
-            r#"
+            );
+            builder.push_values(segments.iter(), |mut row, segment| {
+                row.push_bind(Uuid::new_v4())
+                    .push_bind(variant_id)
+                    .push_bind(segment.segment_index)
+                    .push_bind(segment.duration)
+                    .push_bind(segment.byte_size)
+                    .push_bind(segment.local_path.to_string_lossy().to_string());
+            });
+            builder.push(
+                r#"
             ON CONFLICT (variant_id, segment_index) DO UPDATE
               SET duration=EXCLUDED.duration,
                   byte_size=EXCLUDED.byte_size,
                   local_path=EXCLUDED.local_path
             "#,
-        );
-        builder
-            .build()
-            .execute(&state.pool)
-            .await
-            .map_err(db_error)?;
+            );
+            builder.build().execute(&mut *tx).await.map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)?;
     }
 
     let mut final_quote = build_final_upload_quote(state, video_id).await?;

@@ -56,9 +56,11 @@ test("login, upload, approve, publish, and play an HLS segment", async ({ page }
     const [latest] = await videos.json();
     videoId = latest?.id || "";
     if (latest?.status === "awaiting_approval") {
-      await page.request.post(`/api/admin/videos/${videoId}/approve`, {
-        headers: await csrfHeader(page),
-      });
+      await page.goto(`/manage/${videoId}`);
+      await expect(page.getByText("Approved spending limits")).toBeVisible();
+      await expect(page.getByText(/^Storage cap:/).first()).toBeVisible();
+      await expect(page.getByText(/^Gas cap:/).first()).toBeVisible();
+      await page.getByRole("button", { name: "Approve storage and gas caps", exact: true }).click();
     }
     if (latest?.status === "ready" || latest?.status === "published") {
       const detail = await page.request.get(`/api/admin/videos/${videoId}`);
@@ -70,8 +72,32 @@ test("login, upload, approve, publish, and play an HLS segment", async ({ page }
           headers: await csrfHeader(page),
         });
       }
+      const catalogDeadline = Date.now() + pipelineTimeoutMs;
+      while (!body.is_public && Date.now() < catalogDeadline) {
+        const catalogs = await (await page.request.get("/api/admin/catalogs")).json();
+        if (!catalogs.preparing && catalogs.publication?.state === "draft") {
+          const approval = catalogs.publication.approval;
+          const result = await page.request.post("/api/admin/catalogs/approve", {
+            headers: await csrfHeader(page),
+            data: {
+              quote_id: approval.quote_id,
+              max_storage_atto: approval.max_storage_atto,
+              max_gas_wei: approval.max_gas_wei,
+            },
+          });
+          expect(result.ok()).toBeTruthy();
+        }
+        if (!catalogs.preparing && catalogs.publication?.state === "complete") break;
+        expect(["payment_recovery_required", "approval_required"]).not.toContain(
+          catalogs.publication?.state,
+        );
+        await page.waitForTimeout(1_000);
+      }
       break;
     }
+    expect(["error", "expired", "payment_recovery_required", "approval_required"]).not.toContain(
+      latest?.status,
+    );
     await page.waitForTimeout(5_000);
   }
 

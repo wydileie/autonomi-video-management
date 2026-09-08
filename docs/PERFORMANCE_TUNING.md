@@ -101,3 +101,38 @@ The production Compose overlay sets resource ceilings for the main services:
 | `rust_stream` | 1 CPU / 512 MB |
 | `nginx` | 0.5 CPU / 256 MB |
 | `apps/web` | 0.5 CPU / 256 MB |
+
+## September 8, 2026 modernization measurements
+
+Measured on a local ARM64 Docker devnet while other builds were running. These
+are observations, not a controlled before/after speedup or public-network SLA.
+
+| Original | Prepare quote | Upload + verify | First raw download | Repeat raw download | Transactions | Retry extra transactions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 MiB | 0.82s | 3.07s | 0.14s | 0.12s | 2 | 0 |
+| 1 GiB + 4 KiB | 73.11s | 93.60s | 3.69s | 3.37s | 3 | 0 |
+
+The large upload stored and verified all 261 chunks, spanning two Merkle payment
+batches plus bounded allowance. Both streamed downloads matched source SHA-256.
+Gateway Linux VmHWM was 2,020,236 KiB (about 1.93 GiB) during the large test; the
+combined gateway/devnet container peaked around 3.74 GiB. Upstream preparation
+and storage use bounded waves, but these measurements show substantial memory
+headroom is still necessary. Concurrent large operations need further load tests.
+
+After restarting only the streaming service, playlist latency was
+28.96 ms, first-segment latency 5.83 ms,
+and the median of ten warm segment requests was 0.51 ms.
+Gateway/network caches remained warm. Catalog construction uses two batched
+queries in one read snapshot, independent of video count; this is a code-level
+query count, not a production database trace measurement.
+
+Reproduce with the local test stack (funded test chain only):
+
+```bash
+ANTD_INTERNAL_TOKEN=dev-internal-token python3 scripts/benchmark-gateway.py --url http://127.0.0.1:8082 --bytes 1073745920
+python3 scripts/benchmark-playback.py --url http://127.0.0.1:8080
+```
+
+Use the actual published ports for your stack. Capture gateway VmHWM and
+container `memory.peak` alongside the JSON output. Keep workload, peer count,
+cache state, hardware, and other build activity constant for comparisons.

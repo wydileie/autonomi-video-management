@@ -86,3 +86,17 @@ secrets:
 - `APPLE_TEAM_ID`
 
 Do not publish unsigned macOS artifacts as a public beta.
+
+## Dependency and bundle verification
+
+Desktop Rust and npm dependencies have separate committed lockfiles and CI
+advisory checks. Release media archives require both a URL and its SHA-256 in
+`DESKTOP_MEDIA_TOOLS_{LINUX,MACOS}_{URL,SHA256}`. Extraction accepts only regular
+root-level `ffmpeg` and `ffprobe` files, checks size and hash, and rejects links
+and traversal paths. Release staging rejects non-system dynamic libraries.
+`AUTVID_ALLOW_SYSTEM_FFMPEG=1` and `AUTVID_ALLOW_DYNAMIC_FFMPEG=1` are local
+build exceptions and do not establish clean-machine distributability.
+
+The shell applies a CSP and permits the exact Tauri-to-loopback document
+navigation needed to open the application. Cross-site API and stream requests
+remain blocked. Native configuration and generated credentials are private.

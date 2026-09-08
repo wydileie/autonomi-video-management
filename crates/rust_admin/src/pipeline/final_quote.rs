@@ -1,350 +1,301 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
-
-use axum::http::StatusCode;
-use serde_json::{json, Value};
-use sqlx::Row;
-use tokio::{fs as tokio_fs, sync::Semaphore, task::JoinSet};
-use tracing::{info, instrument};
-use uuid::Uuid;
-
+//! Quotes are prepared from actual content. Frozen metadata makes the reviewed
+//! digest reproducible without depending on upload completion times or prices.
 use crate::{
+    catalog::db_document::{
+        build_all_catalog_from_db, build_catalog_entry_from_db, build_manifest_from_db,
+    },
     db::{db_error, parse_video_uuid},
     errors::ApiError,
     media::assert_under,
-    models::QuoteValue,
-    quote::{parse_cost_u128, quote_data_size},
+    models::{ManifestOriginalFile, PublicCatalogDocument, VideoManifestDocument},
     state::AppState,
-    MIN_ANTD_SELF_ENCRYPTION_BYTES,
 };
+use autvid_common::payments::{
+    amount, content_digest, ApprovedContent, ContentQuote, PaymentApproval,
+};
+use axum::http::StatusCode;
+use chrono::Utc;
+use futures_util::{stream, StreamExt, TryStreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
+use std::path::PathBuf;
+use uuid::Uuid;
 
-#[instrument(skip(state), fields(video_id = %video_id))]
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct PlannedFile {
+    pub path: PathBuf,
+    pub variant_id: Option<Uuid>,
+    pub segment_index: Option<i32>,
+    pub quote: ContentQuote,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct UploadPlan {
+    pub approval: PaymentApproval,
+    pub files: Vec<PlannedFile>,
+    pub manifest: VideoManifestDocument,
+    pub manifest_quote: ContentQuote,
+    pub catalog: PublicCatalogDocument,
+    pub catalog_quote: ContentQuote,
+    pub all_catalog: PublicCatalogDocument,
+    pub all_catalog_quote: ContentQuote,
+    pub base_catalog_digest: String,
+    pub base_revision: i64,
+    pub publish: bool,
+}
+
+pub(crate) fn payment_api(error: impl std::fmt::Display) -> ApiError {
+    ApiError::new(StatusCode::CONFLICT, error.to_string())
+}
+
+pub(crate) fn catalog_digest(
+    catalog: &PublicCatalogDocument,
+    exclude: Option<&str>,
+) -> Result<String, ApiError> {
+    let mut videos = catalog
+        .videos
+        .iter()
+        .filter(|v| Some(v.id.as_str()) != exclude)
+        .cloned()
+        .collect::<Vec<_>>();
+    videos.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(autvid_common::antd::hex_lower(&Sha256::digest(
+        serde_json::to_vec(&videos).map_err(payment_api)?,
+    )))
+}
+
 pub(crate) async fn build_final_upload_quote(
     state: &AppState,
     video_id: &str,
 ) -> Result<Value, ApiError> {
-    let video_uuid = parse_video_uuid(video_id)?;
-    #[derive(Default)]
-    struct FinalVariantQuote {
-        resolution: String,
-        width: i32,
-        height: i32,
-        segment_count: i64,
-        estimated_bytes: i64,
-        actual_bytes: i64,
-        chunk_count: i64,
-        storage_cost_atto: u128,
-        estimated_gas_cost_wei: u128,
-        payment_mode: String,
-    }
-    struct FinalSegmentQuoteInput {
-        order: usize,
-        variant_id: Uuid,
-        resolution: String,
-        segment_index: i32,
-        width: i32,
-        height: i32,
-        total_duration: Option<f64>,
-        local_path: PathBuf,
-    }
-    struct FinalSegmentQuoteResult {
-        order: usize,
-        variant_id: Uuid,
-        resolution: String,
-        width: i32,
-        height: i32,
-        total_duration: Option<f64>,
-        byte_size: i64,
-        storage_cost: u128,
-        gas_cost: u128,
-        chunk_count: i64,
-        payment_mode: String,
-    }
-
-    let video_row = sqlx::query(
-        r#"
-        SELECT upload_original, job_source_path
-        FROM videos
-        WHERE id=$1
-        "#,
+    let uuid = parse_video_uuid(video_id)?;
+    let video = sqlx::query(
+        "SELECT upload_original, job_source_path, publish_when_ready FROM videos WHERE id=$1",
     )
-    .bind(video_uuid)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(db_error)?
-    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Video not found"))?;
-    let upload_original = video_row.try_get("upload_original").unwrap_or(false);
-    let original_source_path: Option<PathBuf> = video_row
-        .try_get::<Option<String>, _>("job_source_path")
-        .ok()
-        .flatten()
-        .map(PathBuf::from);
-
-    let rows = sqlx::query(
-        r#"
-        SELECT v.id AS variant_id, v.resolution, v.width, v.height, v.total_duration,
-               s.segment_index, s.local_path, s.byte_size
-        FROM video_variants v
-        JOIN video_segments s ON s.variant_id = v.id
-        WHERE v.video_id=$1
-        ORDER BY v.height DESC, s.segment_index
-        "#,
-    )
-    .bind(video_uuid)
-    .fetch_all(&state.pool)
+    .bind(uuid)
+    .fetch_one(&state.pool)
     .await
     .map_err(db_error)?;
-
-    if rows.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "No transcoded segments were found for final quote",
+    let rows = sqlx::query("SELECT s.variant_id,s.segment_index,s.local_path FROM video_segments s JOIN video_variants v ON v.id=s.variant_id WHERE v.video_id=$1 ORDER BY v.height DESC,v.id,s.segment_index")
+        .bind(uuid).fetch_all(&state.pool).await.map_err(db_error)?;
+    if rows.is_empty() || rows.len() > 65_536 {
+        return Err(payment_api("invalid transcoded segment count"));
+    }
+    let mut inputs = Vec::with_capacity(rows.len() + 1);
+    for row in rows {
+        inputs.push((
+            PathBuf::from(row.try_get::<String, _>("local_path").map_err(db_error)?),
+            Some(row.try_get::<Uuid, _>("variant_id").map_err(db_error)?),
+            Some(row.try_get::<i32, _>("segment_index").map_err(db_error)?),
         ));
     }
-
-    let mut inputs = Vec::with_capacity(rows.len());
-    for (order, row) in rows.iter().enumerate() {
-        let local_path: Option<String> = row.try_get("local_path").ok().flatten();
-        let path = local_path.as_deref().map(PathBuf::from).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Transcoded segment is missing from disk",
-            )
-        })?;
-        let path = assert_under(&path, &state.config.upload_temp_dir)?;
-        if !path.exists() {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Transcoded segment is missing from disk: {}",
-                    path.display()
-                ),
-            ));
-        }
-        inputs.push(FinalSegmentQuoteInput {
-            order,
-            variant_id: row.try_get("variant_id").map_err(db_error)?,
-            resolution: row.try_get("resolution").unwrap_or_default(),
-            segment_index: row.try_get("segment_index").unwrap_or_default(),
-            width: row.try_get("width").unwrap_or_default(),
-            height: row.try_get("height").unwrap_or_default(),
-            total_duration: row
-                .try_get::<Option<f64>, _>("total_duration")
-                .ok()
-                .flatten(),
-            local_path: path,
-        });
+    if video
+        .try_get::<bool, _>("upload_original")
+        .map_err(db_error)?
+    {
+        inputs.push((
+            PathBuf::from(
+                video
+                    .try_get::<String, _>("job_source_path")
+                    .map_err(db_error)?,
+            ),
+            None,
+            None,
+        ));
     }
-
-    let quote_started = Instant::now();
-    let semaphore = Arc::new(Semaphore::new(state.config.antd_quote_concurrency));
-    let mut jobs = JoinSet::new();
-    for input in inputs {
-        let antd = state.antd.clone();
-        let semaphore = semaphore.clone();
-        let default_payment_mode = state.config.antd_payment_mode.clone();
-        jobs.spawn(async move {
-            let _permit = semaphore
-                .acquire_owned()
+    let files: Vec<PlannedFile> = stream::iter(inputs)
+        .map(|(path, variant_id, segment_index)| async move {
+            let path = assert_under(&path, &state.config.upload_temp_dir)?;
+            let _permit = state.quote_semaphore.acquire().await.map_err(payment_api)?;
+            let quote = state
+                .antd
+                .file_cost(&path, &state.config.antd_payment_mode)
                 .await
-                .map_err(|err| err.to_string())?;
-            let metadata = tokio_fs::metadata(&input.local_path)
+                .map_err(payment_api)?;
+            let (size, sha) = autvid_common::antd::sha256_file_async(&path)
                 .await
-                .map_err(|err| format!("Could not inspect transcoded segment: {err}"))?;
-            let byte_size = metadata.len();
-            if byte_size < MIN_ANTD_SELF_ENCRYPTION_BYTES as u64 {
-                return Err(format!(
-                    "Transcoded segment is too small to store on Autonomi: {}/{}/segment-{:05} has {} bytes",
-                    input.resolution,
-                    input.variant_id,
-                    input.segment_index,
-                    byte_size
-                ));
+                .map_err(payment_api)?;
+            if size != quote.file_size || sha != quote.content_sha256 {
+                return Err(payment_api("content changed during final quote"));
             }
-            let estimate = antd
-                .data_cost_for_size(byte_size as usize)
-                .await
-                .map_err(|err| {
-                    format!(
-                        "Could not get final Autonomi price quote for {}/segment-{:05} ({} bytes): {err}",
-                        input.resolution, input.segment_index, byte_size
-                    )
-                })?;
-            Ok::<FinalSegmentQuoteResult, String>(FinalSegmentQuoteResult {
-                order: input.order,
-                variant_id: input.variant_id,
-                resolution: input.resolution,
-                width: input.width,
-                height: input.height,
-                total_duration: input.total_duration,
-                byte_size: byte_size as i64,
-                storage_cost: parse_cost_u128(estimate.cost.as_deref()),
-                gas_cost: parse_cost_u128(estimate.estimated_gas_cost_wei.as_deref()),
-                chunk_count: estimate.chunk_count.unwrap_or(0),
-                payment_mode: estimate.payment_mode.unwrap_or(default_payment_mode),
-            })
-        });
-    }
-
-    let mut results = Vec::with_capacity(rows.len());
-    while let Some(joined) = jobs.join_next().await {
-        let result = joined.map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Final quote task failed: {err}"),
-            )
-        })?;
-        results.push(result.map_err(|err| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                format!("Could not get final Autonomi price quote: {err}"),
-            )
-        })?);
-    }
-    results.sort_by_key(|result| result.order);
-    info!(
-        "Final quote for {} checked {} segments in {:.2}s with concurrency={}",
-        video_id,
-        results.len(),
-        quote_started.elapsed().as_secs_f64(),
-        state.config.antd_quote_concurrency
-    );
-
-    let mut variants = Vec::<FinalVariantQuote>::new();
-    let mut variant_indexes = HashMap::<String, usize>::new();
-    let mut quote_cache = HashMap::<i64, QuoteValue>::new();
-    let mut total_storage_cost = 0_u128;
-    let mut total_gas_cost = 0_u128;
-    let mut total_bytes = 0_i64;
-    let mut total_chunks = 0_i64;
-    let mut max_duration = 0.0_f64;
-    let mut original_file_quote = None;
-
-    for result in results {
-        let variant_id = result.variant_id;
-        let variant_key = variant_id.to_string();
-        let index = *variant_indexes.entry(variant_key).or_insert_with(|| {
-            variants.push(FinalVariantQuote {
-                resolution: result.resolution.clone(),
-                width: result.width,
-                height: result.height,
-                payment_mode: result.payment_mode.clone(),
-                ..FinalVariantQuote::default()
-            });
-            variants.len() - 1
-        });
-        let variant = &mut variants[index];
-        variant.segment_count += 1;
-        variant.estimated_bytes += result.byte_size;
-        variant.actual_bytes += result.byte_size;
-        variant.chunk_count += result.chunk_count;
-        variant.storage_cost_atto += result.storage_cost;
-        variant.estimated_gas_cost_wei += result.gas_cost;
-
-        total_storage_cost += result.storage_cost;
-        total_gas_cost += result.gas_cost;
-        total_bytes += result.byte_size;
-        total_chunks += result.chunk_count;
-        if let Some(duration) = result.total_duration {
-            max_duration = max_duration.max(duration);
-        }
-    }
-    let actual_transcoded_bytes = total_bytes;
-
-    if upload_original {
-        let path = original_source_path.ok_or_else(|| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Original source file is missing from disk",
-            )
-        })?;
-        if !path.exists() {
-            return Err(ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Original source file is missing from disk: {}",
-                    path.display()
-                ),
-            ));
-        }
-        let metadata = tokio_fs::metadata(&path).await.map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not inspect original source file: {err}"),
-            )
-        })?;
-        let byte_size = metadata.len() as i64;
-        let quote = quote_data_size(state, byte_size, &mut quote_cache)
-            .await
-            .map_err(|err| {
-                ApiError::new(
-                    err.status,
-                    format!(
-                        "Could not get final Autonomi price quote for original file: {}",
-                        err.detail
-                    ),
-                )
-            })?;
-        let storage_cost = quote.storage_cost_atto;
-        let gas_cost = quote.estimated_gas_cost_wei;
-        let chunk_count = quote.chunk_count;
-        let payment_mode = quote.payment_mode;
-        total_storage_cost += storage_cost;
-        total_gas_cost += gas_cost;
-        total_bytes += byte_size;
-        total_chunks += chunk_count;
-        original_file_quote = Some(json!({
-            "byte_size": byte_size,
-            "chunk_count": chunk_count,
-            "storage_cost_atto": storage_cost.to_string(),
-            "estimated_gas_cost_wei": gas_cost.to_string(),
-            "payment_mode": payment_mode,
-        }));
-    }
-
-    let manifest_bytes = 4096 + (variants.len() as i64 * 1024) + (rows.len() as i64 * 220);
-    let catalog_bytes = 2048 + (variants.len() as i64 * 512);
-    let metadata_quote =
-        quote_data_size(state, manifest_bytes + catalog_bytes, &mut quote_cache).await?;
-
-    total_storage_cost += metadata_quote.storage_cost_atto;
-    total_gas_cost += metadata_quote.estimated_gas_cost_wei;
-    total_bytes += manifest_bytes + catalog_bytes;
-    total_chunks += metadata_quote.chunk_count;
-
-    let variant_values = variants
-        .into_iter()
-        .map(|variant| {
-            json!({
-                "resolution": variant.resolution,
-                "width": variant.width,
-                "height": variant.height,
-                "segment_count": variant.segment_count,
-                "estimated_bytes": variant.estimated_bytes,
-                "actual_bytes": variant.actual_bytes,
-                "chunk_count": variant.chunk_count,
-                "storage_cost_atto": variant.storage_cost_atto.to_string(),
-                "estimated_gas_cost_wei": variant.estimated_gas_cost_wei.to_string(),
-                "payment_mode": variant.payment_mode,
+            Ok::<_, ApiError>(PlannedFile {
+                path,
+                variant_id,
+                segment_index,
+                quote,
             })
         })
-        .collect::<Vec<_>>();
+        .buffered(state.config.antd_quote_concurrency.max(1))
+        .try_collect()
+        .await?;
 
-    Ok(json!({
-        "quote_type": "final",
-        "duration_seconds": max_duration,
-        "segment_duration": state.config.hls_segment_duration,
-        "payment_mode": state.config.antd_payment_mode.clone(),
-        "estimated_bytes": total_bytes,
-        "actual_media_bytes": total_bytes - (manifest_bytes + catalog_bytes),
-        "actual_transcoded_bytes": actual_transcoded_bytes,
-        "segment_count": rows.len(),
-        "chunk_count": total_chunks,
-        "storage_cost_atto": total_storage_cost.to_string(),
-        "estimated_gas_cost_wei": total_gas_cost.to_string(),
-        "metadata_bytes": manifest_bytes + catalog_bytes,
-        "original_file": original_file_quote,
-        "sampled": metadata_quote.sampled,
-        "approval_ttl_seconds": state.config.final_quote_approval_ttl_seconds,
-        "variants": variant_values,
-    }))
+    let mut manifest = build_manifest_from_db(state, video_id, true).await?;
+    manifest.updated_at = Utc::now().to_rfc3339();
+    for file in &files {
+        if let Some(id) = file.variant_id {
+            let segment = manifest
+                .variants
+                .iter_mut()
+                .find(|v| v.id == id.to_string())
+                .and_then(|v| {
+                    v.segments
+                        .iter_mut()
+                        .find(|s| Some(s.segment_index) == file.segment_index)
+                })
+                .ok_or_else(|| payment_api("quoted segment is absent from manifest"))?;
+            segment.autonomi_address = Some(file.quote.address.clone());
+            segment.byte_size = Some(i64::try_from(file.quote.file_size).map_err(payment_api)?);
+        } else {
+            manifest.original_file = Some(ManifestOriginalFile {
+                autonomi_address: file.quote.address.clone(),
+                byte_size: Some(i64::try_from(file.quote.file_size).map_err(payment_api)?),
+                autonomi_cost_atto: None,
+                payment_mode: Some(file.quote.payment_mode.clone()),
+            });
+        }
+    }
+    let metadata_mode = &state.config.antd_metadata_payment_mode;
+    let manifest_quote = state
+        .antd
+        .content_cost(
+            &serde_json::to_vec(&manifest).map_err(payment_api)?,
+            metadata_mode,
+        )
+        .await
+        .map_err(payment_api)?;
+    let base_revision = catalog_revision(state).await?;
+    let mut all_catalog = build_all_catalog_from_db(state).await?;
+    let base_catalog_digest = catalog_digest(&all_catalog, Some(video_id))?;
+    all_catalog.videos.retain(|v| v.id != video_id);
+    let publish: bool = video.try_get("publish_when_ready").map_err(db_error)?;
+    let mut entry =
+        build_catalog_entry_from_db(state, video_id, manifest_quote.address.clone()).await?;
+    entry.is_public = publish;
+    entry.updated_at = manifest.updated_at.clone();
+    all_catalog.videos.insert(0, entry);
+    let mut catalog = all_catalog.clone();
+    catalog.catalog_kind = "published".into();
+    catalog.videos.retain(|v| v.is_public);
+    let catalog_quote = state
+        .antd
+        .content_cost(
+            &serde_json::to_vec(&catalog).map_err(payment_api)?,
+            metadata_mode,
+        )
+        .await
+        .map_err(payment_api)?;
+    let all_catalog_quote = state
+        .antd
+        .content_cost(
+            &serde_json::to_vec(&all_catalog).map_err(payment_api)?,
+            metadata_mode,
+        )
+        .await
+        .map_err(payment_api)?;
+    let quotes = files
+        .iter()
+        .map(|f| &f.quote)
+        .chain([&manifest_quote, &catalog_quote, &all_catalog_quote])
+        .collect::<Vec<_>>();
+    let network = manifest_quote.network.clone();
+    if quotes.iter().any(|q| q.network != network) {
+        return Err(payment_api("network changed during quote"));
+    }
+    let contents = quotes
+        .iter()
+        .map(|q| ApprovedContent {
+            sha256: q.content_sha256.clone(),
+            byte_size: q.file_size,
+            payment_mode: q.payment_mode.clone(),
+        })
+        .collect::<Vec<_>>();
+    let total = |gas: bool| -> Result<u128, ApiError> {
+        quotes.iter().try_fold(0u128, |sum, q| {
+            sum.checked_add(
+                amount(if gas {
+                    &q.estimated_gas_cost_wei
+                } else {
+                    &q.cost
+                })
+                .map_err(payment_api)?,
+            )
+            .ok_or_else(|| payment_api("quote sum overflow"))
+        })
+    };
+    let storage = total(false)?.to_string();
+    let gas = total(true)?.to_string();
+    let approval = PaymentApproval {
+        quote_id: Uuid::new_v4().to_string(),
+        content_digest: content_digest(&network, &contents).map_err(payment_api)?,
+        network,
+        expires_at: Utc::now().timestamp()
+            + state.config.final_quote_approval_ttl_seconds.min(86_400),
+        max_storage_atto: storage.clone(),
+        max_gas_wei: gas.clone(),
+        contents,
+    };
+    approval
+        .validate(Utc::now().timestamp(), &approval.network)
+        .map_err(payment_api)?;
+    let variants = manifest.variants.iter().map(|v| {
+        let quoted = files.iter().filter(|f| f.variant_id.is_some_and(|id| id.to_string()==v.id)).map(|f| &f.quote).collect::<Vec<_>>();
+        let storage = quoted.iter().try_fold(0u128, |sum,q| sum.checked_add(amount(&q.cost).map_err(payment_api)?).ok_or_else(|| payment_api("variant cost overflow")))?;
+        let gas = quoted.iter().try_fold(0u128, |sum,q| sum.checked_add(amount(&q.estimated_gas_cost_wei).map_err(payment_api)?).ok_or_else(|| payment_api("variant gas overflow")))?;
+        Ok::<_,ApiError>(json!({"resolution":v.resolution,"width":v.width,"height":v.height,"segment_count":v.segment_count,"estimated_bytes":quoted.iter().map(|q|q.file_size).sum::<u64>(),"actual_bytes":quoted.iter().map(|q|q.file_size).sum::<u64>(),"chunk_count":quoted.iter().map(|q|q.chunk_count).sum::<usize>(),"storage_cost_atto":storage.to_string(),"estimated_gas_cost_wei":gas.to_string(),"payment_mode":state.config.antd_payment_mode}))
+    }).collect::<Result<Vec<_>,_>>()?;
+    let media_bytes = files.iter().map(|f| f.quote.file_size).sum::<u64>();
+    let metadata_bytes =
+        manifest_quote.file_size + catalog_quote.file_size + all_catalog_quote.file_size;
+    let original = files.iter().find(|f|f.variant_id.is_none()).map(|f|json!({"byte_size":f.quote.file_size,"chunk_count":f.quote.chunk_count,"storage_cost_atto":f.quote.cost,"estimated_gas_cost_wei":f.quote.estimated_gas_cost_wei,"payment_mode":f.quote.payment_mode}));
+    if catalog_revision(state).await? != base_revision {
+        return Err(payment_api(
+            "Catalog changed during quoting; retry quote preparation",
+        ));
+    }
+    let plan = UploadPlan {
+        approval: approval.clone(),
+        files,
+        manifest,
+        manifest_quote,
+        catalog,
+        catalog_quote,
+        all_catalog,
+        all_catalog_quote,
+        base_catalog_digest,
+        base_revision,
+        publish,
+    };
+    Ok(
+        json!({"quote_type":"final", "quote_id":approval.quote_id,"approval":approval,"plan":plan,
+        "duration_seconds":plan.manifest.variants.iter().filter_map(|v|v.total_duration).fold(0.0,f64::max),
+        "segment_duration":state.config.hls_segment_duration,"payment_mode":state.config.antd_payment_mode,
+        "estimated_bytes":media_bytes+metadata_bytes,"actual_media_bytes":media_bytes,"actual_transcoded_bytes":media_bytes-original.as_ref().and_then(|o|o["byte_size"].as_u64()).unwrap_or(0),"metadata_bytes":metadata_bytes,
+        "segment_count":plan.files.iter().filter(|f|f.variant_id.is_some()).count(),"chunk_count":plan.files.iter().map(|f|f.quote.chunk_count).sum::<usize>()+plan.manifest_quote.chunk_count+plan.catalog_quote.chunk_count+plan.all_catalog_quote.chunk_count,
+        "storage_cost_atto":storage,"estimated_gas_cost_wei":gas,"original_file":original,"sampled":false,
+        "confidence":"actual_content_storage_upper_bound","gas_confidence":"aggregate_signing_cap","approval_ttl_seconds":state.config.final_quote_approval_ttl_seconds,"variants":variants}),
+    )
+}
+
+pub(crate) async fn catalog_revision(state: &AppState) -> Result<i64, ApiError> {
+    sqlx::query_scalar("SELECT value FROM catalog_generation WHERE singleton=1")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(db_error)
+}
+pub(crate) async fn assert_catalog_revision(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    expected: i64,
+) -> Result<(), ApiError> {
+    let actual: i64 = sqlx::query_scalar("SELECT value FROM catalog_generation WHERE singleton=1")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db_error)?;
+    if actual != expected {
+        return Err(payment_api(
+            "approval_required: catalog changed; regenerate the quote",
+        ));
+    }
+    Ok(())
 }

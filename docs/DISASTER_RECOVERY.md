@@ -3,12 +3,13 @@
 Ready video bytes and full playback manifests are stored on Autonomi. Local
 recovery focuses on the app-data directory:
 
+- `antd-payments.sqlite3`: gateway approvals, signing reservations, transactions, and receipts.
 - `autvid.sqlite3`: video rows, job state, auth sessions, and local metadata.
 - `catalog/catalog.json`: latest published and all-videos catalog addresses and snapshots.
 - `processing/`: only needed for uploads that are still processing, awaiting approval, or uploading.
 - `.env.production`: recreate from `.env.production.example` and restore real secrets from a secret manager.
 
-The backup sidecar and `scripts/backup-production.sh` capture SQLite and catalog
+The backup sidecar and `scripts/backup-production.sh` capture both SQLite databases and catalog
 state. See `docs/BACKUP_SIDECAR.md` for scheduled backups.
 
 ## Restore To A New Host
@@ -21,6 +22,7 @@ state. See `docs/BACKUP_SIDECAR.md` for scheduled backups.
 6. Restore the backup:
 
 ```bash
+ANTD_PAYMENT_DB_PATH=/srv/autonomi-video-management/gateway/antd-payments.sqlite3 \
 scripts/restore-production.sh \
   --backup-dir /srv/autonomi-video-management/backups/autvid-YYYYMMDDTHHMMSSZ \
   --yes
@@ -53,3 +55,10 @@ ALL_CATALOG_ADDRESS=<all-videos-catalog-address>
 This restores portable playback discovery for viewer applications that know the
 addresses. It does not recover admin auth sessions, approval state, or job
 history.
+
+The journal path must target the gateway's actual persistent volume or native
+app-data file. For Docker named volumes, mount the volume in a maintenance
+container to restore the journal while the gateway is stopped. Never restore
+only admin state and silently create a fresh journal for the same wallet.
+The restore sets a signing pause pending reconciliation; read/playback checks
+can run while writes remain paused. See `PAYMENT_RECOVERY.md`.

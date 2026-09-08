@@ -24,8 +24,8 @@ export default function FinalQuotePanel({
   return (
     <div className="quote-panel final-quote-panel">
       <div className="quote-main">
-        <span className="meta-label">Final Autonomi quote</span>
-        <strong>{formatAttoTokens(quote.storage_cost_atto)}</strong>
+        <span className="meta-label">Approved spending limits</span>
+        <strong>Storage cap: {formatAttoTokens(quote.storage_cost_atto)}</strong>
         <p>
           {originalBytes
             ? `${formatBytes(transcodedBytes)} transcoded media plus ${formatBytes(originalBytes)} original source`
@@ -35,13 +35,22 @@ export default function FinalQuotePanel({
         </p>
       </div>
       <div className="quote-breakdown">
-        <span>{formatWei(quote.estimated_gas_cost_wei)}</span>
-        <span>{formatBytes(quote.metadata_bytes || 0)} metadata estimate</span>
+        <span>Gas cap: {formatWei(quote.estimated_gas_cost_wei)}</span>
+        <span>{formatBytes(quote.metadata_bytes || 0)} manifest and catalogs</span>
         {originalBytes > 0 && <span>{formatBytes(originalBytes)} original source</span>}
         <span>{quote.payment_mode} payment mode</span>
       </div>
-      <button type="button" className="approve-action" onClick={onApprove} disabled={approving}>
-        {approving ? "Approving..." : "Approve upload"}
+      <p className="muted">
+        Payments stop if content changes or either cap is exhausted. Network:{" "}
+        {quote.approval?.network || "Quote must be regenerated"}.
+      </p>
+      <button
+        type="button"
+        className="approve-action"
+        onClick={onApprove}
+        disabled={approving || !quote.approval}
+      >
+        {approving ? "Approving..." : "Approve storage and gas caps"}
       </button>
     </div>
   );

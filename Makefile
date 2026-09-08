@@ -1,4 +1,4 @@
-.PHONY: help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust fmt-react deny-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart e2e-local smoke-local-large-original audit-rust audit-react audit-trivy audit ci
+.PHONY: check-runtime help install-react install-desktop test test-rust test-rust-workspace test-rust-stream test-rust-admin test-rust-db test-antd clippy-rust clippy-rust-workspace clippy-rust-stream clippy-rust-admin clippy-antd fmt-rust fmt-react deny-rust compose-config up-local up-local-full up-prod down-local down-prod logs logs-prod logs-monitoring devbench-build devbench-up devbench-down devbench-restart devbench-status devbench-shell devbench-exec backup-production restore-production lint-react test-react coverage-react build-react stage-tauri-sidecars build-tauri smoke-local smoke-local-restart e2e-local smoke-local-large-original audit-rust audit-react audit-trivy audit ci
 
 NPM ?= npm
 CARGO ?= cargo
@@ -10,7 +10,7 @@ LOCAL_MONITORING_COMPOSE_FILES = $(LOCAL_COMPOSE_FILES) -f deploy/docker-compose
 LOCAL_FULL_COMPOSE_FILES = $(LOCAL_MONITORING_COMPOSE_FILES) -f deploy/docker-compose.logging.yml
 PROD_COMPOSE_FILES = -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml
 CORE_LOG_SERVICES = rust_admin rust_stream antd nginx react_frontend
-MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki promtail
+MONITORING_LOG_SERVICES = prometheus alertmanager grafana loki alloy
 
 help:
 	@echo "Available targets:"
@@ -62,7 +62,7 @@ help:
 	@echo "  make ci              Install dependencies and run CI checks"
 
 test-rust:
-	$(CARGO) test --workspace
+	$(CARGO) test --locked --workspace
 
 test-rust-workspace: test-rust
 
@@ -79,7 +79,7 @@ test-antd:
 	$(CARGO) test -p antd
 
 clippy-rust:
-	$(CARGO) clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --locked --workspace --all-targets -- -D warnings
 
 clippy-rust-workspace: clippy-rust
 
@@ -99,11 +99,7 @@ fmt-react:
 	cd apps/web && $(NPM) run format:check
 
 deny-rust:
-	@if command -v cargo-deny >/dev/null 2>&1; then \
-		$(CARGO) deny check; \
-	else \
-		echo "cargo-deny is not installed; run 'cargo install cargo-deny --locked'"; \
-	fi
+	$(CARGO) deny check
 
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/tmp/autvid-compose-local.yml
@@ -157,8 +153,11 @@ devbench-shell:
 	scripts/devcontainer-testbench.sh shell
 
 devbench-exec:
-	@test -n "$(ARGS)" || { echo "Usage: make devbench-exec ARGS='make test-rust'"; exit 2; }
+ifeq ($(strip $(ARGS)),)
+	@echo "Usage: make devbench-exec ARGS='make test-rust'"; exit 2
+else
 	scripts/devcontainer-testbench.sh exec $(ARGS)
+endif
 
 backup-production:
 	scripts/backup-production.sh
@@ -179,8 +178,12 @@ build-react:
 stage-tauri-sidecars:
 	scripts/stage-tauri-sidecars.sh
 
+check-runtime:
+	python3 scripts/check-runtime-versions.py
+	python3 scripts/test_security_tools.py
+
 build-tauri: install-react install-desktop stage-tauri-sidecars
-	cd apps/desktop && $(NPM) run tauri -- build
+	cd apps/desktop && $(NPM) run tauri -- build -- --locked
 
 lint-react:
 	cd apps/web && $(NPM) run lint
@@ -204,14 +207,12 @@ smoke-local-large-original:
 	scripts/smoke-local-devnet.sh --large-original
 
 audit-rust:
-	@if command -v cargo-audit >/dev/null 2>&1; then \
-		$(CARGO) audit; \
-	else \
-		echo "cargo-audit is not installed; skipping Rust advisory scan"; \
-	fi
+	$(CARGO) deny check advisories
+	$(CARGO) deny --manifest-path apps/desktop/src-tauri/Cargo.toml check advisories
 
 audit-react:
-	cd apps/web && $(NPM) audit --omit=dev
+	cd apps/web && $(NPM) audit
+	cd apps/desktop && $(NPM) audit
 
 audit-trivy:
 	@if command -v trivy >/dev/null 2>&1; then \
@@ -224,4 +225,4 @@ audit: audit-rust audit-react audit-trivy
 
 test: test-rust test-react
 
-ci: fmt-rust deny-rust test-rust clippy-rust install-react lint-react fmt-react build-react test-react compose-config
+ci: check-runtime fmt-rust deny-rust test-rust clippy-rust install-react lint-react fmt-react build-react test-react compose-config

@@ -17,6 +17,7 @@ use crate::state::{AppState, CostCache};
 mod client;
 mod config;
 mod error;
+mod payments;
 mod routes;
 mod state;
 
@@ -38,8 +39,20 @@ async fn main() -> anyhow::Result<()> {
     fs::create_dir_all(&config.upload_temp_dir)?;
     let client = Arc::new(connect_client().await?);
 
+    let weak_client = Arc::downgrade(&client);
+    let peer_cache_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(StdDuration::from_secs(60)).await;
+            let Some(client) = weak_client.upgrade() else {
+                break;
+            };
+            client.save_peer_cache().await;
+        }
+    });
     let state = AppState {
-        client,
+        client: client.clone(),
+        download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+        payments: payments::Payments::new(&config).await?,
         network: config.network.clone(),
         metrics: Arc::new(HttpMetrics::default()),
         cost_cache: Arc::new(CostCache::new(
@@ -94,6 +107,9 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    peer_cache_task.abort();
+    client.save_peer_cache().await;
+    client.save_adaptive_snapshot();
     Ok(())
 }
 

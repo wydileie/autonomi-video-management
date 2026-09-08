@@ -4,6 +4,9 @@ use serde::Deserialize;
 pub struct AntdHealthResponse {
     pub status: String,
     pub network: Option<String>,
+    pub protocol_version: Option<String>,
+    pub read_ready: Option<bool>,
+    pub write_ready: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +46,10 @@ pub struct AntdDataPutResponse {
 
 #[derive(Deserialize)]
 pub struct AntdFilePutResponse {
+    pub chunks_failed: usize,
+    pub chunks_stored: usize,
+    pub total_chunks: usize,
+    pub verified: bool,
     pub address: String,
     pub byte_size: u64,
     pub storage_cost_atto: String,

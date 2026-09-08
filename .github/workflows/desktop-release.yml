@@ -23,11 +23,12 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
+            xdg-utils \
             patchelf \
             protobuf-compiler
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.2
@@ -35,7 +36,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -50,6 +51,7 @@ jobs:
       - name: Install media tools
         env:
           MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_LINUX_URL }}
+          MEDIA_TOOLS_SHA256: ${{ vars.DESKTOP_MEDIA_TOOLS_LINUX_SHA256 }}
         run: |
           test -n "$MEDIA_TOOLS_URL" || {
             echo "Set DESKTOP_MEDIA_TOOLS_LINUX_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
@@ -57,7 +59,7 @@ jobs:
           }
           mkdir -p "$RUNNER_TEMP/media-tools"
           curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
-          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          python3 scripts/verify-media-archive.py "$RUNNER_TEMP/media-tools.tgz" "$MEDIA_TOOLS_SHA256" "$RUNNER_TEMP/media-tools"
           test -x "$RUNNER_TEMP/media-tools/ffmpeg"
           test -x "$RUNNER_TEMP/media-tools/ffprobe"
           echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
@@ -66,7 +68,7 @@ jobs:
         run: make stage-tauri-sidecars
 
       - name: Build Tauri bundles
-        run: npm run tauri -- build --bundles appimage,deb,rpm
+        run: npm run tauri -- build --bundles appimage,deb,rpm -- --locked
         working-directory: apps/desktop
 
       - name: Upload Linux bundles
@@ -90,7 +92,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@v2.9.2
@@ -98,7 +100,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "24.20.0"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -113,6 +115,7 @@ jobs:
       - name: Install media tools
         env:
           MEDIA_TOOLS_URL: ${{ vars.DESKTOP_MEDIA_TOOLS_MACOS_URL }}
+          MEDIA_TOOLS_SHA256: ${{ vars.DESKTOP_MEDIA_TOOLS_MACOS_SHA256 }}
         run: |
           test -n "$MEDIA_TOOLS_URL" || {
             echo "Set DESKTOP_MEDIA_TOOLS_MACOS_URL to a tar.gz containing self-contained ffmpeg and ffprobe binaries." >&2
@@ -120,7 +123,7 @@ jobs:
           }
           mkdir -p "$RUNNER_TEMP/media-tools"
           curl -fsSL "$MEDIA_TOOLS_URL" -o "$RUNNER_TEMP/media-tools.tgz"
-          tar -xzf "$RUNNER_TEMP/media-tools.tgz" -C "$RUNNER_TEMP/media-tools"
+          python3 scripts/verify-media-archive.py "$RUNNER_TEMP/media-tools.tgz" "$MEDIA_TOOLS_SHA256" "$RUNNER_TEMP/media-tools"
           test -x "$RUNNER_TEMP/media-tools/ffmpeg"
           test -x "$RUNNER_TEMP/media-tools/ffprobe"
           echo "FFMPEG_DIST_DIR=$RUNNER_TEMP/media-tools" >> "$GITHUB_ENV"
@@ -151,7 +154,7 @@ jobs:
         run: make stage-tauri-sidecars
 
       - name: Build Tauri bundles
-        run: npm run tauri -- build --bundles app,dmg
+        run: npm run tauri -- build --bundles app,dmg -- --locked
         working-directory: apps/desktop
 
       - name: Upload macOS bundles

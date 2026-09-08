@@ -25,6 +25,10 @@ pub(crate) async fn schedule_upload_job(state: &AppState, video_id: &str) -> Res
     enqueue_video_job(state, JobKind::UploadVideo, video_uuid).await
 }
 
+pub(crate) async fn schedule_quote_job(state: &AppState, video_id: &str) -> Result<(), ApiError> {
+    enqueue_video_job(state, JobKind::QuoteVideo, parse_video_uuid(video_id)?).await
+}
+
 async fn enqueue_video_job(
     state: &AppState,
     kind: JobKind,

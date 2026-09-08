@@ -15,9 +15,9 @@ binary_dir="$repo_root/apps/desktop/src-tauri/binaries"
 mkdir -p "$binary_dir"
 
 if [[ "$target_triple" == "$host_triple" ]]; then
-  cargo build --release -p antd -p rust_admin -p rust_stream
+  cargo build --locked --release -p antd -p rust_admin -p rust_stream
 else
-  cargo build --release --target "$target_triple" -p antd -p rust_admin -p rust_stream
+  cargo build --locked --release --target "$target_triple" -p antd -p rust_admin -p rust_stream
 fi
 
 copy_sidecar() {

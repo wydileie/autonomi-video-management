@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "runtime_mode": "standalone-launcher-example",
   "description": "Example host contract for running the backend services outside Docker while preserving the Compose API and app-data boundaries.",
   "public_http": {
@@ -33,7 +33,9 @@
         "PUBLISHED_CATALOG_ADDRESS": "",
         "ALL_CATALOG_ADDRESS": "",
         "ANTD_URL": "http://127.0.0.1:8082",
-        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:8080"
+        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:8080",
+        "ANTD_INTERNAL_TOKEN_FILE": "/Users/example/Library/Application Support/Autonomi Video Management/run/gateway-write-token",
+        "RUST_ADMIN_BIND_ADDRESS": "127.0.0.1"
       }
     },
     "rust_stream": {
@@ -43,12 +45,20 @@
         "ANTD_URL": "http://127.0.0.1:8082",
         "CATALOG_STATE_PATH": "/Users/example/Library/Application Support/Autonomi Video Management/catalog/catalog.json",
         "PUBLISHED_CATALOG_ADDRESS": "",
-        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:8080"
+        "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:8080",
+        "ANTD_INTERNAL_TOKEN_FILE": "/Users/example/Library/Application Support/Autonomi Video Management/run/gateway-read-token",
+        "RUST_STREAM_BIND_ADDRESS": "127.0.0.1"
       }
     },
     "antd": {
       "role": "Autonomi gateway daemon for storage, retrieval, wallet, and payment operations.",
-      "rest_url": "http://127.0.0.1:8082"
+      "rest_url": "http://127.0.0.1:8082",
+      "required_environment": {
+        "ANTD_REST_ADDR": "127.0.0.1:8082",
+        "ANTD_PAYMENT_DB_PATH": "/Users/example/Library/Application Support/Autonomi Video Management/antd-payments.sqlite3",
+        "ANTD_INTERNAL_TOKEN_FILE": "/Users/example/Library/Application Support/Autonomi Video Management/run/gateway-write-token",
+        "ANTD_READ_TOKEN_FILE": "/Users/example/Library/Application Support/Autonomi Video Management/run/gateway-read-token"
+      }
     },
     "sqlite": {
       "role": "Embedded admin metadata, auth sessions, durable jobs, and local recovery log.",
@@ -59,7 +69,15 @@
     "app_data": {
       "path": "/Users/example/Library/Application Support/Autonomi Video Management",
       "durability": "persistent",
-      "contains": ["autvid.sqlite3", "catalog/catalog.json", "processing/"]
+      "contains": [
+        "autvid.sqlite3",
+        "catalog/catalog.json",
+        "processing/",
+        "antd-payments.sqlite3",
+        "peer-cache.json",
+        "run/gateway-read-token",
+        "run/gateway-write-token"
+      ]
     }
   },
   "health_checks": [
@@ -73,5 +91,6 @@
     "app_data_mount": "${AUTVID_DATA_HOST_PATH:-./.autvid/app_data}:/var/lib/autvid",
     "sqlite_path": "/var/lib/autvid/autvid.sqlite3",
     "catalog_state_path": "/var/lib/autvid/catalog/catalog.json"
-  }
+  },
+  "gateway_protocol": "autvid-gateway-v2"
 }

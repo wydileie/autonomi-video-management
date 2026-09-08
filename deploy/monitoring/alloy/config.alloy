@@ -1,0 +1,35 @@
+// Read Docker JSON log files; no Docker socket or container-control API access.
+local.file_match "containers" {
+  path_targets = [{"__path__" = "/var/log/docker/*/*-json.log"}]
+}
+loki.source.file "containers" {
+  targets = local.file_match.containers.targets
+  forward_to = [loki.process.autvid.receiver]
+}
+loki.process "autvid" {
+  stage.json {
+    expressions = {
+      output = "log",
+      stream = "stream",
+      timestamp = "time",
+      service = "attrs.\"com.docker.compose.service\"",
+      compose_project = "attrs.\"com.docker.compose.project\"",
+    }
+  }
+  stage.labels {
+    values = {service = "", compose_project = "", stream = ""}
+  }
+  stage.match {
+    selector = string.format("{compose_project!=%q}", sys.env("AUTVID_COMPOSE_PROJECT"))
+    action = "drop"
+  }
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+  stage.output { source = "output" }
+  forward_to = [loki.write.local.receiver]
+}
+loki.write "local" {
+  endpoint { url = "http://loki:3100/loki/api/v1/push" }
+}

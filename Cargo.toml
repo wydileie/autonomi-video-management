@@ -8,7 +8,7 @@ members = [
     "crates/standalone_launcher",
 ]
 resolver = "2"
-exclude = ["apps/desktop/src-tauri"]
+exclude = ["apps/desktop/src-tauri", "vendor/self_encryption"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,7 +25,7 @@ axum = "0.8"
 base64 = "0.23"
 bytes = "1"
 chrono = "0.4"
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.13.4", default-features = false }
 serde = "1"
 serde_json = "1"
 sha2 = "0.11"
@@ -40,3 +40,7 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+[patch.crates-io]
+# Protocol-compatible limit on decompressed network chunks; see vendor/self_encryption/AUTVID_PATCH.md.
+self_encryption = { path = "vendor/self_encryption" }

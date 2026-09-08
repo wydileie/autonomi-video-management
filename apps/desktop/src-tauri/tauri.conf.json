@@ -20,12 +20,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'none'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "appimage", "deb", "rpm"],
+    "targets": [
+      "app",
+      "dmg",
+      "appimage",
+      "deb",
+      "rpm"
+    ],
     "category": "Video",
     "shortDescription": "Local Autonomi video management app",
     "longDescription": "Upload, transcode, publish, and play HLS video backed by the Autonomi network.",
@@ -50,7 +56,14 @@
         "depends": []
       }
     },
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "icons/bundle/32x32.png",
+      "icons/bundle/128x128.png",
+      "icons/bundle/128x128@2x.png",
+      "icons/bundle/icon.icns",
+      "icons/bundle/icon.ico"
+    ]
   },
   "plugins": {}
 }

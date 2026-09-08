@@ -42,7 +42,6 @@ mod pipeline;
 mod quote;
 pub mod routes;
 pub mod state;
-mod storage;
 mod upload;
 
 pub use constants::*;
@@ -111,6 +110,10 @@ pub async fn run() -> anyhow::Result<()> {
         catalog_lock: Arc::new(Mutex::new(())),
         catalog_publish_lock: Arc::new(Mutex::new(())),
         catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+        active_job: None,
+        quote_semaphore: Arc::new(Semaphore::new(config.antd_quote_concurrency)),
+        upload_semaphore: Arc::new(Semaphore::new(config.antd_upload_concurrency)),
+        transcode_semaphore: Arc::new(Semaphore::new(config.ffmpeg_max_parallel_renditions)),
         upload_save_semaphore: Arc::new(Semaphore::new(config.upload_max_concurrent_saves)),
         shutdown: shutdown.clone(),
         job_notify_tx,
@@ -209,10 +212,8 @@ async fn ensure_autonomi_ready(config: &Config, antd: &AntdRestClient) -> anyhow
         "Autonomi wallet ready"
     );
     if config.antd_approve_on_startup {
-        let approved = antd.wallet_approve().await?;
-        info!(
-            approved = approved.approved,
-            "Autonomi wallet spend approval checked"
+        tracing::warn!(
+            "ANTD_APPROVE_ON_STARTUP is obsolete; payments require a content-bound approval"
         );
     }
     if config.antd_require_cost_ready {

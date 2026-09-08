@@ -1,7 +1,7 @@
-use std::{ffi::OsString, fs, path::Path as FsPath, sync::Arc, time::Instant};
+use std::{ffi::OsString, fs, path::Path as FsPath, time::Instant};
 
 use axum::http::StatusCode;
-use tokio::{process::Command, sync::Semaphore, task::JoinSet};
+use tokio::{process::Command, task::JoinSet};
 use tracing::{info, instrument};
 
 use crate::{
@@ -124,6 +124,10 @@ pub(crate) fn ffmpeg_transcode_args(options: FfmpegTranscodeOptions<'_>) -> Vec<
     };
 
     [
+        "-protocol_whitelist",
+        "file,pipe",
+        "-format_whitelist",
+        "mov,matroska,webm,avi,mpegts,mpegvideo,flv,ogg,asf",
         "-hide_banner",
         "-nostats",
         "-loglevel",
@@ -219,7 +223,7 @@ pub(crate) async fn transcode_renditions(
     source_dimensions: Option<(i32, i32)>,
     encode_settings: &EncodeSettings,
 ) -> Result<Vec<TranscodedRendition>, ApiError> {
-    let semaphore = Arc::new(Semaphore::new(state.config.ffmpeg_max_parallel_renditions));
+    let semaphore = state.transcode_semaphore.clone();
     let mut jobs = JoinSet::new();
     let mut scheduled = 0_usize;
 
@@ -235,13 +239,14 @@ pub(crate) async fn transcode_renditions(
         let resolution = resolution.clone();
         let encode_settings = encode_settings.clone();
         scheduled += 1;
+        let permit = semaphore.acquire_owned().await.map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not acquire FFmpeg rendition slot: {err}"),
+            )
+        })?;
         jobs.spawn(async move {
-            let _permit = semaphore.acquire_owned().await.map_err(|err| {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not acquire FFmpeg rendition slot: {err}"),
-                )
-            })?;
+            let _permit = permit;
             let input = TranscodeRenditionInput {
                 order,
                 resolution,

@@ -273,6 +273,8 @@ pub(crate) enum JobKind {
     ProcessVideo,
     UploadVideo,
     PublishCatalog,
+    FinalizeCatalog,
+    QuoteVideo,
 }
 
 impl JobKind {
@@ -281,6 +283,8 @@ impl JobKind {
             Self::ProcessVideo => JOB_KIND_PROCESS_VIDEO,
             Self::UploadVideo => JOB_KIND_UPLOAD_VIDEO,
             Self::PublishCatalog => JOB_KIND_PUBLISH_CATALOG,
+            Self::FinalizeCatalog => "finalize_catalog",
+            Self::QuoteVideo => "quote_video",
         }
     }
 
@@ -289,6 +293,8 @@ impl JobKind {
             JOB_KIND_PROCESS_VIDEO => Some(Self::ProcessVideo),
             JOB_KIND_UPLOAD_VIDEO => Some(Self::UploadVideo),
             JOB_KIND_PUBLISH_CATALOG => Some(Self::PublishCatalog),
+            "finalize_catalog" => Some(Self::FinalizeCatalog),
+            "quote_video" => Some(Self::QuoteVideo),
             _ => None,
         }
     }
@@ -296,6 +302,7 @@ impl JobKind {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LeasedJob {
+    pub(crate) lease_owner: String,
     pub(crate) id: Uuid,
     pub(crate) kind: JobKind,
     pub(crate) video_id: Option<Uuid>,

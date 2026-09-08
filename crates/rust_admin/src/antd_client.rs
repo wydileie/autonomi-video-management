@@ -12,11 +12,12 @@ use crate::{
 };
 
 #[cfg(test)]
-pub(crate) use autvid_common::antd::hex_lower;
 pub(crate) use autvid_common::antd::{
-    is_missing_file_upload_endpoint, AntdDataCostResponse, AntdDataPutResponse,
-    AntdFilePutResponse, AntdHealthResponse, AntdPublicDataResponse, AntdWalletAddressResponse,
-    AntdWalletApproveResponse, AntdWalletBalanceResponse,
+    hex_lower, is_missing_file_upload_endpoint, AntdWalletApproveResponse,
+};
+pub(crate) use autvid_common::antd::{
+    AntdDataCostResponse, AntdDataPutResponse, AntdFilePutResponse, AntdHealthResponse,
+    AntdPublicDataResponse, AntdWalletAddressResponse, AntdWalletBalanceResponse,
 };
 
 const COST_ESTIMATE_ATTEMPTS: usize = 5;
@@ -53,9 +54,71 @@ impl AntdRestClient {
         })
     }
 
+    pub(crate) fn with_lease(&self, key: &str) -> Self {
+        Self {
+            inner: self.inner.with_lease(key),
+        }
+    }
+
+    pub(crate) async fn activate_payment_lease(
+        &self,
+        lease: &autvid_common::payments::PaymentLease,
+    ) -> anyhow::Result<()> {
+        self.request_json::<Value>(
+            reqwest::Method::POST,
+            "/v1/payments/lease",
+            Some(serde_json::to_value(lease)?),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) fn with_approval(&self, quote_id: &str) -> Self {
+        Self {
+            inner: self.inner.with_approval(quote_id),
+        }
+    }
+
+    pub(crate) async fn approve_payment(
+        &self,
+        approval: &autvid_common::payments::PaymentApproval,
+    ) -> anyhow::Result<()> {
+        self.request_json::<Value>(
+            reqwest::Method::POST,
+            "/v1/payments/approvals",
+            Some(serde_json::to_value(approval)?),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn file_cost(
+        &self,
+        path: &FsPath,
+        mode: &str,
+    ) -> anyhow::Result<autvid_common::payments::ContentQuote> {
+        self.inner.file_cost(path, mode).await
+    }
+
+    pub(crate) async fn content_cost(
+        &self,
+        bytes: &[u8],
+        mode: &str,
+    ) -> anyhow::Result<autvid_common::payments::ContentQuote> {
+        self.request_json(
+            reqwest::Method::POST,
+            "/v1/data/cost",
+            Some(json!({"data": BASE64.encode(bytes), "payment_mode": mode})),
+        )
+        .await
+    }
+
     pub(crate) async fn health(&self) -> anyhow::Result<AntdHealthResponse> {
-        self.request_json(reqwest::Method::GET, "/health", Option::<Value>::None)
-            .await
+        let response: AntdHealthResponse = self
+            .request_json(reqwest::Method::GET, "/health", Option::<Value>::None)
+            .await?;
+        anyhow::ensure!(response.protocol_version.as_deref() == Some("autvid-gateway-v2"), "ANTD_URL must select the application gateway (autvid-gateway-v2); upstream SDK tooling uses a separate port");
+        Ok(response)
     }
 
     pub(crate) async fn wallet_address(&self) -> anyhow::Result<AntdWalletAddressResponse> {
@@ -76,6 +139,7 @@ impl AntdRestClient {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn wallet_approve(&self) -> anyhow::Result<AntdWalletApproveResponse> {
         self.request_json(
             reqwest::Method::POST,
@@ -112,7 +176,15 @@ impl AntdRestClient {
         byte_size: usize,
     ) -> anyhow::Result<AntdDataCostResponse> {
         let quote_size = byte_size.max(MIN_ANTD_SELF_ENCRYPTION_BYTES);
-        let data = vec![0_u8; quote_size];
+        // Preliminary size-only estimates use a bounded, unstored sample. They are
+        // never executable approvals; final quotes prepare the actual media.
+        use rand::RngExt;
+        anyhow::ensure!(
+            quote_size <= 16 * 1024 * 1024,
+            "preliminary quote sample exceeds 16 MiB"
+        );
+        let mut data = vec![0_u8; quote_size];
+        rand::rng().fill(data.as_mut_slice());
         let mut last_error = None;
         for attempt in 1..=COST_ESTIMATE_ATTEMPTS {
             match self.data_cost(&data).await {
@@ -428,6 +500,9 @@ mod tests {
         Json(serde_json::json!({
             "status": "ok",
             "network": "mocknet",
+            "protocol_version": "autvid-gateway-v2",
+            "read_ready": true,
+            "write_ready": true,
         }))
     }
 

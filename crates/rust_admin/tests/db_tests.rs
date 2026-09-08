@@ -133,17 +133,22 @@ mod db_tests {
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+            active_job: None,
+            quote_semaphore: Arc::new(Semaphore::new(1)),
+            upload_semaphore: Arc::new(Semaphore::new(1)),
+            transcode_semaphore: Arc::new(Semaphore::new(1)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
             job_notify_tx: tokio::sync::watch::channel(0).0,
         }
     }
 
-    async fn spawn_admin(state: AppState) -> String {
-        let config = state.config.clone();
-        let app = router(&config, state).unwrap();
+    async fn spawn_admin(mut state: AppState) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        Arc::make_mut(&mut state.config).bind_addr = addr;
+        let config = state.config.clone();
+        let app = router(&config, state).unwrap();
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -477,6 +482,7 @@ mod db_tests {
 
         let response = client
             .post(format!("{base_url}/admin/videos/{video_id}/approve"))
+            .json(&json!({"quote_id":"legacy","max_storage_atto":"0","max_gas_wei":"0"}))
             .header(reqwest::header::COOKIE, &auth.cookie_header)
             .header("x-csrf-token", &auth.csrf_token)
             .send()
@@ -512,6 +518,7 @@ mod db_tests {
 
         let response = client
             .post(format!("{base_url}/admin/videos/{video_id}/approve"))
+            .json(&json!({"quote_id":"legacy","max_storage_atto":"0","max_gas_wei":"0"}))
             .header(reqwest::header::COOKIE, &auth.cookie_header)
             .header("x-csrf-token", &auth.csrf_token)
             .send()
@@ -700,6 +707,68 @@ mod db_tests {
         assert_eq!(remaining, 0);
 
         let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+    #[tokio::test]
+    async fn db_catalog_resume_preserves_job_and_approval_identity() {
+        let db = TestDb::new().await;
+        let root_dir =
+            std::env::temp_dir().join(format!("autvid_catalog_resume_{}", Uuid::new_v4()));
+        fs::create_dir_all(&root_dir).unwrap();
+        let state = test_state(db.pool.clone(), &root_dir);
+        let base_url = spawn_admin(state).await;
+        let client = reqwest::Client::new();
+        let auth = login(&client, &base_url).await;
+        let job = Uuid::new_v4();
+        let quote = "original-paid-catalog";
+        let document = json!({"schema_version":1,"content_type":"catalog","catalog_kind":"all","generated_at":"now","updated_at":"now","videos":[]});
+        let content_quote = json!({"cost":"1","estimated_gas_cost_wei":"2","file_size":3,"chunk_count":1,"payment_mode":"merkle","address":"address","content_sha256":"digest","network":"test","confidence":"prepared"});
+        let plan = json!({"approval":{"quote_id":quote,"network":"test","content_digest":"digest","expires_at":Utc::now().timestamp()+300,"max_storage_atto":"2","max_gas_wei":"4","contents":[]},"catalog":document,"all_catalog":document,"catalog_quote":content_quote,"all_catalog_quote":content_quote,"revision":0}).to_string();
+        sqlx::query("INSERT INTO catalog_approvals(id,plan,state,created_at) VALUES($1,$2,'payment_recovery_required',$3)")
+            .bind(quote).bind(&plan).bind(Utc::now()).execute(&db.pool).await.unwrap();
+        sqlx::query("INSERT INTO video_jobs(id,job_kind,status,attempts,max_attempts,run_after,payment_quote_id) VALUES($1,'finalize_catalog','failed',3,3,$2,$3)")
+            .bind(job).bind(Utc::now()).bind(quote).execute(&db.pool).await.unwrap();
+        let response = client
+            .post(format!("{base_url}/admin/catalogs/resume"))
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let row =
+            sqlx::query("SELECT id,status,attempts,max_attempts,payment_quote_id FROM video_jobs")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(row.get::<Uuid, _>("id"), job);
+        assert_eq!(row.get::<String, _>("status"), "queued");
+        assert_eq!(row.get::<i64, _>("attempts"), 3);
+        assert_eq!(row.get::<i64, _>("max_attempts"), 4);
+        assert_eq!(row.get::<String, _>("payment_quote_id"), quote);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT plan FROM catalog_approvals")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            plan
+        );
+        let repeated = client
+            .post(format!("{base_url}/admin/catalogs/resume"))
+            .header(reqwest::header::COOKIE, &auth.cookie_header)
+            .header("x-csrf-token", &auth.csrf_token)
+            .send()
+            .await
+            .unwrap();
+        assert!(!repeated.status().is_success());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM video_jobs")
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        fs::remove_dir_all(root_dir).unwrap();
         db.cleanup().await;
     }
 }

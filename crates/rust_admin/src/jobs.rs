@@ -7,7 +7,8 @@ pub(crate) use cleanup::{approval_cleanup_loop, cleanup_expired_approvals};
 pub(crate) use lease_worker::start_job_workers;
 pub(crate) use recovery::recover_interrupted_jobs;
 pub(crate) use scheduling::{
-    fetch_job_dir, schedule_catalog_publish, schedule_processing_job, schedule_upload_job,
+    fetch_job_dir, schedule_catalog_publish, schedule_processing_job, schedule_quote_job,
+    schedule_upload_job,
 };
 
 #[cfg(all(test, feature = "db-tests"))]
@@ -212,6 +213,10 @@ mod db_tests {
             catalog_lock: Arc::new(Mutex::new(())),
             catalog_publish_lock: Arc::new(Mutex::new(())),
             catalog_publish_epoch: Arc::new(AtomicU64::new(0)),
+            active_job: None,
+            quote_semaphore: Arc::new(Semaphore::new(1)),
+            upload_semaphore: Arc::new(Semaphore::new(1)),
+            transcode_semaphore: Arc::new(Semaphore::new(1)),
             upload_save_semaphore: Arc::new(Semaphore::new(1)),
             shutdown: tokio_util::sync::CancellationToken::new(),
             job_notify_tx: tokio::sync::watch::channel(0).0,
@@ -240,6 +245,68 @@ mod db_tests {
         .await
         .unwrap();
         video_id
+    }
+
+    #[tokio::test]
+    async fn db_admin_limits_login_and_authenticates_before_body_extraction() {
+        let db = TestDb::new().await;
+        let root = std::env::temp_dir().join(format!("autvid_route_limits_{}", Uuid::new_v4()));
+        let mut state = test_state(db.pool.clone(), &root);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        Arc::make_mut(&mut state.config).bind_addr = address;
+        let app = crate::routes::router(&state.config, state.clone()).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let base = format!("http://{address}");
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .header("content-type", "application/json")
+            .body(vec![b' '; 65 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        let response = client
+            .post(format!("{base}/videos/upload/quote"))
+            .header("content-type", "application/json")
+            .body(vec![b'!'; 65 * 1024])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .header("host", "rebind.example")
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        for _ in 0..19 {
+            let response = client
+                .post(format!("{base}/auth/login"))
+                .header("content-type", "application/json")
+                .body("invalid")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        }
+        let response = client
+            .post(format!("{base}/auth/login"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "60");
+        server.abort();
+        let _ = server.await;
+        let _ = fs::remove_dir_all(root);
+        db.cleanup().await;
     }
 
     #[tokio::test]
@@ -346,6 +413,32 @@ mod db_tests {
             .await
             .unwrap();
         assert_eq!(owner, "worker-b");
+        assert!(!super::lease_worker::renew_lease(&state, &first)
+            .await
+            .unwrap());
+        super::lease_worker::mark_job_succeeded(&state, &first)
+            .await
+            .unwrap();
+        super::lease_worker::mark_job_failed(&state, &first, "stale failure")
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT status, lease_owner, attempts FROM video_jobs WHERE id=$1")
+            .bind(first.id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.try_get::<String, _>("lease_owner").unwrap(), "worker-b");
+        assert_eq!(
+            row.try_get::<String, _>("status").unwrap(),
+            JOB_STATUS_RUNNING
+        );
+        assert_eq!(
+            row.try_get::<i32, _>("attempts").unwrap(),
+            reclaimed.attempts
+        );
+        assert!(super::lease_worker::renew_lease(&state, &reclaimed)
+            .await
+            .unwrap());
 
         let _ = fs::remove_dir_all(root_dir);
         db.cleanup().await;
@@ -494,7 +587,7 @@ mod db_tests {
         .bind(Uuid::new_v4())
         .bind(JOB_KIND_PUBLISH_CATALOG)
         .bind(JOB_STATUS_RUNNING)
-        .bind(Utc::now() + Duration::hours(1))
+        .bind(Utc::now() - Duration::seconds(1))
         .bind(Utc::now())
         .execute(&state.pool)
         .await

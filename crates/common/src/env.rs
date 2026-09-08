@@ -70,6 +70,16 @@ pub fn bool_from_env(name: &str, default: bool) -> anyhow::Result<bool> {
     }
 }
 
+/// Native services default to loopback. Containers must opt in to a wildcard bind.
+pub fn bind_addr_from_env(prefix: &str, default_port: u16) -> anyhow::Result<std::net::SocketAddr> {
+    let port = parse_env(&format!("{prefix}_PORT"), default_port)?;
+    let ip = parse_env(
+        &format!("{prefix}_BIND_ADDRESS"),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+    )?;
+    Ok(std::net::SocketAddr::new(ip, port))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

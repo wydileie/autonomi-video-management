@@ -28,7 +28,7 @@ pub(super) async fn admin_get_catalogs(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     require_admin(&state, &headers)?;
-    Ok(Json(admin_catalogs_payload(&state)))
+    Ok(Json(admin_catalogs_payload(&state).await?))
 }
 
 pub(super) async fn admin_publish_catalogs(
@@ -39,17 +39,19 @@ pub(super) async fn admin_publish_catalogs(
     require_csrf(&headers)?;
     let epoch = refresh_local_catalog_from_db(&state, "manual-publish").await?;
     schedule_catalog_publish(&state, epoch, "manual-publish").await?;
-    Ok(Json(admin_catalogs_payload(&state)))
+    Ok(Json(admin_catalogs_payload(&state).await?))
 }
 
-fn admin_catalogs_payload(state: &AppState) -> Value {
+async fn admin_catalogs_payload(state: &AppState) -> Result<Value, ApiError> {
     let (published_catalog, all_catalog) = read_catalog_documents(&state.config);
-    json!({
+    Ok(json!({
+        "publication":crate::catalog::payments::summary(state).await?,
+        "preparing":sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM video_jobs WHERE job_kind='publish_catalog' AND status IN ('queued','running'))").fetch_one(&state.pool).await.map_err(db_error)?,
         "published_catalog_address": read_catalog_address(&state.config),
         "all_catalog_address": read_all_catalog_address(&state.config),
         "published_catalog": published_catalog,
         "all_catalog": all_catalog,
-    })
+    }))
 }
 
 pub(super) async fn admin_list_videos(
@@ -306,4 +308,25 @@ pub(super) async fn delete_video(
         "deleted": video_id,
         "catalog_address": read_catalog_address(&state.config),
     })))
+}
+
+pub(super) async fn admin_approve_catalogs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<crate::catalog::payments::ApprovalRequest>,
+) -> Result<Json<Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
+    crate::catalog::payments::approve(&state, request).await?;
+    Ok(Json(admin_catalogs_payload(&state).await?))
+}
+
+pub(super) async fn admin_resume_catalogs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_admin(&state, &headers)?;
+    require_csrf(&headers)?;
+    crate::catalog::payments::resume(&state).await?;
+    Ok(Json(admin_catalogs_payload(&state).await?))
 }

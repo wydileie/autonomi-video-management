@@ -57,20 +57,22 @@ async fn cache_catalog_and_manifest(
     state.cache.catalogs.lock().await.insert(
         catalog_address.to_string(),
         CachedValue {
-            value: Catalog {
+            value: Arc::new(Catalog {
                 videos: vec![CatalogVideo {
                     id: manifest.id.clone(),
                     manifest_address: manifest_address.to_string(),
                 }],
-            },
+            }),
             expires_at: Instant::now() + Duration::from_secs(60),
+            size_bytes: 1024,
         },
     );
     state.cache.manifests.lock().await.insert(
         manifest_address.to_string(),
         CachedValue {
-            value: manifest,
+            value: Arc::new(manifest),
             expires_at: Instant::now() + Duration::from_secs(60),
+            size_bytes: 1024,
         },
     );
 }
@@ -94,7 +96,6 @@ fn ready_manifest() -> VideoManifest {
                     duration: 4.4,
                 },
             ],
-            segments_by_index: Vec::new(),
         }],
     }
 }
@@ -357,8 +358,9 @@ async fn hls_manifest_by_address_route_renders_manifest_address_segment_urls() {
     state.cache.manifests.lock().await.insert(
         TEST_MANIFEST_ADDRESS.to_string(),
         CachedValue {
-            value: ready_manifest(),
+            value: Arc::new(ready_manifest()),
             expires_at: Instant::now() + Duration::from_secs(60),
+            size_bytes: 1024,
         },
     );
 
@@ -430,4 +432,72 @@ fn cors_origin_normalization_rejects_wildcards_paths_and_missing_schemes() {
     assert!(autvid_common::normalize_cors_origin("*").is_err());
     assert!(autvid_common::normalize_cors_origin("https://example.com/app").is_err());
     assert!(autvid_common::normalize_cors_origin("example.com").is_err());
+}
+
+#[test]
+fn hostile_manifest_indices_and_durations_are_rejected() {
+    for index in [i32::MAX, -1, 65_536] {
+        let mut manifest = ready_manifest();
+        manifest.variants[0].segments[0].segment_index = index;
+        assert!(manifest.index_segments().is_err());
+    }
+    let mut manifest = ready_manifest();
+    manifest.variants[0].segments[1].segment_index = 0;
+    assert!(manifest.index_segments().is_err());
+    manifest = ready_manifest();
+    manifest.variants[0].segments[0].duration = f64::INFINITY;
+    assert!(manifest.index_segments().is_err());
+}
+
+#[tokio::test]
+async fn cancelling_first_waiter_does_not_poison_shared_fetch() {
+    let mock = MockAntdState::default();
+    let url = spawn_stream_mock_antd(mock.clone()).await;
+    let state = test_state_with_antd(Some(TEST_CATALOG_ADDRESS), &url);
+    cache_catalog_and_manifest(
+        &state,
+        TEST_CATALOG_ADDRESS,
+        TEST_MANIFEST_ADDRESS,
+        ready_manifest(),
+    )
+    .await;
+    let first_state = state.clone();
+    let first =
+        tokio::spawn(async move { hls::fetch_segment(&first_state, "video-1", "720p", 0).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while mock.segment_requests.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    first.abort();
+    let _ = first.await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        hls::fetch_segment(&state, "video-1", "720p", 0),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.as_ref(), b"segment bytes");
+    assert_eq!(mock.segment_requests.load(Ordering::Relaxed), 1);
+    assert!(state.cache.segment_fetches.lock().await.is_empty());
+}
+
+#[test]
+fn metadata_cache_bounds_total_size_and_entries() {
+    let mut cache = std::collections::HashMap::new();
+    for index in 0..1000 {
+        crate::cache::insert_metadata(
+            &mut cache,
+            index.to_string(),
+            CachedValue {
+                value: index,
+                size_bytes: 1024 * 1024,
+                expires_at: Instant::now() + Duration::from_secs(1),
+            },
+        );
+        assert!(cache.len() <= 8);
+    }
 }

@@ -77,8 +77,10 @@ pub(crate) async fn quote_data_size(
                 })?;
             let value = QuoteValue {
                 sampled: false,
-                storage_cost_atto: parse_cost_u128(estimate.cost.as_deref()),
-                estimated_gas_cost_wei: parse_cost_u128(estimate.estimated_gas_cost_wei.as_deref()),
+                storage_cost_atto: parse_cost_u128(estimate.cost.as_deref())?,
+                estimated_gas_cost_wei: parse_cost_u128(
+                    estimate.estimated_gas_cost_wei.as_deref(),
+                )?,
                 chunk_count: estimate.chunk_count.unwrap_or(0),
                 payment_mode: estimate
                     .payment_mode
@@ -105,10 +107,13 @@ pub(crate) async fn quote_data_size(
     })
 }
 
-pub(crate) fn parse_cost_u128(value: Option<&str>) -> u128 {
-    value
-        .and_then(|value| value.parse::<u128>().ok())
-        .unwrap_or(0)
+pub(crate) fn parse_cost_u128(value: Option<&str>) -> Result<u128, ApiError> {
+    autvid_common::payments::amount(value.unwrap_or_default()).map_err(|e| {
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("Invalid gateway cost: {e}"),
+        )
+    })
 }
 
 pub(crate) async fn build_upload_quote(
@@ -311,11 +316,12 @@ mod tests {
     fn parses_quote_costs_above_i64_max() {
         let ten_ant_atto = "10000000000000000000";
         assert_eq!(
-            parse_cost_u128(Some(ten_ant_atto)),
+            parse_cost_u128(Some(ten_ant_atto)).expect("valid cost"),
             10_000_000_000_000_000_000_u128
         );
-        assert_eq!(parse_cost_u128(Some("-1")), 0);
-        assert_eq!(parse_cost_u128(Some("not-a-number")), 0);
+        assert!(parse_cost_u128(Some("-1")).is_err());
+        assert!(parse_cost_u128(Some("not-a-number")).is_err());
+        assert!(parse_cost_u128(None).is_err());
     }
 
     #[test]

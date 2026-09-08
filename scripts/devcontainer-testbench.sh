@@ -98,16 +98,19 @@ start_container() {
     --name "$CONTAINER"
     --workdir "$WORKSPACE"
     -v "$ROOT_DIR:$WORKSPACE:cached"
+    -e RUST_ADMIN_BIND_ADDRESS=0.0.0.0
+    -e RUST_STREAM_BIND_ADDRESS=0.0.0.0
     -e ANTD_NETWORK="${ANTD_NETWORK:-local}"
+    -e AUTVID_START_UPSTREAM_TOOLING="${AUTVID_START_UPSTREAM_TOOLING:-false}"
+    -e AUTVID_CONFIGURE_AGENT_MCP="${AUTVID_CONFIGURE_AGENT_MCP:-false}"
     -e PATH="$DEV_PATH"
     -e GITHUB_TOKEN="$github_token"
     -e BRAVE_API_KEY="$brave_api_key"
     -e AUTONOMI_WALLET_KEY="$autonomi_wallet_key"
-    -p "${DEVBENCH_HTTP_PORT:-18080}:80"
-    -p "${DEVBENCH_ADMIN_PORT:-18000}:8000"
-    -p "${DEVBENCH_STREAM_PORT:-18081}:8081"
-    -p "${DEVBENCH_ANTD_REST_PORT:-18082}:8082"
-    -p "${DEVBENCH_ANTD_GRPC_PORT:-15051}:50051"
+    -p "127.0.0.1:${DEVBENCH_HTTP_PORT:-18080}:80"
+    -p "127.0.0.1:${DEVBENCH_ADMIN_PORT:-18000}:8000"
+    -p "127.0.0.1:${DEVBENCH_STREAM_PORT:-18081}:8081"
+    -p "127.0.0.1:${DEVBENCH_ANTD_REST_PORT:-18082}:8082"
   )
 
   while IFS= read -r item; do args+=("$item"); done < <(docker_sock_args)
@@ -136,7 +139,8 @@ status_container() {
       export PATH='"$DEV_PATH"'
       test -n "$GITHUB_TOKEN" && echo "GITHUB_TOKEN=set" || echo "GITHUB_TOKEN=missing"
       test -n "$BRAVE_API_KEY" && echo "BRAVE_API_KEY=set" || echo "BRAVE_API_KEY=missing"
-      curl -fsS --max-time 2 http://localhost:8082/health >/dev/null && echo "antd=healthy" || echo "antd=not-ready"
+      curl -fsS --max-time 2 http://localhost:8082/health >/dev/null && echo "application-gateway=healthy" || echo "application-gateway=not-running"
+      curl -fsS --max-time 2 http://localhost:8182/health >/dev/null && echo "upstream-sdk=healthy" || echo "upstream-sdk=not-running"
     '
   fi
 }

@@ -90,11 +90,16 @@ async fn main() -> anyhow::Result<()> {
         "configured stream caches"
     );
 
+    let bind_addr = autvid_common::env::bind_addr_from_env("RUST_STREAM", 8081)?;
     let service_metrics = state.metrics.clone();
     let app = routes::router()
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             request_timeout,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            autvid_common::native::NativeRequestPolicy::new(bind_addr, cors_allowed_origins),
+            autvid_common::native::enforce_native_request,
         ))
         .layer(cors)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -131,13 +136,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .with_state(state);
 
-    let bind_port = env::var("RUST_STREAM_PORT")
-        .ok()
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(8081);
-    let bind_addr = format!("0.0.0.0:{bind_port}");
     info!("Listening on {}", bind_addr);
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
