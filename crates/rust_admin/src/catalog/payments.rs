@@ -213,7 +213,6 @@ pub(crate) async fn finalize(state: &AppState) -> Result<(), ApiError> {
             ));
         }
     }
-    let _lock = state.catalog_lock.lock().await;
     let mut tx = begin_fenced(state).await?;
     assert_catalog_revision(&mut tx, plan.revision).await?;
     sqlx::query("UPDATE videos SET catalog_address=$1,all_catalog_address=$2 WHERE status='ready'")
@@ -229,15 +228,21 @@ pub(crate) async fn finalize(state: &AppState) -> Result<(), ApiError> {
         .map_err(db_error)?;
     sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .bind(json!({"published_address":plan.catalog_quote.address,"all_address":plan.all_catalog_quote.address,"published":plan.catalog,"all":plan.all_catalog}).to_string()).execute(&mut *tx).await.map_err(db_error)?;
-    write_catalog_state(
-        &state.config,
-        Some(&plan.catalog_quote.address),
-        Some(&plan.all_catalog_quote.address),
-        Some(&plan.catalog),
-        Some(&plan.all_catalog),
-        false,
-    )?;
+    commit_snapshot(state, tx).await?;
+    Ok(())
+}
+
+/// Expose only committed snapshots. Materialization re-reads the latest row under
+/// SQLite's writer lock, so another admin process cannot overwrite a newer file
+/// with an older caller's snapshot. A failed cache write must not undo paid success.
+pub(crate) async fn commit_snapshot(
+    state: &AppState,
+    tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), ApiError> {
     tx.commit().await.map_err(db_error)?;
+    if let Err(error) = restore_snapshot(state).await {
+        tracing::warn!(detail = %error.detail, "Committed catalog snapshot needs file repair; restart or the next catalog update will retry");
+    }
     Ok(())
 }
 

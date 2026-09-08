@@ -1,6 +1,6 @@
 use super::final_quote::{assert_catalog_revision, catalog_digest, payment_api, UploadPlan};
 use crate::{
-    catalog::{db_document::build_all_catalog_from_db, state_file::write_catalog_state},
+    catalog::db_document::build_all_catalog_from_db,
     db::{begin_fenced, db_error, execute_fenced, parse_video_uuid},
     errors::ApiError,
     media::assert_under,
@@ -73,7 +73,6 @@ pub(crate) async fn upload_approved_video_inner(
     store_planned(state, &plan.catalog, &plan.catalog_quote).await?;
     store_planned(state, &plan.all_catalog, &plan.all_catalog_quote).await?;
 
-    let _catalog_lock = state.catalog_lock.lock().await;
     let mut tx = begin_fenced(state).await?;
     assert_catalog_revision(&mut tx, plan.base_revision).await?;
     sqlx::query("UPDATE videos SET status='ready',manifest_address=$1,is_public=$2,approval_expires_at=NULL,error_message=NULL,updated_at=$3 WHERE id=$4")
@@ -84,20 +83,11 @@ pub(crate) async fn upload_approved_video_inner(
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
-    // The durable snapshot is committed with the ready state. File materialization
-    // happens under the writer lock and is repaired from this row on startup.
+    // Commit the snapshot with ready state before exposing it through the file.
     sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .bind(serde_json::json!({"published_address":plan.catalog_quote.address,"all_address":plan.all_catalog_quote.address,"published":plan.catalog,"all":plan.all_catalog}).to_string())
         .execute(&mut *tx).await.map_err(db_error)?;
-    write_catalog_state(
-        &state.config,
-        Some(&plan.catalog_quote.address),
-        Some(&plan.all_catalog_quote.address),
-        Some(&plan.catalog),
-        Some(&plan.all_catalog),
-        false,
-    )?;
-    tx.commit().await.map_err(db_error)?;
+    crate::catalog::payments::commit_snapshot(state, tx).await?;
     tracing::info!(video_id, manifest=%plan.manifest_quote.address, "Approved media and catalog storage completed");
     Ok(())
 }

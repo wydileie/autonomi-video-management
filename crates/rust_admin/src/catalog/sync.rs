@@ -9,7 +9,6 @@ use super::{
     db_document::build_catalog_on_connection,
     state_file::{
         empty_catalog, read_all_catalog_address, read_catalog_address, read_catalog_snapshot,
-        write_catalog_state,
     },
 };
 use crate::{
@@ -107,7 +106,6 @@ pub(crate) async fn refresh_local_catalog_from_db(
     state: &AppState,
     reason: &str,
 ) -> Result<u64, ApiError> {
-    let _guard = state.catalog_lock.lock().await;
     let mut tx = crate::db::begin_immediate(&state.pool).await?;
     let all_catalog = build_catalog_on_connection(&mut tx).await?;
     let mut catalog = all_catalog.clone();
@@ -116,20 +114,27 @@ pub(crate) async fn refresh_local_catalog_from_db(
     let video_count = catalog.videos.len();
     let all_video_count = all_catalog.videos.len();
     let epoch = state.catalog_publish_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    let catalog_address = read_catalog_address(&state.config);
-    let all_catalog_address = read_all_catalog_address(&state.config);
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT value FROM application_state WHERE key='catalog_snapshot'")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_error)?;
+    let (catalog_address, all_catalog_address) = if let Some(previous) = previous {
+        let previous: Value = serde_json::from_str(&previous).map_err(db_error)?;
+        (
+            previous["published_address"].as_str().map(str::to_owned),
+            previous["all_address"].as_str().map(str::to_owned),
+        )
+    } else {
+        (
+            read_catalog_address(&state.config),
+            read_all_catalog_address(&state.config),
+        )
+    };
     sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
         .bind(json!({"published_address":catalog_address,"all_address":all_catalog_address,"published":catalog,"all":all_catalog,"publish_pending":true}).to_string())
         .execute(&mut *tx).await.map_err(db_error)?;
-    write_catalog_state(
-        &state.config,
-        catalog_address.as_deref(),
-        all_catalog_address.as_deref(),
-        Some(&catalog),
-        Some(&all_catalog),
-        true,
-    )?;
-    tx.commit().await.map_err(db_error)?;
+    super::payments::commit_snapshot(state, tx).await?;
     info!(
         "Queued local catalog update epoch={} reason={} published_videos={} all_videos={}",
         epoch, reason, video_count, all_video_count

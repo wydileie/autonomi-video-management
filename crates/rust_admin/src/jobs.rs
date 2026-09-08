@@ -560,6 +560,62 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn db_catalog_file_only_exposes_committed_snapshots() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_catalog_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        fs::create_dir_all(&root_dir).unwrap();
+        fs::write(&state.config.catalog_state_path, "old snapshot").unwrap();
+        let snapshot = json!({"published_address":"committed-address", "all_address":"all-address",
+            "published":{"videos":[]}, "all":{"videos":[]}})
+        .to_string();
+        let mut tx = crate::db::begin_immediate(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1)")
+            .bind(&snapshot)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        // Deferred foreign keys permit writes but reject the COMMIT itself.
+        sqlx::raw_sql("CREATE TABLE commit_guard (parent TEXT REFERENCES application_state(key) DEFERRABLE INITIALLY DEFERRED); INSERT INTO commit_guard VALUES('missing');")
+            .execute(&mut *tx).await.unwrap();
+        assert!(crate::catalog::payments::commit_snapshot(&state, tx)
+            .await
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(&state.config.catalog_state_path).unwrap(),
+            "old snapshot"
+        );
+        let mut tx = crate::db::begin_immediate(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO application_state(key,value) VALUES('catalog_snapshot',$1)")
+            .bind(&snapshot)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        crate::catalog::payments::commit_snapshot(&state, tx)
+            .await
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(file["published_catalog_address"], "committed-address");
+        // A lagging file must not replace the newer database address during refresh.
+        fs::write(
+            &state.config.catalog_state_path,
+            json!({"catalog_address":"stale-address"}).to_string(),
+        )
+        .unwrap();
+        crate::catalog::refresh_local_catalog_from_db(&state, "test")
+            .await
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&state.config.catalog_state_path).unwrap())
+                .unwrap();
+        assert_eq!(file["published_catalog_address"], "committed-address");
+        let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn db_catalog_recovery_takes_precedence_over_nested_approval_error() {
         let db = TestDb::new().await;
         let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
