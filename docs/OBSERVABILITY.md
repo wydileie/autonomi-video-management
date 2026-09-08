@@ -5,6 +5,18 @@ Alloy overlays. The metrics overlay scrapes the Rust services and `antd`
 gateway. The logging overlay tails Docker container logs into Loki for browsing
 from Grafana.
 
+`/livez` checks process liveness. Admin `/health` includes payment write readiness
+and returns 503 while the gateway has a reserved/signed transaction awaiting a
+receipt, or requires payment reconciliation. Container healthchecks use `/livez`
+so this expected readiness pause cannot restart paid work.
+
+Catalog and manifest metadata each have a 16 MiB cache budget (32 MiB combined),
+using a conservative four-times-wire-size estimate for parsed allocations. The
+estimate is a heuristic; one maximum-size document can occupy its entire cache.
+Catalog materialization failures are logged after the authoritative DB commit.
+The file can lag until the next catalog update or startup repair; a file-write
+failure must not roll back completed paid storage.
+
 ## Metrics Endpoints
 
 Prometheus scrapes these internal Compose targets:

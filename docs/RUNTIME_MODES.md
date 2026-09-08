@@ -96,6 +96,15 @@ The native payment journal is `antd-payments.sqlite3`. Both native modes and
 Compose use actual-content quotes and the same approval/recovery API; see
 `PAYMENT_RECOVERY.md`. Health reports `read_ready`, `write_ready`, peer count,
 and protocol `autvid-gateway-v2`. Liveness alone does not mean uploads are ready.
+Admin `/health` returns 503 while any transaction is reserved or awaiting a
+receipt, and continues to do so if payment status is uncertain. Use `/livez` for
+process health; readiness failures must not trigger restarts of paid work.
+
+Native login allows at most 32 concurrent authentication attempts. After 20
+failures in a minute, each admitted attempt waits two seconds, giving an
+aggregate ceiling of roughly 16 attempts per second during that failure burst.
+Valid credentials still work after the delay. Compose additionally applies
+Nginx's per-client login limit.
 
 The headless bench and VS Code share `.devcontainer/Dockerfile`. Optional
 upstream SDK/CLI/MCP startup requires `AUTVID_START_UPSTREAM_TOOLING=true` or

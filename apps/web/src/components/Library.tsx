@@ -89,7 +89,7 @@ export default function Library({ admin = false }: LibraryProps) {
       </div>
     );
   }
-  if (loadError && !videos.length) {
+  if (loadError && !videos.length && !admin) {
     return (
       <div className="empty-state error-state">
         <span className="empty-icon" aria-hidden="true" />

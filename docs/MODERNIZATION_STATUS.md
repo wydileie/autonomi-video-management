@@ -85,14 +85,14 @@ promotion still requires the release gates below.
 - Workspace Rust: 103 package tests, including the public-API decompression regression,
   plus 13 SQLite tests (including migration preservation, lease fencing, and
   catalog resume identity); formatting and Clippy passed. Later auth-backend
-  changes and review regressions passed all 50 admin unit tests and seven DB
-  integration tests, plus Clippy with the DB-test feature enabled.
-- Frontend: lint, formatting, production build, seven Node tests, 41 Vitest
+  changes and review regressions passed all 51 admin unit tests, seven DB
+  integration tests, and 23 gateway tests, plus Clippy with the DB-test feature enabled.
+- Frontend: lint, formatting, production build, seven Node tests, 42 Vitest
   tests; Node 24 Linux build/tests also passed. Playwright passed the real
   login/upload/UI spending approval/catalog publication/HLS playback flow.
   Review tests cover catalog cap approval/recovery, non-overlapping catalog
   polling, and discarding late responses after leaving administration. Branch
-  coverage is 71.02%, above the unchanged 70% threshold.
+  coverage is 71.18%, above the unchanged 70% threshold.
 - Full web and desktop npm audits: zero findings. Root and desktop Rust advisory
   checks passed with the documented upstream maintenance exceptions.
 - All eight Compose render combinations, including the CI override, passed. Core, monitoring, and logging
@@ -138,7 +138,8 @@ promotion still requires the release gates below.
 Claude Code CLI resolved `--model opus` to `claude-opus-5` for the strict PR
 review. It found no duplicate-payment path in the reviewed implementation and
 identified recovery defects, which were corrected alongside Codex's own findings.
-A follow-up review of the corrections is required before merging PR #204.
+Follow-up findings, final verification, and the merge disposition are recorded
+on PR #204.
 
 - Unpaid preparation can retry under its original identity, including after
   restart, only when no transaction reservation exists. Settled receipts alone
@@ -169,6 +170,8 @@ A follow-up review of the corrections is required before merging PR #204.
 
 Drain paid jobs, back up both databases and pending files, rehearse migrations
 and restore, then promote verified artifacts. Preserve existing volumes and
-published network data. Final cleanup removed about 20 GiB of repository build/dependency artifacts
-and all task containers. Existing application data and volumes were preserved;
-the rebuilt devbench image remains available for reuse.
+published network data. Initial implementation cleanup removed about 20 GiB of
+repository build/dependency artifacts and its task containers. PR review uses
+fresh isolated test data and containers; its final cleanup is recorded on PR #204.
+Existing application data and volumes are preserved. The rebuilt devbench image
+remains available for reuse.

@@ -204,10 +204,7 @@ impl Journal {
             .fetch_one(&mut *tx)
             .await?;
         let approval: PaymentApproval = serde_json::from_str(row.try_get("definition")?)?;
-        anyhow::ensure!(
-            row.try_get::<String, _>("state")? == "open",
-            "payment_recovery_required: approval is paused"
-        );
+        require_open_approval(row.try_get("state")?)?;
         approval.validate(Utc::now().timestamp(), &self.network)?;
         anyhow::ensure!(
             approval.permits(sha256, size, mode),
@@ -240,10 +237,7 @@ impl Journal {
             .bind(transaction.approval_id).fetch_one(&mut *tx).await?;
         let approval: PaymentApproval = serde_json::from_str(row.try_get("definition")?)?;
         approval.validate(Utc::now().timestamp(), &self.network)?;
-        anyhow::ensure!(
-            row.try_get::<String, _>("state")? == "open",
-            "payment_recovery_required: approval paused"
-        );
+        require_open_approval(row.try_get("state")?)?;
         let storage = checked_reservation(
             amount(row.try_get("reserved_storage")?)?,
             transaction.storage_upper,
@@ -489,6 +483,21 @@ pub(super) struct TransactionReservation<'a> {
     pub nonce: u64,
     pub storage_upper: u128,
     pub gas_upper: u128,
+}
+
+fn require_open_approval(state: &str) -> anyhow::Result<()> {
+    // A lost revocation response must be reconcilable by a later Resume. The
+    // admin still confirms cancellation through the atomic endpoint before it
+    // offers a new quote; this error alone never authorizes replacement.
+    anyhow::ensure!(
+        state != "cancelled_unpaid",
+        "approval_required: unpaid approval was cancelled; regenerate the quote"
+    );
+    anyhow::ensure!(
+        state == "open",
+        "payment_recovery_required: approval is paused"
+    );
+    Ok(())
 }
 
 fn checked_reservation(used: u128, additional: u128, cap: u128) -> anyhow::Result<u128> {
@@ -814,6 +823,48 @@ mod tests {
                     .expect("paid approval retained"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn lost_cancellation_response_can_be_reconciled_after_restart() {
+        let (dir, journal, approval, lease) = fixture().await;
+        let key = lease.key();
+        journal
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &key)
+            .await
+            .expect("admit");
+        // The gateway commits, but the caller loses its response and stays in recovery.
+        assert!(journal.cancel_unpaid("quote", &key).await.expect("cancel"));
+        journal.pool.close().await;
+        drop(journal);
+        let journal = Journal::open(&dir.path().join("payments.sqlite3"), "test:1".into())
+            .await
+            .expect("reopen journal");
+        journal.approve(&approval).await.expect("same approval");
+        let mut resumed = lease;
+        resumed.generation += 1;
+        resumed.owner = "two".into();
+        journal.activate(&resumed).await.expect("resumed lease");
+        let error = journal
+            .admit(
+                "upload",
+                "quote",
+                &"a".repeat(64),
+                3,
+                "auto",
+                &resumed.key(),
+            )
+            .await
+            .expect_err("cancelled approval cannot admit");
+        assert!(error.to_string().starts_with("approval_required:"));
+        assert!(journal
+            .cancel_unpaid("quote", &resumed.key())
+            .await
+            .expect("confirm cancellation"));
+        assert!(journal
+            .reserve(&reservation("intent", "upload", 1, 1))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

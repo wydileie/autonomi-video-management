@@ -562,7 +562,7 @@ mod db_tests {
 
     #[tokio::test]
     async fn db_requote_requires_gateway_confirmation_of_unpaid_revocation() {
-        for unpaid in [true, false] {
+        for unpaid in [Some(true), Some(false), None] {
             let db = TestDb::new().await;
             let root = std::env::temp_dir().join(format!("autvid_db_requote_{}", Uuid::new_v4()));
             let mut state = test_state(db.pool.clone(), &root);
@@ -581,6 +581,9 @@ mod db_tests {
                 "/v1/payments/approvals/original-quote/cancel-unpaid",
                 axum::routing::post(move |headers: axum::http::HeaderMap| async move {
                     assert_eq!(headers["x-payment-lease"].to_str().unwrap(), expected);
+                    if unpaid.is_none() {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
                     axum::Json(json!({"cancelled_unpaid": unpaid}))
                 }),
             );
@@ -598,7 +601,7 @@ mod db_tests {
                 .unwrap();
             assert_eq!(
                 status,
-                if unpaid {
+                if unpaid == Some(true) {
                     "approval_required"
                 } else {
                     "payment_recovery_required"

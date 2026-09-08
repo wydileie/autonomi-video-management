@@ -75,6 +75,22 @@ test("approves exactly the displayed catalog caps and resumes the same paused pu
   );
 });
 
+test("catalog controls remain available when the admin video list fails", async () => {
+  setAuthenticatedCookies();
+  setupGetRoutes();
+  const get = axios.get.getMockImplementation();
+  axios.get.mockImplementation((url, config) =>
+    url === "/admin/videos"
+      ? Promise.reject({ response: { data: { detail: "Video list unavailable" } } })
+      : get(url, config),
+  );
+  await renderApp();
+  await click(findButton("Manage"));
+  expect(text()).toContain("Video list unavailable");
+  expect(text()).toContain("Portable catalogs");
+  expect(findButton("Quote catalog publication").disabled).toBe(false);
+});
+
 test("catalog polling waits for the current response and discards it on leaving admin", async () => {
   setAuthenticatedCookies();
   setupGetRoutes();

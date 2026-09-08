@@ -34,12 +34,19 @@ upstream resumable finalization for partial storage. It never creates a new
 payment to replace an uncertain one. Fresh catalog quotes are blocked while an
 earlier catalog payment is active or uncertain.
 
+Failures inside the approved storage phase pause for an explicit Resume, even
+when the immediate failure happened before signing. They do not consume the
+ordinary automatic job retry loop. This conservative policy keeps retries tied
+to the operator's existing approval.
+
 Before returning failed approved work to `approval_required`, the gateway must
 atomically cancel its approval and prove that no transaction was ever reserved
 under it. Cancellation and signing reservations use the same journal write
 lock, so a concurrent upload cannot sign against a cancelled approval. Paid work,
 lost lease ownership, and unavailable or uncertain gateway responses retain
 `payment_recovery_required`; a timeout never authorizes a replacement payment.
+A later Resume can confirm a cancellation whose response was lost, including
+after a gateway restart, and then offer a replacement quote.
 
 Upstream prepared/resumable handles are opaque in-memory values, retained for
 up to one hour (at most four). They are not serialized as a durable format. If
