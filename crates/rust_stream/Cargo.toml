@@ -21,7 +21,7 @@ tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sig
 base64.workspace = true
 bytes.workspace = true
 linked-hash-map = "0.5"
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 
 # Logging

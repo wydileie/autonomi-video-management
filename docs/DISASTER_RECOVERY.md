@@ -62,3 +62,9 @@ container to restore the journal while the gateway is stopped. Never restore
 only admin state and silently create a fresh journal for the same wallet.
 The restore sets a signing pause pending reconciliation; read/playback checks
 can run while writes remain paused. See `PAYMENT_RECOVERY.md`.
+
+Production Compose repairs restored gateway journal ownership before starting
+`antd`: the payment directory and journal belong to UID/GID `10001:10001`, with
+modes 700 and 600. The existing admin initializer uses `1000:1000`. A restore
+performed as root is supported through these startup initializers. For native
+launches, keep both databases owned by the account that runs the application.

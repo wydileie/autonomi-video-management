@@ -28,6 +28,10 @@ promotion still requires the release gates below.
   bounded. Heavy hashing/decompression runs outside async executor threads.
 - Desktop CSP and Tauri-to-loopback navigation were exercised. Quit handling
   now shuts down sidecars, including application-level exit requests.
+- PR review fixes keep empty-catalog approval controls available, prioritize
+  payment recovery over nested approval errors, and materialize catalog files
+  only after the authoritative database snapshot commits. Materialization
+  reloads the latest committed snapshot while holding SQLite's writer lock.
 
 ## Autonomi and spending approvals
 
@@ -81,13 +85,17 @@ promotion still requires the release gates below.
 - Workspace Rust: 103 package tests, including the public-API decompression regression,
   plus 13 SQLite tests (including migration preservation, lease fencing, and
   catalog resume identity); formatting and Clippy passed. Later auth-backend
-  changes also passed all 46 admin unit tests and seven DB integration tests.
-- Frontend: lint, formatting, production build, seven Node tests, 39 Vitest
+  changes and review regressions passed all 50 admin unit tests and seven DB
+  integration tests, plus Clippy with the DB-test feature enabled.
+- Frontend: lint, formatting, production build, seven Node tests, 41 Vitest
   tests; Node 24 Linux build/tests also passed. Playwright passed the real
   login/upload/UI spending approval/catalog publication/HLS playback flow.
+  Review tests cover catalog cap approval/recovery, non-overlapping catalog
+  polling, and discarding late responses after leaving administration. Branch
+  coverage is 71.02%, above the unchanged 70% threshold.
 - Full web and desktop npm audits: zero findings. Root and desktop Rust advisory
   checks passed with the documented upstream maintenance exceptions.
-- All seven Compose render combinations passed. Core, monitoring, and logging
+- All eight Compose render combinations, including the CI override, passed. Core, monitoring, and logging
   services ran successfully; Loki received the correct project's logs.
 - Standard local smoke, admin-restart recovery smoke, an original above 16 MiB,
   and the native Linux launcher upload/playback smoke passed.
@@ -124,10 +132,35 @@ promotion still requires the release gates below.
   on full restart. Files are retained with `--no-cleanup`, but old local network
   storage is not automatically reattached. App-worker restart recovery was tested
   while retaining the network; this is distinct from devnet persistence.
-- Claude Opus 5 provided independent payment-design feedback. The strict final
-  implementation review was requested but rejected by the account's session
-  quota (reset reported as 5:30 PM Eastern). It has not produced final findings.
-  Obtain that review before presenting a PR as ready.
+
+## Independent PR review
+
+Claude Code CLI resolved `--model opus` to `claude-opus-5` for the strict PR
+review. It found no duplicate-payment path in the reviewed implementation and
+identified recovery defects, which were corrected alongside Codex's own findings.
+A follow-up review of the corrections is required before merging PR #204.
+
+- Unpaid preparation can retry under its original identity, including after
+  restart, only when no transaction reservation exists. Settled receipts alone
+  cannot reopen paid work whose required SDK recovery material was lost.
+- Exhausted approved uploads retain a recovery action. Catalog divergence and
+  other failures after storage begins retain the original payment identity.
+- Login throttling counts failed attempts and uses bounded concurrency plus a
+  short delay, avoiding a global minute-long lockout of valid credentials.
+- Maximum-size metadata now fits the bounded cache (16 MiB of estimated parsed
+  memory per cache). Local catalog requests share immutable catalog allocations;
+  segment-cache insertion and metrics perform bounded expiry cleanup.
+- Production startup repairs gateway journal ownership to `10001:10001` after
+  restore. This was verified using a root-owned, mode-600 journal fixture.
+- Backup volume selection is explicit. An incomplete backup remains a failure,
+  with logs and backup metrics, rather than a falsely successful recovery set.
+- Desktop cargo-deny now explicitly selects the shared configuration. CLI help
+  confirms its default is the current directory's `deny.toml`; the prior local
+  command already ran from the repository root. Full dependency audits remain
+  blocking as required by the approved plan.
+- Native Host/Origin validation deliberately covers loopback services; Compose
+  uses Nginx plus application authentication/CSRF. Alloy's host-wide read access
+  before project filtering and the historical-manifest release gate are explicit.
 
 Drain paid jobs, back up both databases and pending files, rehearse migrations
 and restore, then promote verified artifacts. Preserve existing volumes and

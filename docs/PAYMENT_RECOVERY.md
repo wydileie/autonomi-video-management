@@ -63,3 +63,16 @@ procedure; do not automatically pay again.
 
 Migration 0003 regenerates legacy pending approvals. Existing published
 addresses remain readable and are not rewritten or deleted on the network.
+
+Preparation failures can retry under the same approval and upload identity when
+the journal proves **no transaction was ever reserved** for that object. This
+also covers a gateway restart during unpaid preparation. A settled transaction
+alone does not prove that paid storage can be reconstructed: approvals with lost
+paid recovery material remain paused, even when every transaction has a receipt.
+There is no automatic reopening based solely on settled receipts.
+
+Errors after approved storage begins, including catalog revision conflicts and
+exhausted database retries, retain payment recovery status. Resume preserves the
+original job identity; it cannot transfer an approval to a replacement job row.
+A Merkle receipt exceeding its reserved upper bound also pauses signing for
+reconciliation, including when the chain reports a successful transaction.

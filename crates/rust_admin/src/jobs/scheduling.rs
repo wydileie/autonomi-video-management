@@ -34,6 +34,8 @@ async fn enqueue_video_job(
     kind: JobKind,
     video_id: Uuid,
 ) -> Result<(), ApiError> {
+    // Recovery of an approved upload must requeue its original job instead:
+    // gateway payment leases bind the approval permanently to that job identity.
     let job_id = Uuid::new_v4();
     let now = Utc::now();
     let result = sqlx::query(

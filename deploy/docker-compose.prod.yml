@@ -1,5 +1,36 @@
 services:
+  init_payment_permissions:
+    image: alpine:3.20
+    network_mode: none
+    user: "0:0"
+    command:
+      - sh
+      - -ceu
+      - |
+        mkdir -p /data
+        chown 10001:10001 /data
+        chmod 700 /data
+        for file in /data/antd-payments.sqlite3 /data/antd-payments.sqlite3-wal /data/antd-payments.sqlite3-shm /data/antd-payments.lock; do
+          if [ -f "$$file" ]; then
+            chown 10001:10001 "$$file"
+            chmod 600 "$$file"
+          fi
+        done
+    volumes:
+      - antd_payment_state:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+
   antd:
+    depends_on:
+      init_payment_permissions:
+        condition: service_completed_successfully
     image: autonomi-video-management-antd-service
     build:
       context: ..

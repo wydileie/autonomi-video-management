@@ -204,14 +204,12 @@ async fn load_video_manifest(
         .await
         .filter(|c| c.published_catalog.is_some() || c.catalog.is_some())
     {
-        Arc::new(
-            snapshot
-                .published_catalog
-                .as_ref()
-                .or(snapshot.catalog.as_ref())
-                .cloned()
-                .ok_or("catalog missing")?,
-        )
+        snapshot
+            .published_catalog
+            .as_ref()
+            .or(snapshot.catalog.as_ref())
+            .cloned()
+            .ok_or("catalog missing")?
     } else {
         let catalog_address = read_catalog_address(state)
             .await

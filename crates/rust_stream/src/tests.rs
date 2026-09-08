@@ -102,6 +102,7 @@ fn ready_manifest() -> VideoManifest {
 
 #[derive(Clone, Default)]
 struct MockAntdState {
+    large_metadata: bool,
     catalog_requests: Arc<AtomicUsize>,
     manifest_requests: Arc<AtomicUsize>,
     segment_requests: Arc<AtomicUsize>,
@@ -158,6 +159,7 @@ async fn mock_public_bytes(state: &MockAntdState, address: &str) -> Option<Vec<u
         TEST_CATALOG_ADDRESS => {
             state.catalog_requests.fetch_add(1, Ordering::Relaxed);
             serde_json::to_vec(&serde_json::json!({
+                "padding": if state.large_metadata { "x".repeat(3 * 1024 * 1024) } else { String::new() },
                 "videos": [{
                     "id": "video-1",
                     "manifest_address": TEST_MANIFEST_ADDRESS
@@ -168,6 +170,7 @@ async fn mock_public_bytes(state: &MockAntdState, address: &str) -> Option<Vec<u
         TEST_MANIFEST_ADDRESS => {
             state.manifest_requests.fetch_add(1, Ordering::Relaxed);
             serde_json::to_vec(&serde_json::json!({
+                "padding": if state.large_metadata { "x".repeat(3 * 1024 * 1024) } else { String::new() },
                 "id": "video-1",
                 "status": "ready",
                 "variants": [{
@@ -498,6 +501,36 @@ fn metadata_cache_bounds_total_size_and_entries() {
                 expires_at: Instant::now() + Duration::from_secs(1),
             },
         );
-        assert!(cache.len() <= 8);
+        assert!(cache.len() <= 16);
     }
+}
+
+#[tokio::test]
+async fn large_metadata_is_cached_across_playback_requests() {
+    let mock = MockAntdState {
+        large_metadata: true,
+        ..Default::default()
+    };
+    let url = spawn_stream_mock_antd(mock.clone()).await;
+    let state = test_state_with_antd(Some(TEST_CATALOG_ADDRESS), &url);
+    for _ in 0..2 {
+        let response = routes::hls_segment(
+            State(state.clone()),
+            Path(("video-1".into(), "720p".into(), "0.ts".into())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(mock.catalog_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(mock.manifest_requests.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn cache_metrics_reclaim_expired_segments_without_new_uploads() {
+    let mut cache = SegmentCache::new(1024, Duration::from_millis(1));
+    cache.insert("expired".into(), bytes::Bytes::from_static(b"data"));
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let snapshot = cache.snapshot();
+    assert_eq!(snapshot.bytes_resident, 0);
+    assert_eq!(snapshot.entries, 0);
 }

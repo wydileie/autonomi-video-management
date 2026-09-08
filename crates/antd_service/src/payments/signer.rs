@@ -198,6 +198,8 @@ impl ControlledSigner {
             } => {
                 let mut winners = Vec::with_capacity(prepared_batches.len());
                 for batch in prepared_batches {
+                    // A receipt outside this bound requires reconciliation even
+                    // if the chain reports success; never silently enlarge a cap.
                     let upper = u128::try_from(
                         self.network
                             .estimate_merkle_payment_cost(batch.depth, &batch.pool_commitments),

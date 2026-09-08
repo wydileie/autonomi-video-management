@@ -221,3 +221,9 @@ for file in deploy/monitoring/grafana/dashboards/*.json; do
   jq empty "$file"
 done
 ```
+
+Alloy's default read-only mount covers the host's Docker JSON log directory.
+It can read other containers' logs; project filtering happens after reading and
+parsing, before forwarding to Loki. Use a dedicated restricted log directory
+through `AUTVID_DOCKER_LOG_ROOT` if host-wide read access is unsuitable. Its
+administration listener stays on loopback. The collector has no Docker socket.

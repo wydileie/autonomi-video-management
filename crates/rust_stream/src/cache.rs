@@ -94,6 +94,7 @@ impl SegmentCache {
     }
 
     pub(crate) fn insert(&mut self, address: String, data: Bytes) {
+        self.prune_expired();
         if self.disabled() || data.len() > self.max_bytes {
             return;
         }
@@ -138,7 +139,24 @@ impl SegmentCache {
         }
     }
 
-    pub(crate) fn snapshot(&self) -> SegmentCacheSnapshot {
+    fn prune_expired(&mut self) {
+        let now = Instant::now();
+        // Keep cleanup bounded even when a cache contains many tiny segments.
+        for _ in 0..64 {
+            let Some(address) = self
+                .entries
+                .front()
+                .filter(|(_, entry)| entry.expires_at <= now)
+                .map(|(address, _)| address.clone())
+            else {
+                break;
+            };
+            self.evict_address(&address);
+        }
+    }
+
+    pub(crate) fn snapshot(&mut self) -> SegmentCacheSnapshot {
+        self.prune_expired();
         SegmentCacheSnapshot {
             evictions_total: self.evictions_total,
             bytes_resident: self.total_bytes,
@@ -153,7 +171,9 @@ pub(crate) fn insert_metadata<T>(
     key: String,
     value: CachedValue<T>,
 ) {
-    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    // A maximum 4 MiB wire document must fit after the conservative 4x
+    // parsed-allocation estimate used by the fetcher.
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
     if value.size_bytes > MAX_BYTES {
         return;
     }

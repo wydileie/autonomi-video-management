@@ -52,6 +52,7 @@ pub(crate) async fn upload_approved_video_inner(
     let mut state = state.clone();
     state.antd = state.antd.with_approval(&plan.approval.quote_id);
     let state = &state;
+    paid_phase(async {
     let files = std::mem::take(&mut plan.files);
     stream::iter(files).map(|file| async move {
         let _permit = state.upload_semaphore.acquire().await.map_err(payment_api)?;
@@ -90,6 +91,7 @@ pub(crate) async fn upload_approved_video_inner(
     crate::catalog::payments::commit_snapshot(state, tx).await?;
     tracing::info!(video_id, manifest=%plan.manifest_quote.address, "Approved media and catalog storage completed");
     Ok(())
+    }).await
 }
 
 async fn check_catalog(
@@ -123,4 +125,17 @@ async fn store_planned<T: serde::Serialize>(
         ));
     }
     Ok(())
+}
+
+/// Once storage starts, retain the original approval even for catalog divergence
+/// or local database failures. Requoting must not discard paid recovery identity.
+pub(crate) async fn paid_phase(
+    work: impl std::future::Future<Output = Result<(), ApiError>>,
+) -> Result<(), ApiError> {
+    work.await.map_err(|error| {
+        payment_api(format!(
+            "payment_recovery_required: approved storage started; {}",
+            error.detail
+        ))
+    })
 }

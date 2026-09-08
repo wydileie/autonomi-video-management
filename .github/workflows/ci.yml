@@ -233,7 +233,7 @@ jobs:
         with:
           manifest-path: apps/desktop/src-tauri/Cargo.toml
           command: check
-          command-arguments: advisories
+          command-arguments: --config deny.toml advisories
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0

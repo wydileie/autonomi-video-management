@@ -103,6 +103,7 @@ deny-rust:
 
 compose-config:
 	$(DOCKER_COMPOSE) --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml config >/tmp/autvid-compose-local.yml
+	DEVNET_IMAGE=example.invalid/autvid-devnet:render-validation $(DOCKER_COMPOSE) --env-file .env.local.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.ci.yml config >/tmp/autvid-compose-ci.yml
 	$(DOCKER_COMPOSE) --env-file .env.local-public.example -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml -f deploy/docker-compose.local-public.yml config >/tmp/autvid-compose-local-public.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_FULL_COMPOSE_FILES) config >/tmp/autvid-compose-local-full.yml
 	$(DOCKER_COMPOSE) --env-file .env.local.example $(LOCAL_COMPOSE_FILES) -f deploy/docker-compose.backup.yml config >/tmp/autvid-compose-backup.yml
@@ -208,7 +209,7 @@ smoke-local-large-original:
 
 audit-rust:
 	$(CARGO) deny check advisories
-	$(CARGO) deny --manifest-path apps/desktop/src-tauri/Cargo.toml check advisories
+	$(CARGO) deny --manifest-path apps/desktop/src-tauri/Cargo.toml check --config deny.toml advisories
 
 audit-react:
 	cd apps/web && $(NPM) audit

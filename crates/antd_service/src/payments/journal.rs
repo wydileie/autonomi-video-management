@@ -117,8 +117,12 @@ impl Journal {
             sqlx::raw_sql("INSERT INTO payment_transactions_v2 SELECT * FROM payment_transactions; DROP TABLE payment_transactions; ALTER TABLE payment_transactions_v2 RENAME TO payment_transactions;").execute(&mut *tx).await?;
             tx.commit().await?;
         }
-        // SDK prepare/resume objects cannot be restored from this journal. Preserve all
-        // reservations and pause; a fresh request must never imply a second payment.
+        // Preparation can be repeated only when the journal proves that signing
+        // never reserved a transaction. Paid SDK handles cannot survive a restart.
+        sqlx::query("UPDATE payment_uploads SET state='retryable', detail='Unpaid preparation/storage interrupted before any transaction reservation', updated_at=$1 WHERE state IN ('preparing','partial') AND NOT EXISTS(SELECT 1 FROM payment_transactions t WHERE t.upload_id=payment_uploads.id)")
+            .bind(Utc::now().timestamp()).execute(&self.pool).await?;
+        // Preserve every reservation and pause paid/uncertain work. Settled receipts
+        // alone do not reconstruct the SDK material needed to finish storage.
         sqlx::query("UPDATE payment_uploads SET state='payment_recovery_required', detail='Gateway restarted; retained SDK payment material must be reconciled', updated_at=$1 WHERE state IN ('preparing','paying','partial')")
             .bind(Utc::now().timestamp()).execute(&self.pool).await?;
         sqlx::query("UPDATE payment_approvals SET state='paused' WHERE id IN (SELECT approval_id FROM payment_uploads WHERE state='payment_recovery_required')")
@@ -181,7 +185,7 @@ impl Journal {
             valid,
             "payment_recovery_required: payment execution lease lost"
         );
-        let inserted = sqlx::query("INSERT INTO payment_uploads(id, approval_id, sha256, state, updated_at, lease_key) VALUES($1,$2,$3,'preparing',$4,$5) ON CONFLICT(id) DO NOTHING")
+        let inserted = sqlx::query("INSERT INTO payment_uploads(id, approval_id, sha256, state, updated_at, lease_key) VALUES($1,$2,$3,'preparing',$4,$5) ON CONFLICT(id) DO UPDATE SET state='preparing',lease_key=excluded.lease_key,updated_at=excluded.updated_at,detail=NULL WHERE payment_uploads.state='retryable' AND payment_uploads.approval_id=excluded.approval_id AND payment_uploads.sha256=excluded.sha256 AND NOT EXISTS(SELECT 1 FROM payment_transactions t WHERE t.upload_id=payment_uploads.id)")
             .bind(id).bind(approval_id).bind(sha256).bind(Utc::now().timestamp()).bind(lease_key).execute(&mut *tx).await?.rows_affected() == 1;
         tx.commit().await?;
         Ok(inserted)
@@ -319,6 +323,20 @@ impl Journal {
         detail: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // A transient preparation failure must not permanently pause the rest of
+        // an approved video. Re-admission retains its identity and is allowed only
+        // while no signing intent of any kind has ever existed for this object.
+        let unpaid: bool = sqlx::query_scalar(
+            "SELECT NOT EXISTS(SELECT 1 FROM payment_transactions WHERE upload_id=$1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let state = if state == "payment_recovery_required" && unpaid {
+            "retryable"
+        } else {
+            state
+        };
         sqlx::query(
             "UPDATE payment_uploads SET state=$1, result=$2, detail=$3, updated_at=$4 WHERE id=$5",
         )
@@ -342,8 +360,8 @@ impl Journal {
     }
 
     pub(super) async fn signing_enabled(&self) -> anyhow::Result<bool> {
-        Ok(!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM payment_controls WHERE key='restore_reconciliation_required' AND value='1')")
-            .fetch_one(&self.pool).await?)
+        Ok(!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM payment_controls WHERE key='restore_reconciliation_required' AND value='1') OR EXISTS(SELECT 1 FROM payment_transactions WHERE network=$1 AND state IN ('reserved','signed'))")
+            .bind(&self.network).fetch_one(&self.pool).await?)
     }
 
     pub(super) async fn is_partial(&self, id: &str) -> anyhow::Result<bool> {
@@ -395,7 +413,7 @@ impl Journal {
             .bind(&lease.quote_id).bind(&lease.job_id).bind(&lease.owner).bind(lease.generation).bind(lease.expires_at).bind(now).execute(&self.pool).await?.rows_affected();
         anyhow::ensure!(
             updated == 1,
-            "payment_recovery_required: stale payment execution lease"
+            "payment_recovery_required: stale payment lease or different job ID; resume the original job and approval"
         );
         Ok(())
     }
@@ -667,6 +685,109 @@ mod tests {
             .await
             .is_err());
     }
+    #[tokio::test]
+    async fn unpaid_preparation_can_resume_after_failure_and_restart() {
+        let (dir, journal, _approval, mut lease) = fixture().await;
+        assert!(journal
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .expect("admit"));
+        journal
+            .finish(
+                "upload",
+                "payment_recovery_required",
+                None,
+                Some("temporary prepare failure"),
+            )
+            .await
+            .expect("failure");
+        assert_eq!(
+            journal.status("upload").await.expect("status")["state"],
+            "retryable"
+        );
+        lease.generation += 1;
+        lease.owner = "two".into();
+        journal.activate(&lease).await.expect("new worker");
+        assert!(journal
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .expect("same id retry"));
+        journal.pool.close().await;
+        drop(journal);
+        let reopened = Journal::open(&dir.path().join("payments.sqlite3"), "test:1".into())
+            .await
+            .expect("reopen");
+        assert!(reopened
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .expect("unpaid restart retry"));
+        reopened
+            .reserve(&reservation("intent", "upload", 5, 6))
+            .await
+            .expect("first reservation");
+        reopened
+            .finish(
+                "upload",
+                "payment_recovery_required",
+                None,
+                Some("uncertain transaction"),
+            )
+            .await
+            .expect("pause");
+        assert_eq!(
+            reopened.status("upload").await.expect("status")["state"],
+            "payment_recovery_required"
+        );
+        assert!(reopened
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .is_err());
+        assert_eq!(
+            reopened.status("upload").await.expect("status")["transaction_count"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn settled_receipts_do_not_reopen_lost_paid_storage_after_restart() {
+        let (dir, journal, _, lease) = fixture().await;
+        journal
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .expect("admit");
+        journal
+            .reserve(&reservation("intent", "upload", 5, 6))
+            .await
+            .expect("reserve");
+        assert!(!journal.signing_enabled().await.expect("readiness"));
+        journal
+            .record_signed("intent", "hash", "raw")
+            .await
+            .expect("signed");
+        journal
+            .settle("hash", 5, 3, &serde_json::json!({}))
+            .await
+            .expect("receipt");
+        assert!(journal.signing_enabled().await.expect("readiness"));
+        journal.pool.close().await;
+        drop(journal);
+        let reopened = Journal::open(&dir.path().join("payments.sqlite3"), "test:1".into())
+            .await
+            .expect("reopen");
+        assert_eq!(
+            reopened.status("upload").await.expect("status")["state"],
+            "payment_recovery_required"
+        );
+        assert!(reopened
+            .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+            .await
+            .is_err());
+        assert_eq!(
+            reopened.status("upload").await.expect("status")["transaction_count"],
+            1
+        );
+    }
+
     #[tokio::test]
     async fn restart_preserves_reservations_and_pauses_without_repayment() {
         let (dir, journal, approval, lease) = fixture().await;

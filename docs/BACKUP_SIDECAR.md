@@ -74,8 +74,9 @@ the backup does not contain legacy copies of them, and overwrites `catalog.json`
 when the backup contains one.
 
 The sidecar mounts the gateway journal volume read-only. `ANTD_BACKUP_VOLUME`
-defaults to `antd_payment_state`; the local-devnet examples select
-`autonomi_devnet_data`. A missing journal fails the backup instead of creating
+is required when rendering the backup overlay: select `antd_payment_state` for
+production or `autonomi_devnet_data` for local devnets. The example environment
+files provide these values. A missing journal fails the backup instead of creating
 an incomplete recovery set. Backup files use private permissions and checksums.
 Drain paid jobs for coordinated migration snapshots. Restore requires both
 databases and pauses signing until chain reconciliation (`PAYMENT_RECOVERY.md`).

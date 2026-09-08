@@ -28,8 +28,7 @@ mod public;
 mod upload;
 
 pub fn router(config: &Config, state: AppState) -> anyhow::Result<Router> {
-    let login_attempts =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let login_attempts = std::sync::Arc::new(LoginThrottle::default());
     let service_metrics = state.metrics.clone();
     let default_timeout = TimeoutLayer::with_status_code(
         StatusCode::REQUEST_TIMEOUT,
@@ -179,38 +178,104 @@ async fn authenticate_request(
     next.run(request).await
 }
 
-// This single-administrator service limits login attempts globally, including malformed
-// bodies, without trusting proxy headers or allocating an attacker-controlled IP map.
+// Bound concurrent authentication and delay bursts of failed attempts without
+// turning twenty requests into a minute-long lockout of every valid operator.
+struct LoginThrottle {
+    failures: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
+    slots: tokio::sync::Semaphore,
+}
+impl Default for LoginThrottle {
+    fn default() -> Self {
+        Self {
+            failures: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            slots: tokio::sync::Semaphore::new(32),
+        }
+    }
+}
 async fn throttle_login(
-    State(attempts): State<
-        std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>>,
-    >,
+    State(throttle): State<std::sync::Arc<LoginThrottle>>,
     request: Request<Body>,
     next: Next,
 ) -> axum::response::Response {
-    let allowed = {
-        let mut attempts = attempts.lock().unwrap_or_else(|err| err.into_inner());
+    let Ok(_slot) = throttle.slots.try_acquire() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(axum::http::header::RETRY_AFTER, "2")],
+            "Authentication capacity busy; retry shortly",
+        )
+            .into_response();
+    };
+    let delayed = {
+        let mut failures = throttle
+            .failures
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let now = std::time::Instant::now();
-        while attempts
+        while failures
             .front()
             .is_some_and(|t| now.duration_since(*t).as_secs() >= 60)
         {
-            attempts.pop_front();
+            failures.pop_front();
         }
-        if attempts.len() >= 20 {
-            false
-        } else {
-            attempts.push_back(now);
-            true
-        }
+        failures.len() >= 20
     };
-    if !allowed {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, "60")],
-            "Too many login attempts",
-        )
-            .into_response();
+    if delayed {
+        tokio::time::sleep(StdDuration::from_secs(2)).await;
     }
-    next.run(request).await
+    let response = next.run(request).await;
+    if response.status().is_client_error() {
+        let mut failures = throttle
+            .failures
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if failures.len() == 20 {
+            failures.pop_front();
+        }
+        failures.push_back(std::time::Instant::now());
+    }
+    response
+}
+
+#[cfg(test)]
+mod throttle_tests {
+    use super::*;
+    #[tokio::test]
+    async fn failed_login_burst_delays_but_does_not_lock_out_valid_credentials() {
+        let throttle = std::sync::Arc::new(LoginThrottle::default());
+        let app = Router::new().route(
+            "/",
+            post(|headers: axum::http::HeaderMap| async move {
+                if headers.contains_key("test-valid") {
+                    StatusCode::OK
+                } else {
+                    StatusCode::UNAUTHORIZED
+                }
+            })
+            .layer(middleware::from_fn_with_state(
+                throttle.clone(),
+                throttle_login,
+            )),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        });
+        let client = reqwest::Client::new();
+        for _ in 0..20 {
+            let response = client.post(&url).send().await.expect("response");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let response = client
+            .post(&url)
+            .header("test-valid", "true")
+            .send()
+            .await
+            .expect("response");
+        server.abort();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(throttle.failures.lock().expect("failures").len(), 20);
+    }
 }

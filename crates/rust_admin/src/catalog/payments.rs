@@ -196,6 +196,7 @@ pub(crate) async fn finalize(state: &AppState) -> Result<(), ApiError> {
     )
     .await?;
     let client = state.antd.with_approval(&plan.approval.quote_id);
+    crate::pipeline::paid_phase(async {
     for (document, quote) in [
         (&plan.catalog, &plan.catalog_quote),
         (&plan.all_catalog, &plan.all_catalog_quote),
@@ -230,6 +231,7 @@ pub(crate) async fn finalize(state: &AppState) -> Result<(), ApiError> {
         .bind(json!({"published_address":plan.catalog_quote.address,"all_address":plan.all_catalog_quote.address,"published":plan.catalog,"all":plan.all_catalog}).to_string()).execute(&mut *tx).await.map_err(db_error)?;
     commit_snapshot(state, tx).await?;
     Ok(())
+    }).await
 }
 
 /// Expose only committed snapshots. Materialization re-reads the latest row under

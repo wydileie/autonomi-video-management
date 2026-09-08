@@ -295,14 +295,15 @@ mod db_tests {
                 .unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
         }
+        let delayed_at = std::time::Instant::now();
         let response = client
             .post(format!("{base}/auth/login"))
-            .json(&json!({}))
+            .json(&json!({"username":"admin","password":"password"}))
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers().get("retry-after").unwrap(), "60");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(delayed_at.elapsed() >= std::time::Duration::from_secs(2));
         server.abort();
         let _ = server.await;
         let _ = fs::remove_dir_all(root);
@@ -556,6 +557,49 @@ mod db_tests {
         );
 
         let _ = fs::remove_dir_all(root_dir);
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn db_exhausted_approved_upload_keeps_recovery_identity() {
+        let db = TestDb::new().await;
+        let root = std::env::temp_dir().join(format!("autvid_db_paid_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root);
+        let video = insert_video(&state.pool, "uploading", &root).await;
+        sqlx::query("UPDATE videos SET approved_quote_id='original-quote' WHERE id=$1")
+            .bind(video)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        schedule_upload_job(&state, &video.to_string())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE video_jobs SET max_attempts=1 WHERE video_id=$1")
+            .bind(video)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let job = acquire_next_job(&state, "worker").await.unwrap().unwrap();
+        mark_job_failed(&state, &job, "database busy after storing segment")
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM videos WHERE id=$1")
+                .bind(video)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            "payment_recovery_required"
+        );
+        let error = crate::pipeline::paid_phase(async {
+            Err(crate::pipeline::payment_api(
+                "approval_required: catalog changed",
+            ))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.detail.starts_with("payment_recovery_required:"));
+        let _ = fs::remove_dir_all(root);
         db.cleanup().await;
     }
 

@@ -22,7 +22,7 @@ services:
     networks:
       - appnet
     volumes:
-      - ${ANTD_BACKUP_VOLUME:-antd_payment_state}:/var/lib/antd:ro
+      - ${ANTD_BACKUP_VOLUME:?Set ANTD_BACKUP_VOLUME to autonomi_devnet_data (local) or antd_payment_state (production)}:/var/lib/antd:ro
       - ${BACKUP_HOST_PATH:-../backups}:/backups
       - ${AUTVID_DATA_HOST_PATH:-../.autvid/app_data}:/var/lib/autvid:ro
       - ${BACKUP_TEXTFILE_HOST_PATH:-./monitoring/textfile}:/var/lib/node_exporter/textfile_collector

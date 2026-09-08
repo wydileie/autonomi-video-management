@@ -423,11 +423,15 @@ pub(super) async fn mark_job_failed(
     job: &LeasedJob,
     detail: &str,
 ) -> Result<(), ApiError> {
+    let approval = detail.contains("APPROVAL_REQUIRED") || detail.contains("approval_required:");
     let recovery = detail.contains("PAYMENT_RECOVERY_REQUIRED")
         || detail.contains("payment_recovery_required")
         || detail.contains("PARTIAL_UPLOAD")
-        || detail.contains("partial_upload:");
-    let approval = detail.contains("APPROVAL_REQUIRED") || detail.contains("approval_required:");
+        || detail.contains("partial_upload:")
+        // A retry may already have completed paid objects under the original
+        // approval even when its next preflight fails before another upload.
+        || (approval && job.attempts > 1
+            && matches!(job.kind, JobKind::UploadVideo | JobKind::FinalizeCatalog));
     let final_failure = job.attempts >= job.max_attempts || recovery || approval;
     if final_failure {
         let mut tx = crate::db::begin_immediate(&state.pool).await?;
@@ -463,13 +467,21 @@ pub(super) async fn mark_job_failed(
                     .bind(status).bind(detail).bind(job.id).execute(&mut *tx).await.map_err(db_error)?;
             }
             if let Some(video_id) = job.video_id {
-                let status = if recovery {
-                    "payment_recovery_required"
-                } else if approval {
-                    "approval_required"
-                } else {
-                    STATUS_ERROR
-                };
+                let approved: bool = sqlx::query_scalar(
+                    "SELECT approved_quote_id IS NOT NULL FROM videos WHERE id=$1",
+                )
+                .bind(video_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_error)?;
+                let status =
+                    if recovery || (approved && !approval && job.kind == JobKind::UploadVideo) {
+                        "payment_recovery_required"
+                    } else if approval {
+                        "approval_required"
+                    } else {
+                        STATUS_ERROR
+                    };
                 sqlx::query(
                     "UPDATE videos SET status=$1,error_message=$2,updated_at=$3 WHERE id=$4",
                 )
