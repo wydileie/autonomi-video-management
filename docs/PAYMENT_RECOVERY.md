@@ -15,15 +15,16 @@ signing stream, and uncertain transaction state blocks subsequent signing.
 
 Workers renew leases and send the job identity and ownership generation with
 payment requests. Losing a lease cancels work; stale workers cannot complete
-jobs or publish catalog results. Catalog changes during a quote/upload invalidate
-the snapshot and require approval of a new quote.
+jobs or publish catalog results. Catalog changes invalidate the quoted snapshot.
+A replacement quote is allowed only before payment; conflicts after payment
+retain the original approval for recovery.
 
 ## Operator-visible states
 
 | State | Action |
 | --- | --- |
 | `awaiting_approval` / catalog `draft` | Review storage and gas caps, then approve. |
-| `approval_required` | Content, prices, or expiry invalidated the plan. Prepare and review a new quote. |
+| `approval_required` | Content, prices, or expiry invalidated an unpaid plan. Prepare and review a new quote. |
 | `payment_recovery_required` | Preserve the original files, approval, job, and gateway journal. Resume the existing operation or reconcile uncertain payment state. |
 | `ready` / catalog `complete` | Every required object was stored and configured verification succeeded. |
 
@@ -32,6 +33,13 @@ same failed job and approval. The gateway replays completed objects and uses
 upstream resumable finalization for partial storage. It never creates a new
 payment to replace an uncertain one. Fresh catalog quotes are blocked while an
 earlier catalog payment is active or uncertain.
+
+Before returning failed approved work to `approval_required`, the gateway must
+atomically cancel its approval and prove that no transaction was ever reserved
+under it. Cancellation and signing reservations use the same journal write
+lock, so a concurrent upload cannot sign against a cancelled approval. Paid work,
+lost lease ownership, and unavailable or uncertain gateway responses retain
+`payment_recovery_required`; a timeout never authorizes a replacement payment.
 
 Upstream prepared/resumable handles are opaque in-memory values, retained for
 up to one hour (at most four). They are not serialized as a durable format. If

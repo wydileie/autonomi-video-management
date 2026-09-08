@@ -423,8 +423,9 @@ pub(super) async fn mark_job_failed(
     job: &LeasedJob,
     detail: &str,
 ) -> Result<(), ApiError> {
+    let mut detail = detail.to_owned();
     let approval = detail.contains("APPROVAL_REQUIRED") || detail.contains("approval_required:");
-    let recovery = detail.contains("PAYMENT_RECOVERY_REQUIRED")
+    let mut recovery = detail.contains("PAYMENT_RECOVERY_REQUIRED")
         || detail.contains("payment_recovery_required")
         || detail.contains("PARTIAL_UPLOAD")
         || detail.contains("partial_upload:")
@@ -448,7 +449,7 @@ pub(super) async fn mark_job_failed(
             "#,
         )
         .bind(JOB_STATUS_FAILED)
-        .bind(detail)
+        .bind(&detail)
         .bind(now)
         .bind(job.id)
         .bind(&job.lease_owner)
@@ -457,6 +458,34 @@ pub(super) async fn mark_job_failed(
         .await
         .map_err(db_error)?;
         if updated.rows_affected() == 1 {
+            if approval && matches!(job.kind, JobKind::UploadVideo | JobKind::FinalizeCatalog) {
+                let quote_id: Option<String> = sqlx::query_scalar("SELECT COALESCE(j.payment_quote_id,v.approved_quote_id) FROM video_jobs j LEFT JOIN videos v ON v.id=j.video_id WHERE j.id=$1")
+                    .bind(job.id).fetch_one(&mut *tx).await.map_err(db_error)?;
+                if let Some(quote_id) = quote_id {
+                    let lease_key = format!("{}:{}:{}", job.id, job.lease_owner, job.attempts);
+                    let client = state.antd.with_lease(&lease_key);
+                    // Hold job ownership while the gateway atomically proves no
+                    // reservation exists and prevents any later signing on this ID.
+                    let unpaid = tokio::time::timeout(
+                        StdDuration::from_secs(2),
+                        client.cancel_unpaid_approval(&quote_id),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(false);
+                    recovery = !unpaid;
+                    if unpaid {
+                        detail = format!("approval_required: original approval safely cancelled before any transaction; regenerate the quote. {detail}");
+                        sqlx::query("UPDATE video_jobs SET last_error=$1 WHERE id=$2")
+                            .bind(&detail)
+                            .bind(job.id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(db_error)?;
+                    }
+                }
+            }
             if job.kind == JobKind::FinalizeCatalog {
                 let status = if approval && !recovery {
                     "approval_required"
@@ -464,7 +493,7 @@ pub(super) async fn mark_job_failed(
                     "payment_recovery_required"
                 };
                 sqlx::query("UPDATE catalog_approvals SET state=$1,error_message=$2 WHERE id=(SELECT payment_quote_id FROM video_jobs WHERE id=$3)")
-                    .bind(status).bind(detail).bind(job.id).execute(&mut *tx).await.map_err(db_error)?;
+                    .bind(status).bind(&detail).bind(job.id).execute(&mut *tx).await.map_err(db_error)?;
             }
             if let Some(video_id) = job.video_id {
                 let approved: bool = sqlx::query_scalar(
@@ -486,7 +515,7 @@ pub(super) async fn mark_job_failed(
                     "UPDATE videos SET status=$1,error_message=$2,updated_at=$3 WHERE id=$4",
                 )
                 .bind(status)
-                .bind(detail)
+                .bind(&detail)
                 .bind(now)
                 .bind(video_id)
                 .execute(&mut *tx)
@@ -514,7 +543,7 @@ pub(super) async fn mark_job_failed(
     )
     .bind(JOB_STATUS_QUEUED)
     .bind(run_after)
-    .bind(detail)
+    .bind(&detail)
     .bind(job.id)
     .bind(Utc::now())
     .bind(&job.lease_owner)

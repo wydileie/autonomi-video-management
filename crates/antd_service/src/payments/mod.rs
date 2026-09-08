@@ -660,6 +660,21 @@ pub(crate) async fn resume(
         .map_err(payment_error)
 }
 
+pub(crate) async fn cancel_unpaid(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let lease = lease_header(&headers)?;
+    let cancelled = state
+        .payments
+        .journal
+        .cancel_unpaid(&id, &lease)
+        .await
+        .map_err(payment_error)?;
+    Ok(Json(serde_json::json!({"cancelled_unpaid": cancelled})))
+}
+
 pub(crate) async fn status(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,

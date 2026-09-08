@@ -145,6 +145,10 @@ A follow-up review of the corrections is required before merging PR #204.
   cannot reopen paid work whose required SDK recovery material was lost.
 - Exhausted approved uploads retain a recovery action. Catalog divergence and
   other failures after storage begins retain the original payment identity.
+- Invalid unpaid plans can return to approval only after atomic gateway
+  cancellation proves that no transaction reservation exists. Concurrent
+  cancellation/signing tests prove that only one can succeed; paid or uncertain
+  work remains in recovery.
 - Login throttling counts failed attempts and uses bounded concurrency plus a
   short delay, avoiding a global minute-long lockout of valid credentials.
 - Maximum-size metadata now fits the bounded cache (16 MiB of estimated parsed
@@ -157,7 +161,8 @@ A follow-up review of the corrections is required before merging PR #204.
 - Desktop cargo-deny now explicitly selects the shared configuration. CLI help
   confirms its default is the current directory's `deny.toml`; the prior local
   command already ran from the repository root. Full dependency audits remain
-  blocking as required by the approved plan.
+  blocking as required by the approved plan. The devbench uses cargo-deny 0.20.2
+  to match CI, with configuration passed before the `check` subcommand.
 - Native Host/Origin validation deliberately covers loopback services; Compose
   uses Nginx plus application authentication/CSRF. Alloy's host-wide read access
   before project filtering and the historical-manifest release gate are explicit.

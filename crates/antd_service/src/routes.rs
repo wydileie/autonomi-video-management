@@ -28,6 +28,10 @@ pub(crate) fn router(state: AppState, config: &Config) -> Router {
         .route("/v1/payments/lease", post(crate::payments::activate))
         .route("/v1/payments/approvals", post(crate::payments::approve))
         .route(
+            "/v1/payments/approvals/{id}/cancel-unpaid",
+            post(crate::payments::cancel_unpaid),
+        )
+        .route(
             "/v1/payments/uploads/{id}/resume",
             post(crate::payments::resume),
         )

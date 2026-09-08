@@ -209,7 +209,7 @@ smoke-local-large-original:
 
 audit-rust:
 	$(CARGO) deny check advisories
-	$(CARGO) deny --manifest-path apps/desktop/src-tauri/Cargo.toml check --config deny.toml advisories
+	$(CARGO) deny --manifest-path apps/desktop/src-tauri/Cargo.toml --config deny.toml check advisories
 
 audit-react:
 	cd apps/web && $(NPM) audit

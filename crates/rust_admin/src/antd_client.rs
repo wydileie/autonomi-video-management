@@ -92,6 +92,17 @@ impl AntdRestClient {
         Ok(())
     }
 
+    pub(crate) async fn cancel_unpaid_approval(&self, quote_id: &str) -> anyhow::Result<bool> {
+        let response: Value = self
+            .request_json(
+                reqwest::Method::POST,
+                &format!("/v1/payments/approvals/{quote_id}/cancel-unpaid"),
+                Option::<Value>::None,
+            )
+            .await?;
+        Ok(response["cancelled_unpaid"].as_bool().unwrap_or(false))
+    }
+
     pub(crate) async fn file_cost(
         &self,
         path: &FsPath,

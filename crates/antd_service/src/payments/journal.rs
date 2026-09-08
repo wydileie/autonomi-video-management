@@ -155,6 +155,40 @@ impl Journal {
         Ok(())
     }
 
+    /// Atomically revoke only approvals which have never reserved a transaction.
+    /// A concurrent signer either reserves first (and revocation fails) or sees
+    /// the revoked state. This is the only safe gate to replace an approval ID.
+    pub(super) async fn cancel_unpaid(
+        &self,
+        approval_id: &str,
+        lease_key: &str,
+    ) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM payment_leases WHERE approval_id=$1 AND job_id || ':' || owner || ':' || generation=$2 AND expires_at>$3) AND NOT EXISTS(SELECT 1 FROM payment_controls WHERE key='restore_reconciliation_required' AND value='1')")
+            .bind(approval_id).bind(lease_key).bind(Utc::now().timestamp()).fetch_one(&mut *tx).await?;
+        anyhow::ensure!(
+            valid,
+            "payment_recovery_required: cannot revoke without the current execution lease"
+        );
+        let paid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM payment_transactions WHERE approval_id=$1)",
+        )
+        .bind(approval_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if paid {
+            return Ok(false);
+        }
+        let updated =
+            sqlx::query("UPDATE payment_approvals SET state='cancelled_unpaid' WHERE id=$1")
+                .bind(approval_id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        tx.commit().await?;
+        Ok(updated == 1)
+    }
+
     pub(super) async fn admit(
         &self,
         id: &str,
@@ -746,6 +780,40 @@ mod tests {
             reopened.status("upload").await.expect("status")["transaction_count"],
             1
         );
+    }
+
+    #[tokio::test]
+    async fn replacing_an_unpaid_approval_is_atomic_with_signing() {
+        for _ in 0..8 {
+            let (_dir, journal, _, lease) = fixture().await;
+            journal
+                .admit("upload", "quote", &"a".repeat(64), 3, "auto", &lease.key())
+                .await
+                .expect("admit");
+            let key = lease.key();
+            let intent = reservation("intent", "upload", 5, 6);
+            let (cancelled, reserved) = tokio::join!(
+                journal.cancel_unpaid("quote", &key),
+                journal.reserve(&intent)
+            );
+            let cancelled = cancelled.expect("cancel result");
+            assert_ne!(cancelled, reserved.is_ok());
+            if cancelled {
+                assert!(!journal
+                    .admit("again", "quote", &"a".repeat(64), 3, "auto", &key)
+                    .await
+                    .is_ok());
+                assert!(journal
+                    .cancel_unpaid("quote", &key)
+                    .await
+                    .expect("idempotent revocation"));
+            } else {
+                assert!(!journal
+                    .cancel_unpaid("quote", &key)
+                    .await
+                    .expect("paid approval retained"));
+            }
+        }
     }
 
     #[tokio::test]

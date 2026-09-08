@@ -561,6 +561,56 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn db_requote_requires_gateway_confirmation_of_unpaid_revocation() {
+        for unpaid in [true, false] {
+            let db = TestDb::new().await;
+            let root = std::env::temp_dir().join(format!("autvid_db_requote_{}", Uuid::new_v4()));
+            let mut state = test_state(db.pool.clone(), &root);
+            let video = insert_video(&state.pool, "uploading", &root).await;
+            sqlx::query("UPDATE videos SET approved_quote_id='original-quote' WHERE id=$1")
+                .bind(video)
+                .execute(&state.pool)
+                .await
+                .unwrap();
+            schedule_upload_job(&state, &video.to_string())
+                .await
+                .unwrap();
+            let job = acquire_next_job(&state, "worker").await.unwrap().unwrap();
+            let expected = format!("{}:worker:1", job.id);
+            let app = axum::Router::new().route(
+                "/v1/payments/approvals/original-quote/cancel-unpaid",
+                axum::routing::post(move |headers: axum::http::HeaderMap| async move {
+                    assert_eq!(headers["x-payment-lease"].to_str().unwrap(), expected);
+                    axum::Json(json!({"cancelled_unpaid": unpaid}))
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            state.antd = AntdRestClient::new(&url, 1.0, state.metrics.clone(), None).unwrap();
+            mark_job_failed(&state, &job, "payment_recovery_required: approved storage started; approval_required: price increased").await.unwrap();
+            let status: String = sqlx::query_scalar("SELECT status FROM videos WHERE id=$1")
+                .bind(video)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                if unpaid {
+                    "approval_required"
+                } else {
+                    "payment_recovery_required"
+                }
+            );
+            server.abort();
+            let _ = fs::remove_dir_all(root);
+            db.cleanup().await;
+        }
+    }
+
+    #[tokio::test]
     async fn db_exhausted_approved_upload_keeps_recovery_identity() {
         let db = TestDb::new().await;
         let root = std::env::temp_dir().join(format!("autvid_db_paid_{}", Uuid::new_v4()));

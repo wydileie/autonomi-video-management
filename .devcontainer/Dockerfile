@@ -195,7 +195,7 @@ RUN node -e 'const fs=require("fs"); const p="/usr/lib/node_modules/npm/package.
  && npm cache clean --force
 
 # The repository audit target must also work inside the headless bench.
-RUN cargo install cargo-deny --version 0.19.9 --locked \
+RUN cargo install cargo-deny --version 0.20.2 --locked \
  && rm -rf "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache
 
 RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 \

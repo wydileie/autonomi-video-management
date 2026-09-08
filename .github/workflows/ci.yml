@@ -232,8 +232,9 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: apps/desktop/src-tauri/Cargo.toml
+          arguments: --all-features --config deny.toml
           command: check
-          command-arguments: --config deny.toml advisories
+          command-arguments: advisories
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@v0.36.0
