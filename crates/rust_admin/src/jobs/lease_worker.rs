@@ -454,7 +454,7 @@ pub(super) async fn mark_job_failed(
         .map_err(db_error)?;
         if updated.rows_affected() == 1 {
             if job.kind == JobKind::FinalizeCatalog {
-                let status = if approval {
+                let status = if approval && !recovery {
                     "approval_required"
                 } else {
                     "payment_recovery_required"

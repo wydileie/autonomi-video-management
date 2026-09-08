@@ -560,6 +560,32 @@ mod db_tests {
     }
 
     #[tokio::test]
+    async fn db_catalog_recovery_takes_precedence_over_nested_approval_error() {
+        let db = TestDb::new().await;
+        let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
+        let state = test_state(db.pool.clone(), &root_dir);
+        sqlx::query("INSERT INTO catalog_approvals(id,plan,state,created_at) VALUES('quote','{}','uploading',$1)")
+            .bind(Utc::now()).execute(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO video_jobs(id,job_kind,status,max_attempts,run_after,payment_quote_id) VALUES($1,'finalize_catalog','queued',2,$2,'quote')")
+            .bind(Uuid::new_v4()).bind(Utc::now()).execute(&state.pool).await.unwrap();
+        let job = acquire_next_job(&state, "worker-a").await.unwrap().unwrap();
+        mark_job_failed(&state, &job,
+            "payment_recovery_required: budget changed after storage payment intent; approval_required: aggregate spending cap exceeded")
+            .await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT state FROM catalog_approvals WHERE id='quote'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap(),
+            "payment_recovery_required"
+        );
+        // A new quote must not replace the original potentially paid operation.
+        let error = crate::catalog::payments::prepare(&state).await.unwrap_err();
+        assert!(error.detail.contains("resume or reconcile"));
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
     async fn db_recovery_requeues_running_jobs_and_pending_catalog_publish() {
         let db = TestDb::new().await;
         let root_dir = std::env::temp_dir().join(format!("autvid_db_jobs_{}", Uuid::new_v4()));
