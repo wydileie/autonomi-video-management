@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS builder
+FROM rust:1.98.1-slim-bookworm@sha256:ff521445a372125ed4f76e1453a1f8098f2d05332d1601d30db1c1f62757e730 AS builder
 # Official Docker images lag the patch release; install the pinned toolchain explicitly.
 RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1 && rustup toolchain uninstall 1.98.0
 
