@@ -35,6 +35,11 @@ The refresh is not merged: upstream security findings still block readiness.
 | Grafana | 13.2.1 | 13.2.4 |
 | Loki | 3.7.7 | 3.7.9 |
 | Grafana Alloy | 1.19.2 | 1.21.2 |
+| Devcontainer npm | 12.0.2 | 12.2.1 |
+| Devcontainer pip / setuptools | 26.2.1 / 84.0.0 | 26.2.2 / 84.2.1 |
+| Devcontainer GitPython / Black | 3.1.62 / 26.5.1 | 3.2.1 / 26.10.1 |
+| npm security overrides | brace-expansion 5.0.9 / ip-address 10.3.1 / tar 7.5.21 | ip-address 10.7.5 / undici 6.29.1 |
+| GitHub Rust cache action | 2.9.2 | 2.9.3 |
 
 Both Rust graphs and npm lockfiles were regenerated against live registries.
 Compatible updates include Rustls 0.23.46, rustls-webpki 0.103.16, Tokio 1.54.1,
@@ -69,6 +74,10 @@ the equivalent try_update API. No warning suppression was added.
 - Dependabot groups React/React DOM/types and Tauri crates. Its PRs still need
   manual alignment of deploy/versions.json and cross-ecosystem Tauri versions;
   grouping does not automatically update runtime metadata.
+- npm 12.2.1 already bundles patched tar 7.5.22 and brace-expansion 5.0.12.
+  Its bundled ip-address and undici still have advisories, so the devcontainer
+  installs compatible fixes 10.7.5 and 6.29.1. Validation uses the same global
+  installation layout as the container and checks that the CLI still runs.
 
 ## Autonomi provenance and decompression
 
@@ -109,6 +118,10 @@ Additional checks passed:
 - Full desktop cargo-deny policy: advisories, licenses, bans and sources pass.
 - Root licenses, bans and sources pass; advisory failures remain listed below.
 - Runtime consistency plus 3 Python security-tool tests.
+- Devcontainer Python tool versions install on Python 3.12, pass `pip check`,
+  and successfully run Black and import GitPython. npm 12.2.1 runs on pinned
+  Node 24.22.1 and successfully queries the registry after its two compatible
+  bundled-dependency fixes; the patched install reports zero vulnerabilities.
 
 The complete vendor suite passed: 99 tests across unit, integration and doc
 tests. Its subprocess helper is marked ignored for direct suite execution and

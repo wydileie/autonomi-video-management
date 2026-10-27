@@ -179,19 +179,21 @@ WORKDIR /workspace
 # Refresh inherited development utilities as well as application dependencies.
 # The Python devcontainer base includes optional formatter/tool virtualenvs.
 RUN apt-get update && apt-get upgrade -y \
- && npm install -g npm@12.0.2 \
- && python3 -m pip install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0 GitPython==3.1.62 \
+ && npm install -g npm@12.2.1 \
+ && python3 -m pip install --no-cache-dir --upgrade pip==26.2.2 setuptools==84.2.1 wheel==0.48.0 GitPython==3.2.1 \
  && for python in /usr/local/py-utils/venvs/*/bin/python; do \
-      [ ! -x "$python" ] || python3 -m pip --python "$python" install --no-cache-dir --upgrade pip==26.2.1 setuptools==84.0.0 wheel==0.48.0; \
+      [ ! -x "$python" ] || python3 -m pip --python "$python" install --no-cache-dir --upgrade pip==26.2.2 setuptools==84.2.1 wheel==0.48.0; \
     done \
- && python3 -m pip --python /usr/local/py-utils/venvs/black/bin/python install --no-cache-dir --upgrade black==26.5.1 \
+ && python3 -m pip --python /usr/local/py-utils/venvs/black/bin/python install --no-cache-dir --upgrade black==26.10.1 \
  && npm cache clean --force \
  && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /root/.cache
 
-# Patch npm's bundled dependency ranges without resolving its unpublished dev tools.
+# npm 12.2.1 bundles patched tar and brace-expansion, but still needs these
+# compatible security fixes. Exclude npm's unpublished development dependencies.
 RUN node -e 'const fs=require("fs"); const p="/usr/lib/node_modules/npm/package.json"; const j=JSON.parse(fs.readFileSync(p)); delete j.devDependencies; fs.writeFileSync(p,JSON.stringify(j));' \
  && npm install --prefix /usr/lib/node_modules/npm --no-save --ignore-scripts --omit=dev \
-      brace-expansion@5.0.9 ip-address@10.3.1 tar@7.5.21 \
+      ip-address@10.7.5 undici@6.29.1 \
+ && npm --version \
  && npm cache clean --force
 
 # The repository audit target must also work inside the headless bench.
