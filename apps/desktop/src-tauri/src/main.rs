@@ -131,11 +131,11 @@ fn resolve_binary_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> 
 
 #[tauri::command]
 async fn desktop_open_in_browser(url: String) -> Result<(), String> {
-    validate_launcher_url(&url)?;
-    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| err.to_string())
+    let parsed = validate_launcher_url(&url)?;
+    open::that_detached(parsed.as_str()).map_err(|err| err.to_string())
 }
 
-fn validate_launcher_url(value: &str) -> Result<(), String> {
+fn validate_launcher_url(value: &str) -> Result<url::Url, String> {
     let parsed = url::Url::parse(value).map_err(|_| "launcher URL is invalid".to_string())?;
     let is_loopback_host = matches!(
         parsed.host_str(),
@@ -147,7 +147,7 @@ fn validate_launcher_url(value: &str) -> Result<(), String> {
         && parsed.username().is_empty()
         && parsed.password().is_none()
     {
-        Ok(())
+        Ok(parsed)
     } else {
         Err("launcher URL must be a loopback HTTP URL".to_string())
     }
@@ -180,7 +180,6 @@ fn main() {
     });
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             desktop_setup_status,
@@ -216,6 +215,8 @@ mod tests {
         assert!(validate_launcher_url("http://127.0.0.1:8080").is_ok());
         assert!(validate_launcher_url("http://localhost:49152").is_ok());
         assert!(validate_launcher_url("http://[::1]:8080").is_ok());
+        let normalized = validate_launcher_url(" \thttp://local\nhost:49152\r\n").unwrap();
+        assert_eq!(normalized.as_str(), "http://localhost:49152/");
     }
 
     #[test]

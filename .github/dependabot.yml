@@ -16,11 +16,26 @@ updates:
           - ant-node
           - ant-protocol
           - evmlib
+    # evmlib exposes Alloy 1 provider types in the payment signer API.
+    ignore:
+      - dependency-name: alloy
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: npm
     directory: /apps/web
     schedule:
       interval: weekly
+    groups:
+      react-runtime:
+        patterns:
+          - react
+          - react-dom
+          - '@types/react'
+          - '@types/react-dom'
+    # Keep Node typings on the runtime major pinned in deploy/versions.json.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directory: /crates/rust_admin
@@ -46,6 +61,10 @@ updates:
     directory: /apps/web
     schedule:
       interval: weekly
+    # Node major migrations must also update CI, .nvmrc and the devcontainer.
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: docker
     directory: /deploy/backup_sidecar
@@ -61,6 +80,11 @@ updates:
     directory: /apps/desktop/src-tauri
     schedule:
       interval: weekly
+    groups:
+      tauri-runtime:
+        patterns:
+          - tauri
+          - tauri-*
 
   - package-ecosystem: npm
     directory: /apps/desktop

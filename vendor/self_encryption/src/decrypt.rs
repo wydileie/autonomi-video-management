@@ -1,10 +1,10 @@
 // Copyright 2021 MaidSafe.net limited.
 //
-// This SAFE Network Software is licensed to you under The General Public License (GPL), version 3.
-// Unless required by applicable law or agreed to in writing, the SAFE Network Software distributed
-// under the GPL Licence is distributed on an "AS IS"  BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. Please review the Licences for the specific language governing
-// permissions and limitations relating to use of the SAFE Network Software.
+// This Autonomi Software is licensed under the MIT license <LICENSE-MIT or
+// https://opensource.org/licenses/MIT> or the Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, at your
+// option. This file may not be copied, modified, or distributed except
+// according to those terms.
 
 use crate::{cipher, utils::get_pad_key_and_nonce, utils::xor, EncryptedChunk, Error, Result};
 use bytes::Bytes;
@@ -44,6 +44,18 @@ pub fn decrypt_chunk(
     src_hashes: &[XorName],
     child_level: usize,
 ) -> Result<Bytes> {
+    decrypt_chunk_bounded(chunk_index, content, src_hashes, child_level, usize::MAX)
+}
+
+/// As [`decrypt_chunk`], but fails rather than decompress more than
+/// `max_size` bytes.
+pub(crate) fn decrypt_chunk_bounded(
+    chunk_index: usize,
+    content: &Bytes,
+    src_hashes: &[XorName],
+    child_level: usize,
+    max_size: usize,
+) -> Result<Bytes> {
     let pki = get_pad_key_and_nonce(chunk_index, src_hashes, child_level)?;
     let (pad, key, nonce) = pki;
 
@@ -53,55 +65,66 @@ pub fn decrypt_chunk(
     // Then decrypt the content
     let decrypted = cipher::decrypt(xored, &key, &nonce)?;
 
-    // Finally decompress
-    let mut decompressed = BoundedChunk(Vec::new());
-    let mut cursor = Cursor::new(&decrypted);
-
-    brotli::BrotliDecompress(&mut cursor, &mut decompressed).map_err(|_| Error::Compression)?;
-
-    Ok(Bytes::from(decompressed.0))
+    // Enforce both the caller's bound and the protocol maximum before allocation.
+    let mut decompressed = BoundedChunk {
+        bytes: Vec::new(),
+        max_size: max_size.min(crate::MAX_CHUNK_SIZE),
+    };
+    brotli::BrotliDecompress(&mut Cursor::new(&decrypted), &mut decompressed)
+        .map_err(|_| Error::Compression)?;
+    Ok(Bytes::from(decompressed.bytes))
 }
 
 // AutVid downstream patch: reject oversized plaintext before extending a buffer.
-// MAX_CHUNK_SIZE is the same limit used by the protocol's encryptor.
-struct BoundedChunk(Vec<u8>);
+struct BoundedChunk {
+    bytes: Vec<u8>,
+    max_size: usize,
+}
+
 impl Write for BoundedChunk {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > crate::MAX_CHUNK_SIZE.saturating_sub(self.0.len()) {
+        if bytes.len() > self.max_size.saturating_sub(self.bytes.len()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "decrypted chunk exceeds protocol maximum",
+                "decrypted chunk exceeds maximum",
             ));
         }
-        self.0.extend_from_slice(bytes);
+        self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
+
 #[cfg(test)]
 mod bounded_tests {
     use super::*;
+
     #[test]
-    fn decompresses_legitimate_chunks_and_rejects_expansion_bombs() {
-        for size in [3, crate::MAX_CHUNK_SIZE, crate::MAX_CHUNK_SIZE + 1] {
-            let input = vec![0; size];
-            let mut compressed = Vec::new();
-            let _ = brotli::BrotliCompress(
-                &mut Cursor::new(input),
-                &mut compressed,
-                &brotli::enc::BrotliEncoderParams::default(),
-            )
-            .expect("compress fixture");
-            let mut output = BoundedChunk(Vec::new());
-            let result = brotli::BrotliDecompress(&mut Cursor::new(compressed), &mut output);
-            assert!(output.0.len() <= crate::MAX_CHUNK_SIZE);
-            if size <= crate::MAX_CHUNK_SIZE {
-                assert!(result.is_ok());
-                assert_eq!(output.0.len(), size);
-            } else {
-                assert!(result.is_err());
+    fn decompression_enforces_declared_and_protocol_limits() {
+        for limit in [3, crate::MAX_CHUNK_SIZE] {
+            for size in [limit, limit + 1] {
+                let mut compressed = Vec::new();
+                let _ = brotli::BrotliCompress(
+                    &mut Cursor::new(vec![0; size]),
+                    &mut compressed,
+                    &brotli::enc::BrotliEncoderParams::default(),
+                )
+                .expect("compress fixture");
+                let mut output = BoundedChunk {
+                    bytes: Vec::new(),
+                    max_size: limit,
+                };
+                let result = brotli::BrotliDecompress(&mut Cursor::new(compressed), &mut output);
+                assert!(output.bytes.len() <= limit);
+                if size <= limit {
+                    assert!(result.is_ok());
+                    assert_eq!(output.bytes.len(), size);
+                } else {
+                    assert!(result.is_err());
+                }
             }
         }
     }

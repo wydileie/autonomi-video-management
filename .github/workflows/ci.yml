@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_devcontainer:
+        description: Build and verify the complete developer container
+        type: boolean
+        default: false
   schedule:
     - cron: "17 6 * * *"
 
@@ -14,6 +19,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  devcontainer:
+    name: Full developer container build and tool checks
+    if: github.event_name == 'workflow_dispatch' && inputs.build_devcontainer
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build developer container
+        run: docker build --progress=plain -t autvid-devcontainer:ci -f .devcontainer/Dockerfile .devcontainer
+
+      - name: Verify installed tools as the development user
+        run: |
+          docker run --rm --user vscode \
+            --mount "type=bind,source=$PWD,target=/workspace,readonly" \
+            autvid-devcontainer:ci bash -lc '
+              set -euo pipefail
+              cd /workspace
+              python3 scripts/check-runtime-versions.py
+              python3 -c "import json, subprocess; p=json.load(open(\"deploy/versions.json\")); assert subprocess.check_output([\"node\", \"--version\"], text=True).strip() == \"v\" + p[\"node\"]; assert subprocess.check_output([\"rustc\", \"--version\"], text=True).split()[1] == p[\"rust\"]"
+              npm --version
+              python3 -m pip check
+              python3 -c "import git; print(git.__version__)"
+              /usr/local/py-utils/venvs/black/bin/black --version
+              cargo deny --version
+              anvil --version
+              ant --help >/dev/null
+              ant-devnet --help >/dev/null
+              antd-upstream --help >/dev/null
+              command -v antd-mcp uvx docker gh
+            '
+
   rust-workspace:
     name: Rust workspace checks
     runs-on: ubuntu-latest
@@ -22,13 +60,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -69,10 +107,10 @@ jobs:
             protobuf-compiler
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: apps/desktop/src-tauri
 
@@ -101,10 +139,10 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Run rust_admin DB integration tests
         run: cargo test --locked -p rust_admin --features db-tests db_tests -- --test-threads=1
@@ -119,7 +157,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24.20.0"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -166,13 +204,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.98.1
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2.9.2
+        uses: Swatinem/rust-cache@v2.9.3
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -212,7 +250,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24.20.0"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -304,7 +342,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: "24.20.0"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
@@ -331,6 +369,18 @@ jobs:
         env:
           E2E_BASE_URL: http://localhost
           E2E_VIDEO_PATH: /tmp/e2e-sample.mp4
+
+      - name: Verify upload, payment approval, and streaming
+        run: make smoke-local
+        timeout-minutes: 30
+
+      - name: Verify admin restart recovery
+        run: make smoke-local-restart
+        timeout-minutes: 30
+
+      - name: Verify large original upload
+        run: make smoke-local-large-original
+        timeout-minutes: 30
 
       - name: Upload Playwright report
         if: failure()

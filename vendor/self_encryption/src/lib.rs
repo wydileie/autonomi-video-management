@@ -1,10 +1,10 @@
 // Copyright 2021 MaidSafe.net limited.
 //
-// This SAFE Network Software is licensed to you under The General Public License (GPL), version 3.
-// Unless required by applicable law or agreed to in writing, the SAFE Network Software distributed
-// under the GPL Licence is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. Please review the Licences for the specific language governing
-// permissions and limitations relating to use of the SAFE Network Software.
+// This Autonomi Software is licensed under the MIT license <LICENSE-MIT or
+// https://opensource.org/licenses/MIT> or the Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, at your
+// option. This file may not be copied, modified, or distributed except
+// according to those terms.
 
 //! A file **content** self_encryptor.
 //!
@@ -91,6 +91,7 @@
 mod chunk;
 mod cipher;
 mod data_map;
+mod data_map_index;
 mod decrypt;
 mod encrypt;
 mod error;
@@ -110,6 +111,7 @@ pub use xor_name::XorName;
 
 pub use self::{
     data_map::{ChunkInfo, DataMap},
+    data_map_index::DataMapIndex,
     error::{Error, Result},
     stream_decrypt::{streaming_decrypt, streaming_decrypt_with_batch_size, DecryptionStream},
     stream_encrypt::{stream_encrypt, ChunkStream, EncryptionStream},

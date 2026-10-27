@@ -192,6 +192,24 @@ mod decompression_guard_tests {
                 assert!(plain.iter().all(|byte| *byte == 0));
             } else {
                 assert!(matches!(result, Err(self_encryption::Error::Compression)));
+
+                // The indexed API trusts the map's declared size upstream. A
+                // malicious oversized declaration must not bypass our cap.
+                let map = self_encryption::DataMap::new(
+                    (0..3)
+                        .map(|index| self_encryption::ChunkInfo {
+                            index,
+                            src_hash: hashes[index],
+                            dst_hash: self_encryption::XorName([0; 32]),
+                            src_size: size,
+                        })
+                        .collect(),
+                );
+                let index = self_encryption::DataMapIndex::new(&map).expect("index fixture");
+                assert!(matches!(
+                    index.decrypt_chunk(0, &encrypted),
+                    Err(self_encryption::Error::Compression)
+                ));
             }
         }
     }

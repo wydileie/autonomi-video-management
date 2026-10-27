@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 # ── Stage 1: Build local Autonomi devnet tooling ─────────────────────────────
-FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS builder
+FROM rust:1.99.0-slim-bookworm@sha256:2c3a22f0a5533ea2dd5a16627bc841228151faa2d4de2644ac9987e4a2f1f2fa AS builder
 # Official Docker images lag the patch release; install the pinned toolchain explicitly.
-RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1 && rustup toolchain uninstall 1.98.0
+RUN rustup toolchain install 1.99.1 --profile minimal && rustup default 1.99.1 && rustup toolchain uninstall 1.99.0
 
-ARG AUTONOMI_ANT_NODE_REF=v0.18.1
+ARG AUTONOMI_ANT_NODE_REF=v0.23.1
 
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
@@ -48,12 +48,12 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 # Pinned: a live "latest release" lookup made builds unreproducible and
 # subject to GitHub API rate limits. Bump deliberately.
-ARG FOUNDRY_TAG=v1.8.1
+ARG FOUNDRY_TAG=v1.8.6
 
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in \
-      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10" ;; \
-      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c" ;; \
+      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc" ;; \
+      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="ca61f3f6e7d635f34e3e174409964d29126fa135794cd84cead8919dd50e0930" ;; \
       *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac && \
     curl -fsSLo /tmp/foundry.tar.gz \
