@@ -13,9 +13,17 @@ RUN --mount=type=cache,id=autvid-cargo-registry,target=/usr/local/cargo/registry
     --mount=type=cache,id=autvid-rust-${TARGETARCH},target=/app/target,sharing=locked \
     cargo build --locked --release -p rust_stream && mkdir -p /out && cp /app/target/release/rust_stream /out/
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM debian:bookworm-slim
+
+# Install current Debian security fixes instead of waiting for a distroless rebuild.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    ca-certificates libgcc-s1 libssl3 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 65532 --user-group --create-home --shell /usr/sbin/nologin nonroot
 
 COPY --from=builder /out/rust_stream /usr/local/bin/rust_stream
+
+USER 65532:65532
 
 EXPOSE 8081
 

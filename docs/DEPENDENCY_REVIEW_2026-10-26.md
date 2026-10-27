@@ -1,9 +1,8 @@
 # Dependency and tooling review — 2026-10-26
 
-Status: coordinated refresh in progress. No new PR or merge has been published
-yet. Dependabot #243 is closed because Alloy 2 is incompatible with the current
-Autonomi/evmlib provider types. The remaining updates will be consolidated into
-a replacement PR; upstream security findings still prevent declaring it ready.
+Status: consolidated in [draft PR #246](https://github.com/wydileie/autonomi-video-management/pull/246).
+All 21 reviewed Dependabot PRs are closed with their disposition documented.
+The refresh is not merged: upstream security findings still block readiness.
 
 ## Updated versions
 
@@ -48,6 +47,13 @@ loopback-URL validation. This is the same browser-opening implementation the
 Tauri opener wrapper used. Removing that otherwise unused plugin and its
 capability removes zbus 5 and the three unmaintained zvariant/zbus_names crates.
 The existing custom launcher-command permission remains enforced.
+The command opens the normalized URL returned by validation.
+
+The stream runtime now follows the other services' Debian security-update
+pattern, retaining UID/GID 65532. Its previous distroless base contained an
+OpenSSL vulnerability (CVE-2026-84782); installing current Debian packages
+allows the fixed libssl3 version to reach the image without waiting for a
+distroless rebuild. The blocking image scan remains required.
 
 The newer compiler deprecates Atomic::fetch_update; its test fixture now uses
 the equivalent try_update API. No warning suppression was added.
@@ -104,7 +110,17 @@ Additional checks passed:
 - Root licenses, bans and sources pass; advisory failures remain listed below.
 - Runtime consistency plus 3 Python security-tool tests.
 
-The vendor suite and CI/container verification are still pending.
+The complete vendor suite passed: 99 tests across unit, integration and doc
+tests. Its subprocess helper is marked ignored for direct suite execution and
+is exercised by its parent test. No new test skips were introduced.
+
+CI on the initial PR commit passed frontend, desktop compilation, SQLite,
+coverage, npm/desktop audits, Compose validation, and the frontend, nginx and
+admin image scans. Root cargo-deny failed on the findings below; the stream
+image scan identified the OpenSSL issue addressed above. Final CI results and
+Claude follow-up are recorded on the PR. The devnet job now also runs the
+upload/approval/streaming, restart-recovery and large-original smoke targets.
+These end-to-end checks must pass before merge.
 The old modernization record describes earlier validation; its results do not
 substitute for validation of this dependency graph.
 
@@ -128,24 +144,16 @@ Autonomi dependency graph:
 These findings were not suppressed. A current version label alone does not mean
 the entire transitive graph is free of known advisories.
 
-## Independent review and environment
+## Independent review
 
-Claude Code 2.1.310 completed a preliminary read-only review using
-`claude-opus-5-5`. It observed intermediate manifest/lock/pin drift while the
-refresh was running; those mismatches were subsequently resolved and checked.
-A final review of the stable diff is required before merge.
-
-The first review attempt was blocked by automatic approval review because the
-CLI contacted Datadog telemetry. The successful retry set the documented
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_TELEMETRY,
-DISABLE_ERROR_REPORTING, and DO_NOT_TRACK controls. No telemetry exception was
-requested and no security review was bypassed.
-
-GitHub CLI now authenticates with repository write scopes, and registry and
-Anthropic network access work. Local .git remains read-only, so publishing must
-use the authenticated GitHub API. OrbStack is stopped; starting it from this
-sandbox fails on a log-directory write outside the repository. Container smoke,
-restart-recovery and large-original tests have not yet run for this refresh.
+Claude Code (`claude-opus-5-5`) reviewed the stable initial PR commit. It found
+no application regressions and verified the vendor provenance, licenses,
+decompression bounds, opener replacement and coordinated version pins. It
+recommended keeping the PR unmerged because of the upstream advisories and
+incomplete CI. Review fixes add an indexed decompression regression with an
+oversized declared size, restore vendor maintenance guidance, normalize the
+opened launcher URL, and refresh the stream runtime image. Final test results
+and review follow-up belong on the PR alongside their reviewed commit IDs.
 
 ## Dependabot disposition
 
@@ -153,12 +161,13 @@ Reviewed PRs: #245, #244, #243, #242, #241, #239, #238, #237, #236, #234,
 #233, #229, #226, #220, #219, #218, #217, #216, #214, #213, #212.
 
 - #243 is closed with the Alloy provider incompatibility documented.
-- #236 and #219 should close because their standalone Node 26 upgrades conflict
+- #236 and #219 are closed because their standalone Node 26 upgrades conflict
   with the supported Node 24 runtime.
-- #234 should close because the Tauri opener plugin is removed.
+- #234 is closed because the Tauri opener plugin is removed.
 - The other updates are included or superseded by newer versions in this
   consolidated refresh, including Vite 8.3.5 in place of vulnerable 8.3.0.
-  Link their closures to the replacement PR so pending work remains traceable.
+  Their closure comments link to draft PR #246 so pending work remains traceable;
+  closing them does not mean the replacement changes have merged.
 
 No existing application data, Docker volumes or paid-network transactions were
 modified by this review.
