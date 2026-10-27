@@ -1,8 +1,8 @@
 # Development container and headless test bench
 
-VS Code and `make devbench-*` use the same Dockerfile. The image pins Rust 1.98.1,
-Node 24.20.0, ant-core's compatible ant-node/devnet 0.18.1, upstream SDK 0.12.1,
-ant CLI 0.3.6, and Foundry 1.8.1. Foundry archives are checked against release SHA-256 hashes.
+VS Code and `make devbench-*` use the same Dockerfile. The image pins Rust 1.99.1,
+Node 24.22.1, ant-core's compatible ant-node/devnet 0.23.1, upstream SDK 0.17.0,
+ant CLI 0.3.12, and Foundry 1.8.6. Foundry archives are checked against release SHA-256 hashes.
 
 The application gateway is built from `crates/antd_service` and uses port 8082.
 Upstream SDK tooling is named `antd-upstream`, uses loopback port 8182, and serves

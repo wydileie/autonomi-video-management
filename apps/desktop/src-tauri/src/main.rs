@@ -132,7 +132,7 @@ fn resolve_binary_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> 
 #[tauri::command]
 async fn desktop_open_in_browser(url: String) -> Result<(), String> {
     validate_launcher_url(&url)?;
-    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|err| err.to_string())
+    open::that_detached(url).map_err(|err| err.to_string())
 }
 
 fn validate_launcher_url(value: &str) -> Result<(), String> {
@@ -180,7 +180,6 @@ fn main() {
     });
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             desktop_setup_status,

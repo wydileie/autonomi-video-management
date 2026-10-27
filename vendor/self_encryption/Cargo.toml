@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "self_encryption"
-version = "0.36.0"
+version = "0.36.2"
 authors = ["MaidSafe Developers <dev@maidsafe.net>"]
 build = false
 autolib = false
@@ -20,12 +20,23 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Self encrypting files (convergent encryption plus obfuscation)"
-homepage = "https://maidsafe.net"
+description = "Self-encrypting, content-addressed storage - convergent encryption that splits data into obfuscated chunks. The peer-reviewed core of Autonomi."
+homepage = "https://autonomi.com"
 documentation = "https://docs.rs/self_encryption"
 readme = "README.md"
-license = "GPL-3.0"
-repository = "https://github.com/maidsafe/self_encryption"
+keywords = [
+    "encryption",
+    "convergent",
+    "storage",
+    "autonomi",
+    "deduplication",
+]
+categories = [
+    "cryptography",
+    "filesystem",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WithAutonomi/self_encryption"
 
 [features]
 default = []

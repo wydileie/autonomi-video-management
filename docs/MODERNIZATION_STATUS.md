@@ -4,6 +4,10 @@ Implemented on `codex/security-modernization`, based on `1b94920` and the
 approved September 8, 2026 plan. This is an implementation record; production
 promotion still requires the release gates below.
 
+This records the original modernization validation, not current dependency audit
+results. See [the October 26 dependency review](DEPENDENCY_REVIEW_2026-10-26.md)
+for the subsequent tooling refresh, validation, and outstanding upstream advisories.
+
 ## Security and correctness
 
 - Native services and devbench host ports bind to loopback. Compose explicitly

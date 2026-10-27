@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *When editing this file, please respect a line length of 100.*
 
+## [0.36.2] - 2026-10-13
+
+### Added
+- `DataMapIndex` gives random access to a `DataMap`'s content with `u64` positions on every
+  platform, including 32-bit targets such as `wasm32`. It does no I/O: it lists the chunks
+  overlapping a byte range and decrypts single chunks, checking each against the size and source
+  hash the map declares. Decompression stops at the declared size, so crafted chunks cannot expand
+  beyond it.
+
+### Changed
+- `DecryptionStream` is built on `DataMapIndex`. Random access uses `u64` positions and binary
+  searches instead of `usize` sums and linear scans, so it no longer overflows on 32-bit targets,
+  and every decrypted chunk is checked against its declared size and hash. Construction fails for
+  a map whose chunk indices are not exactly `0..n`.
+- On 32-bit targets, `DecryptionStream::file_size` reports `usize::MAX` for content larger than
+  `usize::MAX` bytes; `DataMapIndex::file_size` gives the exact size.
+
+### Fixed
+- `DecryptionStream` fails when the fetch callback omits a chunk. Before, `get_range` joined the
+  remaining chunks into wrong content, and iteration ended early as if the content were complete.
+
+## [0.36.1] - 2026-10-06
+
+### Changed
+- Relicensed from GPL-3.0 with a linking exception to MIT OR Apache-2.0, at your option. The
+  `LICENSE` file is replaced by `LICENSE-MIT` and `LICENSE-APACHE`, and the crate, Python and
+  Node.js package metadata declare `MIT OR Apache-2.0`. The last release under GPL-3.0 with the
+  linking exception is 0.36.0.
+
 ## [0.36.0] - 2026-05-13
 
 ### Added

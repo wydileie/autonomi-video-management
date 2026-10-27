@@ -7,9 +7,9 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV PATH="/opt/venv/bin:${PATH}:/opt/mssql-tools18/bin:${CARGO_HOME}/bin"
 
 # Keep the Autonomi toolchain on a single ant-node/protocol line.
-ARG AUTONOMI_ANT_SDK_REF=v0.12.1
-ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.3.6
-ARG AUTONOMI_ANT_NODE_REF=v0.18.1
+ARG AUTONOMI_ANT_SDK_REF=v0.17.0
+ARG AUTONOMI_ANT_CLIENT_REF=ant-cli-v0.3.12
+ARG AUTONOMI_ANT_NODE_REF=v0.23.1
 
 # Install all system packages and tools in fewer layers
 RUN rm -f /etc/apt/sources.list.d/yarn.list \
@@ -77,7 +77,7 @@ RUN mkdir -p /etc/apt/keyrings \
 && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
 && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
 && apt-get update \
-&& apt-get install -y --no-install-recommends nodejs=24.20.0-1nodesource1 \
+&& apt-get install -y --no-install-recommends nodejs=24.22.1-1nodesource1 \
 && pip install --no-cache-dir uv \
 && ln -s /usr/bin/fdfind /usr/local/bin/fd \
 && ln -s /usr/bin/batcat /usr/local/bin/bat \
@@ -87,7 +87,7 @@ RUN mkdir -p /etc/apt/keyrings \
 # Install Rust and Rust development tools
 RUN mkdir -p "${CARGO_HOME}" "${RUSTUP_HOME}" \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
-&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.1 \
+&& curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.99.1 \
 && rustup component add rustfmt clippy \
 && cargo install cargo-edit cargo-outdated \
 && chmod -R a+rwX "${CARGO_HOME}" "${RUSTUP_HOME}" \
@@ -128,14 +128,14 @@ RUN git clone https://github.com/WithAutonomi/ant-node.git && \
     cd .. && \
     rm -rf ant-node "${CARGO_HOME}/registry" "${CARGO_HOME}/git" /root/.cache /tmp/*
 
-ARG FOUNDRY_TAG=v1.8.1
+ARG FOUNDRY_TAG=v1.8.6
 # Install Foundry (anvil) — required by ant-devnet to run the local EVM chain.
 # Downloads pre-built binaries directly from GitHub releases (more reliable in Docker
 # than the foundryup installer script which can fail on rate limits or interactive prompts).
 RUN ARCH=$(dpkg --print-architecture) && \
     case "$ARCH" in \
-      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="37b45855232e57624d90113b049ca54f0c92055bb5c1997fcbdc3076c7b89c10" ;; \
-      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="27a32bd282d73018ab4d043de15ab0320b561c71b4bf3a549b130a0806e79f5c" ;; \
+      amd64) FOUNDRY_ARCH="amd64"; FOUNDRY_SHA256="58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc" ;; \
+      arm64) FOUNDRY_ARCH="arm64"; FOUNDRY_SHA256="ca61f3f6e7d635f34e3e174409964d29126fa135794cd84cead8919dd50e0930" ;; \
       *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;; \
     esac && \
     curl -fsSLo /tmp/foundry.tar.gz \

@@ -17,7 +17,7 @@ anyhow = "1"
 launcher_core = { path = "../../../crates/launcher_core" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
+open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 tokio = { version = "1", features = ["sync"] }
 url = "2"
 
